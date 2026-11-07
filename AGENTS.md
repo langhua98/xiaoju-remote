@@ -82,7 +82,7 @@
 - `.github/workflows/build.yml`：在 GitHub 的 Mac 上编译出没签名的 ipa，发到 Release「latest」。
 - `scripts/遥控.py`：电脑上的控制端。
 - `scripts/test/`：本地链路测试，`mock_cloud.py` 是假云盘，`test_remote.py` 是测试本身。
-- `Robot/README.md`：Yunlai Robot 的面部直接用开源项目 AIRI（moeru-ai/airi），不自己写动画代码。
+- `Robot/live2d/`：Yunlai Robot 的 Live2D 面部（AIRI 默认的 Hiyori 角色）。显示交给开源库 pixi-live2d-display，`src/main.js` 只是接入层。模型和 Live2D 运行库用 `fetch-assets.sh` 下载，不进仓库。说明见 `Robot/README.md`。
 - `Robot/`：Yunlai Robot 全屏面部动画（网页）。`avatar/` 是 3D 角色版，`face/` 是 2D 眼睛版，`face_server.py` 是本地调试服务器。说明见 `Robot/README.md`。改了 `Robot/avatar/src/` 要重新打包 `avatar.js`，并跑 `node Robot/test/test_face.js`。
 
 ## 怎么编译、怎么测

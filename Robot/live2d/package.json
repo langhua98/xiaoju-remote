@@ -1,0 +1,16 @@
+{
+  "name": "yunlai-live2d",
+  "private": true,
+  "description": "Yunlai Robot 的 Live2D 面部：pixi.js + pixi-live2d-display（开源库），这里只有接入代码",
+  "scripts": {
+    "fetch": "sh fetch-assets.sh",
+    "build": "esbuild src/main.js --bundle --minify --format=iife --target=safari15 --legal-comments=eof --outfile=live2d.js"
+  },
+  "dependencies": {
+    "pixi-live2d-display-lipsyncpatch": "0.5.0-ls-8",
+    "pixi.js": "7.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}
