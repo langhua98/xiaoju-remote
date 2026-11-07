@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>Yunlai Avatar</title>
+<!-- Yunlai Robot 3D 角色面部。源码在 src/，avatar.js 是打包结果（npm run build）。说明见 ../README.md -->
+<style>
+  :root { --bg: #000; --ice: #7fe9ff; --ice-dim: rgba(127,233,255,.55); --ice-line: rgba(127,233,255,.22); }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; touch-action: none;
+    -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
+  #stage { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: block; }
+  #fade { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: #000; pointer-events: none; }
+  #loading { position: fixed; top: 0; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px; pointer-events: none;
+    font: 13px -apple-system, "PingFang SC", sans-serif; color: var(--ice-dim); }
+  #track { width: 160px; height: 2px; background: rgba(127,233,255,.12); border-radius: 2px; overflow: hidden; }
+  #bar { width: 100%; height: 100%; background: var(--ice); transform-origin: left; transform: scaleX(0); transition: transform .2s; box-shadow: 0 0 8px var(--ice); }
+  #sense { position: fixed; left: 50%; transform: translateX(-50%); top: calc(env(safe-area-inset-top, 0px) + 10px);
+    display: flex; gap: 8px; pointer-events: none; font: 12px/1 -apple-system, "PingFang SC", sans-serif; color: var(--ice-dim); }
+  .pill { display: none; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--ice-line); border-radius: 99px; background: rgba(0,0,0,.5); }
+  .pill.on { display: flex; }
+  .pill i { width: 6px; height: 6px; border-radius: 50%; background: var(--ice); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  #debug { position: fixed; left: calc(env(safe-area-inset-left, 0px) + 8px); bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+    font: 11px/1.45 ui-monospace, Menlo, monospace; color: rgba(127,233,255,.6); white-space: pre; pointer-events: none; display: none; }
+  #file { display: none; }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="fade"></div>
+<div id="loading"><div id="track"><div id="bar"></div></div><div id="loading-text">正在唤醒…</div></div>
+<div id="sense">
+  <div class="pill" id="pill-cam"><i></i>摄像头工作中</div>
+  <div class="pill" id="pill-mic"><i></i>麦克风工作中</div>
+</div>
+<div id="debug"></div>
+<input type="file" id="file" accept=".vrm">
+<script src="avatar.js"></script>
+</body>
+</html>

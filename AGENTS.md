@@ -82,6 +82,7 @@
 - `.github/workflows/build.yml`：在 GitHub 的 Mac 上编译出没签名的 ipa，发到 Release「latest」。
 - `scripts/遥控.py`：电脑上的控制端。
 - `scripts/test/`：本地链路测试，`mock_cloud.py` 是假云盘，`test_remote.py` 是测试本身。
+- `Robot/`：Yunlai Robot 全屏面部动画（网页）。`avatar/` 是 3D 角色版，`face/` 是 2D 眼睛版，`face_server.py` 是本地调试服务器。说明见 `Robot/README.md`。改了 `Robot/avatar/src/` 要重新打包 `avatar.js`，并跑 `node Robot/test/test_face.js`。
 
 ## 怎么编译、怎么测
 

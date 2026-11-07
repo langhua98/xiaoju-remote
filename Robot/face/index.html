@@ -1,0 +1,853 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#000000">
+<title>Yunlai Face</title>
+<!--
+  Yunlai Robot 全屏面部动画 · 第一版
+  说明见 ../README.md。整页只有一块 Canvas 2D，没有按钮。
+  状态：idle / listening / thinking / speaking / observing
+  情绪：neutral / happy / alert / surprised / confused
+-->
+<style>
+  :root {
+    --bg: #000;
+    --ice: #7fe9ff;
+    --ice-dim: rgba(127, 233, 255, .55);
+    --ice-line: rgba(127, 233, 255, .22);
+  }
+  html, body {
+    margin: 0; height: 100%; background: var(--bg); overflow: hidden;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none;
+  }
+  canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: block; }
+  /* 采集摄像头、麦克风时，屏幕上方必须看得出来 */
+  #sense {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    top: calc(env(safe-area-inset-top, 0px) + 10px);
+    display: flex; gap: 8px; pointer-events: none;
+    font: 12px/1 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; color: var(--ice-dim);
+  }
+  .pill { display: none; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--ice-line); border-radius: 99px; }
+  .pill.on { display: flex; }
+  .pill i { width: 6px; height: 6px; border-radius: 50%; background: var(--ice); animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  #debug {
+    position: fixed; left: calc(env(safe-area-inset-left, 0px) + 8px); bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+    font: 11px/1.45 ui-monospace, Menlo, monospace; color: rgba(127, 233, 255, .6);
+    white-space: pre; pointer-events: none; display: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="face"></canvas>
+<div id="sense">
+  <div class="pill" id="pill-cam"><i></i>摄像头工作中</div>
+  <div class="pill" id="pill-mic"><i></i>麦克风工作中</div>
+</div>
+<div id="debug"></div>
+<script>
+(function () {
+  'use strict';
+
+  var VERSION = '1.0';
+
+  // ───────────────────────── 配置（全部来自网址参数） ─────────────────────────
+  var Q = new URLSearchParams(location.search);
+  function wsUrl(v) {
+    if (v !== 'auto') return v;
+    return (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+  }
+  var CFG = {
+    ws: Q.get('ws') ? wsUrl(Q.get('ws')) : '',          // ?ws=ws://电脑IP:8765/ws，或 ?ws=auto
+    demo: Q.has('demo') ? Q.get('demo') !== '0' : !Q.get('ws'), // 没接云端时默认演示
+    fps: Q.get('fps') || 'auto',                         // 30 / 60 / auto
+    debug: Q.get('debug') === '1',
+    idleAfter: (Number(Q.get('idle')) || 45) * 1000,     // 多久没消息回到待机
+    maxDpr: Number(Q.get('dpr')) || 2,                   // 7 Plus 是 3 倍屏，限 2 倍省电
+    mic: Q.get('mic') === '1'                            // 用本机麦克风驱动倾听声波
+  };
+
+  // ───────────────────────── 工具 ─────────────────────────
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function clamp01(v) { return clamp(v, 0, 1); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function rand(a, b) { return a + Math.random() * (b - a); }
+  // 与帧率无关的趋近：rate 越大越快
+  function approach(cur, target, rate, dt) { return cur + (target - cur) * (1 - Math.exp(-rate * dt)); }
+  function easeOut(t) { t = clamp01(t); return 1 - (1 - t) * (1 - t) * (1 - t); }
+  function easeOutBack(t) { t = clamp01(t); var c = 1.7; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); }
+  function mixC(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
+  function rgba(c, a) { return 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + clamp01(a).toFixed(3) + ')'; }
+  // 平滑的一维噪声（几条正弦叠加，足够做“生命感”的抖动）
+  function wobble(t, s) { return (Math.sin(t * 1.7 + s) + Math.sin(t * 2.9 + s * 2.3) * 0.6 + Math.sin(t * 5.3 + s * 0.7) * 0.3) / 1.9; }
+
+  var COL = {
+    core:   [232, 253, 255],
+    bright: [127, 233, 255],
+    mid:    [43, 196, 240],
+    deep:   [10, 92, 168],
+    ink:    [3, 28, 62],
+    white:  [255, 255, 255]
+  };
+
+  // ───────────────────────── 表情参数 ─────────────────────────
+  // open 睁眼高度，wide 宽度，slant 眉眼倾斜（>0 内角抬高=担心，<0 内角压低=专注），
+  // smile 下眼睑上弯（开心），asym 右眼收窄（疑惑/思考），iris 瞳孔大小，
+  // glow 光晕，white 偏白（警觉），mouth 嘴可见度，mouthSmile 嘴角上扬，round 嘴成 O 形，
+  // waves 声波，particles 能量粒子，ring 警觉脉冲环
+  var BASE = { open: 1, wide: 1, slant: 0, smile: 0, asym: 0, iris: 1, glow: .55, white: 0,
+               mouth: 0, mouthSmile: 0, round: 0, waves: 0, particles: 0, ring: 0 };
+
+  var STATES = {
+    idle:      {},
+    listening: { open: 1.12, wide: 1.04, iris: 1.08, glow: .75, waves: 1 },
+    thinking:  { open: .84, slant: .08, asym: .10, iris: .92, glow: .6, particles: 1 },
+    speaking:  { open: 1.02, glow: .72, mouth: 1 },
+    observing: { open: 1.06, wide: .98, slant: -.05, iris: .78, glow: .68 }
+  };
+  var EMOTIONS = {
+    neutral:   {},
+    happy:     { open: .78, smile: 1, glow: 1, iris: .9, mouth: .85, mouthSmile: 1 },
+    alert:     { open: 1.22, wide: .92, slant: -.16, iris: .7, glow: 1, white: .4, ring: 1 },
+    surprised: { open: 1.34, wide: .9, iris: .74, glow: .9, white: .15, mouth: .9, round: 1 },
+    confused:  { open: .95, slant: .22, asym: .32, glow: .6 }
+  };
+  // 情绪里这些键取较大值，避免说话时被情绪关掉嘴巴
+  var MAX_KEYS = { mouth: 1, glow: 1, waves: 1, particles: 1 };
+
+  // 各参数的跟随速度
+  var RATE = { open: 9, wide: 8, slant: 6, smile: 8, asym: 6, iris: 5, glow: 3.5, white: 4,
+               mouth: 7, mouthSmile: 6, round: 7, waves: 3, particles: 2, ring: 4 };
+
+  // ───────────────────────── 运行状态 ─────────────────────────
+  var S = {
+    state: 'idle', emotion: 'neutral', emotionUntil: 0, emotionBack: 'neutral',
+    lastInput: 0,
+    link: !CFG.ws ? 'none' : 'connecting',
+    ext: { x: 0, y: 0, at: -1e9 },           // 外部注视点（人物/物体/消息 gaze）
+    gimbal: { x: 0, y: 0, at: -1e9 },        // 云台角度换算出的视线
+    mouthExt: 0, mouthExtAt: -1e9,           // 消息里的 mouth_level
+    mouth: 0,                                // 平滑后的嘴部开合
+    micLevel: 0, audioLevel: 0, audioPlaying: false,
+    boot: 0, booting: true,
+    flash: 0,                                // 进入警觉/被戳时的瞬间亮度
+    camera: false, micOn: false
+  };
+  var P = {}, T = {};
+  Object.keys(BASE).forEach(function (k) { P[k] = BASE[k]; T[k] = BASE[k]; });
+  P.open = 0; // 开机前闭眼
+
+  var gaze = { x: 0, y: 0 }, gazeT = { x: 0, y: 0 }, gazeRate = 14;
+  var nextSaccade = 0, nextBlink = 1.8, blinkStart = -1, blinkDur = .16, blinkQueue = 0;
+
+  function now() { return performance.now() / 1000; }
+
+  function recomputeTargets() {
+    var st = STATES[S.state] || {}, em = EMOTIONS[S.emotion] || {};
+    Object.keys(BASE).forEach(function (k) {
+      var v = k in st ? st[k] : BASE[k];
+      if (k in em) v = MAX_KEYS[k] ? Math.max(v, em[k]) : em[k];
+      T[k] = v;
+    });
+  }
+
+  function setState(name) {
+    if (!STATES[name] || name === S.state) return;
+    var prev = S.state;
+    S.state = name;
+    // 换状态时眨一下眼，显得自然
+    if (prev !== 'idle' || name !== 'idle') maybeBlink(.6);
+    if (name === 'thinking') nextSaccade = 0;
+    recomputeTargets();
+  }
+
+  function setEmotion(name, ms) {
+    if (!EMOTIONS[name]) return;
+    if (ms) {
+      S.emotionBack = S.emotionUntil ? S.emotionBack : S.emotion;
+      S.emotionUntil = now() + ms / 1000;
+    } else {
+      S.emotionUntil = 0;
+    }
+    if (name !== S.emotion) {
+      if (name === 'alert' || name === 'surprised') { S.flash = 1; blinkStart = -1; }
+      if (name === 'happy') maybeBlink(.5);
+    }
+    S.emotion = name;
+    recomputeTargets();
+  }
+
+  function setGaze(x, y) {
+    S.ext.x = clamp(Number(x) || 0, -1, 1);
+    S.ext.y = clamp(Number(y) || 0, -1, 1);
+    S.ext.at = now();
+  }
+
+  function maybeBlink(p) {
+    if (Math.random() < p && blinkStart < 0) blinkStart = now();
+  }
+
+  // ───────────────────────── 消息入口 ─────────────────────────
+  // 与说明书一致：{"type":"robot_state","state":"speaking","emotion":"happy","gaze":{"x":.2,"y":-.1},"mouth_level":.65}
+  function apply(msg) {
+    if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch (e) { return false; } }
+    if (!msg || typeof msg !== 'object') return false;
+    var type = msg.type || (msg.state || msg.emotion ? 'robot_state' : '');
+    var t = now();
+    S.lastInput = t;
+
+    switch (type) {
+      case 'robot_state':
+        if (msg.state) setState(String(msg.state).toLowerCase());
+        if ('emotion' in msg) setEmotion(String(msg.emotion || 'neutral').toLowerCase(), Number(msg.duration_ms) || 0);
+        if (msg.gaze && typeof msg.gaze === 'object') setGaze(msg.gaze.x, msg.gaze.y);
+        if (typeof msg.mouth_level === 'number') { S.mouthExt = clamp01(msg.mouth_level); S.mouthExtAt = t; }
+        break;
+
+      case 'gimbal':
+        // 云台角度（度）。yaw 负 = 屏幕左，pitch 正 = 抬头。眼睛先于头部看过去。
+        S.gimbal.x = clamp((Number(msg.yaw) || 0) / 35, -1, 1);
+        S.gimbal.y = clamp(-(Number(msg.pitch) || 0) / 30, -1, 1);
+        S.gimbal.at = t;
+        if (msg.connected === false) S.gimbal.at = -1e9;
+        break;
+
+      case 'event':
+        onEvent(String(msg.name || msg.event || ''), msg);
+        break;
+
+      case 'speak':
+        if (msg.url) playAudio(String(msg.url));
+        setState('speaking');
+        break;
+
+      case 'sensing':
+        if ('camera' in msg) S.camera = !!msg.camera;
+        if ('mic' in msg) S.micOn = !!msg.mic;
+        updatePills();
+        break;
+
+      default:
+        return false;
+    }
+    return true;
+  }
+
+  // 第四节「动态行为设计」里的触发事件
+  function onEvent(name, msg) {
+    switch (name) {
+      case 'boot':            boot(); break;
+      case 'person_detected':
+      case 'object_detected':
+        setGaze(msg.x, msg.y);
+        if (S.state === 'idle') { S.flash = Math.max(S.flash, .35); maybeBlink(.5); }
+        break;
+      case 'person_lost':     S.ext.at = -1e9; break;
+      case 'sound':
+      case 'voice_start':     setState('listening'); break;
+      case 'voice_end':
+      case 'speech_end':      setState('thinking'); break;
+      case 'answer_start':    setState('speaking'); break;
+      case 'answer_end':      setState('idle'); break;
+      case 'gimbal_left':     S.gimbal.x = -.8; S.gimbal.y = 0; S.gimbal.at = now(); break;
+      case 'gimbal_right':    S.gimbal.x = .8;  S.gimbal.y = 0; S.gimbal.at = now(); break;
+      case 'gimbal_center':   S.gimbal.x = 0;   S.gimbal.y = 0; S.gimbal.at = now(); break;
+      case 'gimbal_lost':     S.gimbal.at = -1e9; break;
+      case 'anomaly':         setEmotion('alert', Number(msg.duration_ms) || 3000); break;
+      case 'idle':            goIdle(); break;
+    }
+  }
+
+  function goIdle() {
+    setState('idle');
+    setEmotion('neutral');
+    S.ext.at = -1e9;
+    S.mouthExtAt = -1e9;
+  }
+
+  function boot() {
+    S.boot = 0; S.booting = true; P.open = 0; P.glow = 0;
+  }
+
+  // ───────────────────────── 画布与布局 ─────────────────────────
+  var cv = document.getElementById('face');
+  var ctx = cv.getContext('2d', { alpha: false });
+  var W = 0, H = 0, DPR = 1, L = {};
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, CFG.maxDpr);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+    // 16:9 设计基准：横屏按高度排，竖屏按宽度排，脸始终完整
+    var u = Math.min(W / 11, H / 9);
+    var portrait = H > W;
+    L = {
+      u: u,
+      cx: W / 2,
+      cy: portrait ? H * .45 : H * .47,
+      eyeW: 2.9 * u,
+      eyeH: 4.2 * u,
+      sep: 3.1 * u,
+      mouthY: (portrait ? H * .45 : H * .47) + 3.05 * u,
+      mouthW: 1.7 * u
+    };
+  }
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', function () { setTimeout(resize, 120); });
+  resize();
+
+  // 预先画好的光晕贴图：用它代替实时模糊，A10 上很省
+  var glowSprite = (function () {
+    var c = document.createElement('canvas'); c.width = c.height = 128;
+    var g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, 'rgba(127,233,255,.55)');
+    gr.addColorStop(.35, 'rgba(60,200,250,.22)');
+    gr.addColorStop(.7, 'rgba(20,120,220,.06)');
+    gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+    return c;
+  })();
+
+  // ───────────────────────── 粒子（思考） ─────────────────────────
+  var PARTICLES = [];
+  for (var i = 0; i < 22; i++) {
+    PARTICLES.push({ a: Math.random() * Math.PI * 2, sp: rand(.25, .6) * (Math.random() < .5 ? -1 : 1),
+                     r: rand(.85, 1.15), s: rand(.05, .12), ph: Math.random() * 10 });
+  }
+
+  // ───────────────────────── 每帧更新 ─────────────────────────
+  function update(dt, t) {
+    // 开机：黑 → 能量线 → 睁眼
+    if (S.booting) {
+      S.boot += dt;
+      if (S.boot > 1.9) S.booting = false;
+    }
+
+    // 临时情绪到期
+    if (S.emotionUntil && t > S.emotionUntil) {
+      S.emotionUntil = 0;
+      setEmotion(S.emotionBack || 'neutral');
+    }
+
+    // 长时间无交互回到待机
+    if (!CFG.demo && t - S.lastInput > CFG.idleAfter / 1000 && !S.audioPlaying &&
+        (S.state !== 'idle' || S.emotion !== 'neutral')) goIdle();
+
+    // 参数趋近目标
+    for (var k in RATE) P[k] = approach(P[k], T[k], RATE[k], dt);
+    S.flash = approach(S.flash, 0, 3, dt);
+
+    updateGaze(dt, t);
+    updateBlink(t);
+    updateMouth(dt, t);
+  }
+
+  function updateGaze(dt, t) {
+    var extFresh = t - S.ext.at < 4;
+    var gimFresh = t - S.gimbal.at < 6;
+    var st = S.state;
+
+    if (st === 'thinking' && !extFresh) {
+      // 思考：视线慢慢在上方游走
+      gazeT.x = .42 * Math.sin(t * .55) + .12 * wobble(t * .4, 3);
+      gazeT.y = -.42 + .12 * Math.sin(t * .9);
+      gazeRate = 3;
+    } else if (extFresh) {
+      // 外部给了目标（人物位置、消息里的 gaze），加一点微跳视
+      gazeT.x = S.ext.x + .03 * wobble(t * 2, 1);
+      gazeT.y = S.ext.y + .03 * wobble(t * 2, 2);
+      gazeRate = 16;
+    } else if (gimFresh) {
+      gazeT.x = S.gimbal.x; gazeT.y = S.gimbal.y;
+      gazeRate = 10;
+    } else if (st === 'observing') {
+      // 没有目标时缓慢扫视
+      gazeT.x = .7 * Math.sin(t * .45);
+      gazeT.y = .08 * Math.sin(t * .8);
+      gazeRate = 6;
+    } else if (st === 'listening' || st === 'speaking') {
+      // 看着对话对象，偶尔细微挪动
+      if (t > nextSaccade) {
+        gazeT.x = rand(-.08, .08); gazeT.y = rand(-.02, .1);
+        nextSaccade = t + rand(.8, 2.2);
+      }
+      gazeRate = 14;
+    } else {
+      // 待机：随机跳视，常回中间
+      if (t > nextSaccade) {
+        var back = Math.random() < .4;
+        var nx = back ? 0 : rand(-.45, .45), ny = back ? 0 : rand(-.25, .2);
+        if (Math.abs(nx - gazeT.x) > .4) maybeBlink(.45);
+        gazeT.x = nx; gazeT.y = ny;
+        nextSaccade = t + rand(1.4, 4.2);
+      }
+      gazeRate = 16;
+    }
+    gaze.x = approach(gaze.x, gazeT.x, gazeRate, dt);
+    gaze.y = approach(gaze.y, gazeT.y, gazeRate, dt);
+  }
+
+  function updateBlink(t) {
+    if (S.booting) return;
+    if (blinkStart < 0 && t > nextBlink) {
+      blinkStart = t;
+      blinkQueue = Math.random() < .15 ? 1 : 0;   // 偶尔连眨两下
+    }
+    if (blinkStart >= 0 && t - blinkStart > blinkDur) {
+      blinkStart = -1;
+      if (blinkQueue > 0) { blinkQueue--; nextBlink = t + .09; }
+      else {
+        var slow = S.state === 'listening' || S.emotion === 'alert' ? 1.6 : 1;
+        nextBlink = t + rand(2.4, 6) * slow;
+      }
+    }
+  }
+
+  function blinkAmount(t) {
+    if (blinkStart < 0) return 0;
+    var p = (t - blinkStart) / blinkDur;            // 闭得快，睁得慢
+    return p < .4 ? easeOut(p / .4) : 1 - easeOut((p - .4) / .6);
+  }
+
+  function updateMouth(dt, t) {
+    var target = 0;
+    if (S.audioPlaying && S.audioLevel > 0) target = S.audioLevel;
+    else if (t - S.mouthExtAt < .5) target = S.mouthExt;
+    else if (S.state === 'speaking') {
+      // 没有真实音量时，用合成的“音节”节奏
+      var syl = Math.abs(Math.sin(t * 9.3) * Math.sin(t * 3.7 + 1));
+      var pause = Math.sin(t * .9) > -.55 ? 1 : .1;
+      target = clamp01((.12 + .7 * syl + .1 * wobble(t * 3, 5)) * pause);
+    }
+    if (S.state !== 'speaking' && !S.audioPlaying) target = 0;
+    S.mouth = approach(S.mouth, target, target > S.mouth ? 26 : 12, dt);
+  }
+
+  // ───────────────────────── 绘制 ─────────────────────────
+  function render(t) {
+    var u = L.u;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    // 开机进度
+    var bootLine = 1, bootOpen = 1, bootGlow = 1;
+    if (S.booting) {
+      var b = S.boot;
+      bootLine = easeOut((b - .35) / .55);
+      bootOpen = easeOutBack((b - .95) / .7);
+      bootGlow = clamp01((b - .35) / 1.2);
+      if (b < .95) drawBootLine(bootLine, u);
+    }
+
+    var breath = 1 + .1 * Math.sin(t * Math.PI * 2 / 4.2) * (S.state === 'idle' ? 1 : .4);
+    var glowK = (P.glow + S.flash * .5) * breath * bootGlow;
+
+    // 整张脸跟随视线轻微平移，形成“头在转”的空间感
+    var fx = L.cx + gaze.x * .9 * u;
+    var fy = L.cy + gaze.y * .7 * u + Math.sin(t * Math.PI * 2 / 4.2) * .04 * u;
+
+    if (P.particles > .01) drawParticles(t, fx, fy, u, bootGlow);
+    if (P.waves > .01) drawWaves(t, fx, fy, u);
+    if (P.ring > .01) drawRing(t, fx, fy, u);
+
+    if (!S.booting || S.boot >= .95) {
+      var bl = blinkAmount(t);
+      drawEye(-1, fx, fy, u, bl, bootOpen, glowK);
+      drawEye(1, fx, fy, u, bl, bootOpen, glowK);
+      drawMouth(t, fx, u, bootGlow);
+    }
+  }
+
+  function drawBootLine(p, u) {
+    if (p <= 0) return;
+    var w = (L.sep * 2 + L.eyeW) * p, h = .1 * u;
+    ctx.globalAlpha = p;
+    ctx.drawImage(glowSprite, L.cx - w * .7, L.cy - 1.4 * u, w * 1.4, 2.8 * u);
+    ctx.fillStyle = rgba(COL.core, 1);
+    ctx.fillRect(L.cx - w / 2, L.cy - h / 2, w, h);
+    ctx.globalAlpha = 1;
+  }
+
+  // 单只眼：side = -1 左眼，1 右眼（以观众视角）
+  function drawEye(side, fx, fy, u, blink, bootOpen, glowK) {
+    // 透视：往右看时右眼变远、略小
+    var persp = 1 - side * gaze.x * .1;
+    var cx = fx + side * (L.sep - Math.abs(gaze.x) * .22 * u);
+    var cy = fy;
+    var asym = side > 0 ? P.asym : 0;
+    var open = Math.max(P.open, 0) * (1 - asym) * (1 - blink) * bootOpen;
+    var w = L.eyeW * P.wide * persp * (1 + blink * .06);
+    var h = L.eyeH * open * persp;
+    var minH = .14 * u;
+    var closed = h < minH;
+    if (closed) h = minH;
+
+    // 光晕
+    ctx.globalAlpha = clamp01(glowK) * (closed ? .5 : 1);
+    var gw = w * 2.7, gh = h * 1.9 + 1.6 * u;
+    ctx.drawImage(glowSprite, cx - gw / 2, cy - gh / 2, gw, gh);
+    ctx.globalAlpha = 1;
+
+    // 眼形
+    var slant = P.slant, inner = 0, outer = 0;
+    if (slant > 0) outer = slant * h * .45; else inner = -slant * h * .45;
+    var tl = side < 0 ? outer : inner, tr = side < 0 ? inner : outer;
+    var smile = closed ? 0 : P.smile;
+    eyePath(cx, cy, w, h, Math.min(w, h) * .46, tl, tr, smile);
+
+    var white = P.white + S.flash * .25;
+    var top = mixC(COL.core, COL.white, white), midC = mixC(COL.bright, COL.core, white * .8), bot = mixC(COL.mid, COL.bright, white);
+    var gr = ctx.createLinearGradient(0, cy - h / 2, 0, cy + h / 2);
+    gr.addColorStop(0, rgba(top, 1));
+    gr.addColorStop(.45, rgba(midC, 1));
+    gr.addColorStop(1, rgba(bot, 1));
+    ctx.fillStyle = gr;
+    ctx.fill();
+    if (closed) return;
+
+    // 瞳孔（镜头感）：比眼框移动得更多，高光反向移动 → 视差
+    var irisA = clamp01((1 - smile * 1.2) * clamp01((h / L.eyeH - .25) * 3));
+    if (irisA > .01) {
+      ctx.save();
+      ctx.clip();
+      var r = Math.min(w, L.eyeH * persp) * .36 * P.iris;
+      var ix = cx + gaze.x * w * .2, iy = cy + gaze.y * h * .16 + h * .04;
+      var ig = ctx.createRadialGradient(ix, iy, 0, ix, iy, r);
+      ig.addColorStop(0, rgba(COL.ink, .82 * irisA));
+      ig.addColorStop(.55, rgba(COL.deep, .7 * irisA));
+      ig.addColorStop(.78, rgba(COL.bright, .55 * irisA));
+      ig.addColorStop(1, rgba(COL.bright, 0));
+      ctx.fillStyle = ig;
+      ctx.fillRect(ix - r, iy - r, r * 2, r * 2);
+      // 高光
+      var hx = ix - r * .28 - gaze.x * r * .12, hy = iy - r * .34 - gaze.y * r * .1;
+      ctx.fillStyle = rgba(COL.white, .9 * irisA);
+      ctx.beginPath(); ctx.ellipse(hx, hy, r * .17, r * .13, -.5, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = rgba(COL.white, .55 * irisA);
+      ctx.beginPath(); ctx.arc(ix + r * .3, iy + r * .26, r * .07, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
+
+    // 上沿一道细亮边，让眼睛像有玻璃面
+    ctx.save();
+    eyePath(cx, cy, w, h, Math.min(w, h) * .46, tl, tr, smile);
+    ctx.clip();
+    var sh = ctx.createLinearGradient(0, cy - h / 2, 0, cy - h / 2 + h * .35);
+    sh.addColorStop(0, 'rgba(255,255,255,.35)');
+    sh.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = sh;
+    ctx.fillRect(cx - w / 2, cy - h / 2, w, h * .35);
+    ctx.restore();
+  }
+
+  // 圆角眼框；tl/tr 让上沿两角下压（倾斜），smile 让下沿向上弯（开心眼）
+  function eyePath(cx, cy, w, h, r, tl, tr, smile) {
+    var x0 = cx - w / 2, x1 = cx + w / 2, y0 = cy - h / 2, y1 = cy + h / 2;
+    r = Math.max(0, Math.min(r, w / 2, h / 2));
+    var rl = Math.min(r, (h - tl) / 2), rr = Math.min(r, (h - tr) / 2);
+    var rb = r * (1 - smile * .6);
+    var ctrl = y1 - smile * h * 1.55;
+    ctx.beginPath();
+    ctx.moveTo(x0 + rl, y0 + tl);
+    ctx.quadraticCurveTo(cx, y0 + Math.min(tl, tr) * .5, x1 - rr, y0 + tr);
+    ctx.arcTo(x1, y0 + tr, x1, y1, rr);
+    ctx.lineTo(x1, y1 - rb);
+    ctx.arcTo(x1, y1, x1 - rb, y1, rb);
+    ctx.quadraticCurveTo(cx, ctrl, x0 + rb, y1);
+    ctx.arcTo(x0, y1, x0, y1 - rb, rb);
+    ctx.lineTo(x0, y0 + tl + rl);
+    ctx.arcTo(x0, y0 + tl, x0 + rl, y0 + tl, rl);
+    ctx.closePath();
+  }
+
+  function drawMouth(t, fx, u, bootGlow) {
+    var a = clamp01(P.mouth) * bootGlow;
+    if (a < .02) return;
+    var lvl = S.mouth;
+    var round = P.round, sm = P.mouthSmile;
+    var mw = L.mouthW * (1 + lvl * .22) * (1 - round * .45);
+    var mh = .05 * u + lvl * 1.05 * u + round * .75 * u;
+    var cx = fx, my = L.mouthY + gaze.y * .3 * u;
+    var x0 = cx - mw / 2, x1 = cx + mw / 2;
+    var corner = my - sm * .32 * u;
+
+    ctx.globalAlpha = a * (.45 + lvl * .4);
+    ctx.drawImage(glowSprite, cx - mw * 1.1, my - .9 * u - mh / 2, mw * 2.2, 1.8 * u + mh);
+    ctx.globalAlpha = a;
+
+    ctx.beginPath();
+    if (round > .5) {
+      ctx.ellipse(cx, my, mw / 2, mh / 2 + .08 * u, 0, 0, Math.PI * 2);
+    } else {
+      ctx.moveTo(x0, corner);
+      ctx.quadraticCurveTo(cx, my - mh / 2 + sm * .25 * u, x1, corner);
+      ctx.quadraticCurveTo(cx, my + mh / 2 + sm * .55 * u, x0, corner);
+    }
+    ctx.fillStyle = rgba(COL.bright, 1);
+    ctx.strokeStyle = rgba(COL.bright, 1);
+    ctx.lineWidth = .14 * u; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.fill(); ctx.stroke();
+    // 嘴里面暗一些，张大时更立体
+    if (lvl > .2 && round <= .5) {
+      ctx.globalAlpha = a * clamp01((lvl - .2) * 1.5) * .6;
+      ctx.fillStyle = rgba(COL.deep, 1);
+      ctx.beginPath();
+      ctx.ellipse(cx, my + mh * .12 + sm * .1 * u, mw * .32, mh * .28, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // 倾听：两侧声波
+  function drawWaves(t, fx, fy, u) {
+    var lvl = S.micLevel > .02 ? S.micLevel : .45 + .35 * Math.abs(wobble(t * 1.6, 9));
+    ctx.lineCap = 'round';
+    ctx.lineWidth = .09 * u;
+    for (var side = -1; side <= 1; side += 2) {
+      var ox = fx + side * (L.sep + L.eyeW / 2 + .55 * u);
+      var base = side < 0 ? Math.PI : 0;
+      for (var i = 0; i < 3; i++) {
+        var ph = (t * .85 + i / 3) % 1;
+        var r = (.5 + ph * 2.3 * (.6 + lvl * .6)) * u;
+        ctx.strokeStyle = rgba(COL.bright, (1 - ph) * .6 * P.waves * (.4 + lvl * .6));
+        ctx.beginPath();
+        ctx.arc(ox - side * .5 * u, fy, r, base - .5, base + .5);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // 思考：围绕双眼缓慢流动的能量粒子
+  function drawParticles(t, fx, fy, u, k) {
+    var rx = L.sep + L.eyeW * .9, ry = L.eyeH * .78;
+    for (var i = 0; i < PARTICLES.length; i++) {
+      var p = PARTICLES[i];
+      var ang = p.a + p.sp * t;
+      var rr = p.r + .08 * Math.sin(t * .8 + p.ph);
+      var x = fx + Math.cos(ang) * rx * rr;
+      var y = fy - .2 * u + Math.sin(ang) * ry * rr;
+      var tw = .35 + .65 * (.5 + .5 * Math.sin(t * 2.4 + p.ph * 3));
+      ctx.fillStyle = rgba(i % 5 === 0 ? COL.core : COL.bright, tw * P.particles * k * .85);
+      ctx.beginPath();
+      ctx.arc(x, y, p.s * u, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // 警觉：一圈向外扩散的脉冲
+  function drawRing(t, fx, fy, u) {
+    var ph = (t * 1.3) % 1;
+    var rx = (L.sep + L.eyeW) * (1 + ph * .35), ry = L.eyeH * (.85 + ph * .3);
+    ctx.strokeStyle = rgba(COL.core, (1 - ph) * .35 * P.ring);
+    ctx.lineWidth = .07 * u;
+    ctx.beginPath();
+    ctx.ellipse(fx, fy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // ───────────────────────── 帧调度：目标 30 FPS，设备够快升到 60 ─────────────────────────
+  var interval = CFG.fps === '60' ? 1000 / 60 : 1000 / 30;
+  var lastDraw = 0, costSum = 0, costN = 0, fpsN = 0, fpsAt = 0, fpsShown = 0, statAt = 0;
+
+  function frame(ms) {
+    requestAnimationFrame(frame);
+    if (ms - lastDraw < interval - 2) return;
+    var dt = lastDraw ? Math.min((ms - lastDraw) / 1000, .1) : 1 / 30;
+    lastDraw = ms;
+    var t0 = performance.now(), t = t0 / 1000;
+    update(dt, t);
+    render(t);
+    costSum += performance.now() - t0; costN++; fpsN++;
+
+    if (ms - fpsAt > 1000) { fpsShown = fpsN; fpsN = 0; fpsAt = ms; }
+    if (ms - statAt > 3000) {
+      var avg = costSum / Math.max(costN, 1);
+      if (CFG.fps === 'auto') {
+        if (interval > 20 && avg < 5) interval = 1000 / 60;
+        else if (interval < 20 && avg > 11) interval = 1000 / 30;
+      }
+      costSum = 0; costN = 0; statAt = ms;
+    }
+    if (CFG.debug) drawDebug();
+  }
+
+  var dbg = document.getElementById('debug');
+  function drawDebug() {
+    dbg.style.display = 'block';
+    dbg.textContent = 'Yunlai Face ' + VERSION + '\n' +
+      'fps ' + fpsShown + ' / 目标 ' + Math.round(1000 / interval) + '\n' +
+      'state ' + S.state + ' · emotion ' + S.emotion + '\n' +
+      'gaze ' + gaze.x.toFixed(2) + ', ' + gaze.y.toFixed(2) + ' · mouth ' + S.mouth.toFixed(2) + '\n' +
+      'link ' + S.link + (CFG.demo ? ' · demo' : '');
+  }
+
+  // ───────────────────────── WebSocket：断线回退待机，自动重连 ─────────────────────────
+  var ws = null, backoff = 1000;
+  function connect() {
+    if (!CFG.ws) return;
+    S.link = 'connecting';
+    try { ws = new WebSocket(CFG.ws); } catch (e) { return retry(); }
+    ws.onopen = function () {
+      S.link = 'online'; backoff = 1000;
+      send({ type: 'face_ready', version: VERSION, screen: [W, H] });
+    };
+    ws.onmessage = function (e) { apply(e.data); };
+    ws.onclose = function () { ws = null; S.link = 'offline'; goIdle(); S.gimbal.at = -1e9; retry(); };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+  function retry() { setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 15000); }
+  function send(obj) {
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+    try { window.webkit.messageHandlers.yunlai.postMessage(obj); } catch (e) {}
+  }
+
+  // ───────────────────────── 音频：TTS 振幅驱动嘴巴 ─────────────────────────
+  var actx = null, analyser = null, abuf = null, audioEl = null;
+  function unlockAudio() {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!actx) {
+      actx = new AC();
+      analyser = actx.createAnalyser(); analyser.fftSize = 512;
+      abuf = new Uint8Array(analyser.fftSize);
+      analyser.connect(actx.destination);
+    }
+    if (actx.state === 'suspended') actx.resume();
+  }
+  function playAudio(url) {
+    try {
+      if (audioEl) { audioEl.pause(); }
+      audioEl = new Audio();
+      audioEl.crossOrigin = 'anonymous';
+      audioEl.src = url;
+      if (actx) actx.createMediaElementSource(audioEl).connect(analyser);
+      audioEl.onplay = function () { S.audioPlaying = true; };
+      audioEl.onended = audioEl.onerror = function () {
+        S.audioPlaying = false; S.audioLevel = 0;
+        if (S.state === 'speaking') setState('idle');
+        send({ type: 'speak_end', url: url });
+      };
+      var p = audioEl.play();
+      if (p && p.catch) p.catch(function () { S.audioPlaying = false; });
+    } catch (e) { S.audioPlaying = false; }
+  }
+  function rmsOf(an, buf) {
+    an.getByteTimeDomainData(buf);
+    var s = 0;
+    for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; s += v * v; }
+    return Math.sqrt(s / buf.length);
+  }
+  setInterval(function () {
+    if (S.audioPlaying && analyser) S.audioLevel = clamp01(rmsOf(analyser, abuf) * 4);
+    if (micAn) S.micLevel = clamp01(rmsOf(micAn, micBuf) * 6);
+  }, 33);
+
+  var micAn = null, micBuf = null;
+  function startMic() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    unlockAudio();
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function (stream) {
+      micAn = actx.createAnalyser(); micAn.fftSize = 512; micBuf = new Uint8Array(512);
+      actx.createMediaStreamSource(stream).connect(micAn);
+      S.micOn = true; updatePills();
+    }).catch(function () {});
+  }
+
+  function updatePills() {
+    document.getElementById('pill-cam').className = 'pill' + (S.camera ? ' on' : '');
+    document.getElementById('pill-mic').className = 'pill' + (S.micOn ? ' on' : '');
+  }
+
+  // ───────────────────────── 触摸与键盘（无按钮） ─────────────────────────
+  var taps = [];
+  var micAsked = false;
+  window.addEventListener('pointerup', function () {
+    unlockAudio();
+    if (CFG.mic && !micAsked) { micAsked = true; startMic(); }
+    var t = now();
+    taps = taps.filter(function (x) { return t - x < .6; });
+    taps.push(t);
+    if (taps.length >= 3) { CFG.debug = !CFG.debug; dbg.style.display = CFG.debug ? 'block' : 'none'; taps = []; return; }
+    // 轻点一下：眨眼、开心一下
+    blinkStart = t;
+    if (S.emotion === 'neutral') setEmotion('happy', 1200);
+    send({ type: 'touch' });
+  });
+
+  var KEYS = { '1': 'idle', '2': 'listening', '3': 'thinking', '4': 'speaking', '5': 'observing' };
+  var EKEYS = { '6': 'happy', '7': 'alert', '8': 'surprised', '9': 'confused', '0': 'neutral' };
+  var yaw = 0;
+  window.addEventListener('keydown', function (e) {
+    var k = e.key;
+    if (KEYS[k] || EKEYS[k] || k === 'b' || k === 'd' || k === 'ArrowLeft' || k === 'ArrowRight') stopDemo();
+    if (KEYS[k]) apply({ type: 'robot_state', state: KEYS[k] });
+    else if (EKEYS[k]) apply({ type: 'robot_state', emotion: EKEYS[k] });
+    else if (k === 'b') boot();
+    else if (k === 'd') { CFG.debug = !CFG.debug; dbg.style.display = CFG.debug ? 'block' : 'none'; }
+    else if (k === 'ArrowLeft') { yaw = Math.max(yaw - 15, -45); apply({ type: 'gimbal', yaw: yaw, pitch: 0 }); }
+    else if (k === 'ArrowRight') { yaw = Math.min(yaw + 15, 45); apply({ type: 'gimbal', yaw: yaw, pitch: 0 }); }
+  });
+
+  // 原生 App（WKWebView）可以直接调用 window.YunlaiFace.apply(...)，或 postMessage
+  window.addEventListener('message', function (e) {
+    if (e.data && typeof e.data === 'object' && e.data.type) apply(e.data);
+  });
+
+  // ───────────────────────── 演示 ─────────────────────────
+  var DEMO = [
+    [3.0, { type: 'robot_state', state: 'idle', emotion: 'neutral' }],
+    [2.6, { type: 'event', name: 'person_detected', x: -.45, y: .05 }],
+    [3.2, { type: 'event', name: 'voice_start' }],
+    [3.6, { type: 'event', name: 'speech_end' }],
+    [4.4, { type: 'robot_state', state: 'speaking', emotion: 'neutral', gaze: { x: 0, y: .05 } }],
+    [2.4, { type: 'robot_state', state: 'speaking', emotion: 'happy' }],
+    [1.6, { type: 'robot_state', state: 'observing', emotion: 'neutral' }],
+    [1.6, { type: 'gimbal', yaw: -30, pitch: 0 }],
+    [1.6, { type: 'gimbal', yaw: 30, pitch: 5 }],
+    [1.6, { type: 'gimbal', yaw: 0, pitch: 0 }],
+    [2.4, { type: 'event', name: 'anomaly', duration_ms: 2400 }],
+    [2.4, { type: 'robot_state', state: 'idle', emotion: 'surprised', duration_ms: 1400 }],
+    [2.6, { type: 'robot_state', state: 'thinking', emotion: 'confused' }],
+    [3.0, { type: 'robot_state', state: 'idle', emotion: 'happy', duration_ms: 2200 }]
+  ];
+  var demoTimer = null, demoI = 0;
+  function demoStep() {
+    if (!CFG.demo) return;
+    var step = DEMO[demoI % DEMO.length];
+    apply(step[1]);
+    if (step[1].type !== 'gimbal' && step[1].type !== 'event') S.gimbal.at = -1e9;
+    demoI++;
+    demoTimer = setTimeout(demoStep, step[0] * 1000);
+  }
+  function stopDemo() { CFG.demo = false; if (demoTimer) clearTimeout(demoTimer); demoTimer = null; }
+
+  // ───────────────────────── 启动 ─────────────────────────
+  window.YunlaiFace = {
+    version: VERSION,
+    apply: apply,
+    boot: boot,
+    stopDemo: stopDemo,
+    get: function () {
+      return { state: S.state, emotion: S.emotion, link: S.link, gaze: { x: gaze.x, y: gaze.y },
+               mouth: S.mouth, fps: fpsShown, booting: S.booting };
+    }
+  };
+
+  recomputeTargets();
+  S.lastInput = now();
+  updatePills();
+  if (CFG.debug) dbg.style.display = 'block';
+  connect();
+  if (CFG.demo) demoTimer = setTimeout(demoStep, 2200);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
