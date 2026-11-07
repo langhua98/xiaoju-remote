@@ -4,16 +4,16 @@ import UIKit
 
 /// 令牌存钥匙串，其它设置存 UserDefaults。
 final class Store: ObservableObject {
-    @Published var base: String { didSet { d.set(base, forKey: "base") } }
-    @Published var device: String { didSet { d.set(device, forKey: "device") } }
+    @Published var base: String { didSet { save("base", base) } }
+    @Published var device: String { didSet { save("device", device) } }
     @Published var pair: String { didSet { Keychain.set("pair", pair) } }
     @Published var token: String { didSet { Keychain.set("token", token) } }
     // 机器人对话用的大模型（OpenAI 兼容接口）。密钥只存钥匙串
-    @Published var llmBase: String { didSet { d.set(llmBase, forKey: "llmBase") } }
-    @Published var llmModel: String { didSet { d.set(llmModel, forKey: "llmModel") } }
+    @Published var llmBase: String { didSet { save("llmBase", llmBase) } }
+    @Published var llmModel: String { didSet { save("llmModel", llmModel) } }
     @Published var llmKey: String { didSet { Keychain.set("llmKey", llmKey) } }
     /// 打开 App 时自动连大疆云台
-    @Published var gimbalAuto: Bool { didSet { d.set(gimbalAuto, forKey: "gimbalAuto") } }
+    @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
 
     private let d = UserDefaults.standard
 
@@ -24,16 +24,28 @@ final class Store: ObservableObject {
         ("deepseek-reasoner", "深度思考（慢）"),
     ]
 
+    /// 设置填一次就记住：存 UserDefaults，同时在钥匙串里留一份备份（App 设置被清掉时从钥匙串找回来）。
+    /// 令牌、口令、API 密钥只存钥匙串。
+    private func save(_ key: String, _ value: String) {
+        d.set(value, forKey: key)
+        Keychain.set("setting." + key, value)
+    }
+
+    private static func load(_ key: String) -> String? {
+        UserDefaults.standard.string(forKey: key)?.nonEmpty ?? Keychain.get("setting." + key)?.nonEmpty
+    }
+
     init() {
-        base = d.string(forKey: "base")?.nonEmpty ?? "https://langhua1998-xiaoju-cloud.hf.space"
-        device = d.string(forKey: "device")?.nonEmpty ?? UIDeviceName()
+        let load = Store.load
+        base = load("base") ?? "https://langhua1998-xiaoju-cloud.hf.space"
+        device = load("device") ?? UIDeviceName()
         pair = Keychain.get("pair") ?? ""
         token = Keychain.get("token") ?? ""
         // 默认用 DeepSeek；模型只在 Store.llmModels 两个里选
-        llmBase = d.string(forKey: "llmBase")?.nonEmpty ?? Store.defaultLLMBase
-        llmModel = d.string(forKey: "llmModel").flatMap { m in Store.llmModels.contains { $0.id == m } ? m : nil } ?? Store.llmModels[0].id
+        llmBase = load("llmBase") ?? Store.defaultLLMBase
+        llmModel = load("llmModel").flatMap { m in Store.llmModels.contains { $0.id == m } ? m : nil } ?? Store.llmModels[0].id
         llmKey = Keychain.get("llmKey") ?? ""
-        gimbalAuto = d.bool(forKey: "gimbalAuto")
+        gimbalAuto = d.object(forKey: "gimbalAuto") is Bool ? d.bool(forKey: "gimbalAuto") : (load("gimbalAuto") == "1")
     }
 
     // 处理过的指令 id（避免重复执行）
@@ -66,6 +78,7 @@ enum Keychain {
         guard !value.isEmpty else { return }
         var add = q
         add[kSecValueData as String] = value.data(using: .utf8)!
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock   // 锁屏后台待命时也读得到
         SecItemAdd(add as CFDictionary, nil)
     }
     static func get(_ key: String) -> String? {

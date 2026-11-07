@@ -53,7 +53,7 @@ struct ContentView: View {
                 } header: {
                     Text("对话（大模型）")
                 } footer: {
-                    Text("默认用 DeepSeek（\(Store.defaultLLMBase)），填 DeepSeek 的 API 密钥就能用。模型二选一：deepseek-chat 回答快；deepseek-reasoner 先想再答，慢一些。密钥只存在这台手机的钥匙串里。")
+                    Text("默认用 DeepSeek（\(Store.defaultLLMBase)），填 DeepSeek 的 API 密钥就能用。模型二选一：deepseek-chat 回答快；deepseek-reasoner 先想再答，慢一些。填完自动保存，更新 App 不用重填（钥匙串里另存了一份）。")
                 }
 
                 GimbalSection(gimbal: engine.gimbal, auto: $store.gimbalAuto)
