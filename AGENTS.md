@@ -113,3 +113,9 @@
 - 待命时显示最近一次收到指令的时间，以及每次往返的延迟。
 - 照片在发回前先压缩（比如长边 1600 像素、JPEG 质量 0.7），让即时信箱回得更快。
 - 被控端回执可以分两步：先回一条「收到，正在拍照」，再回结果。
+
+## 安装包
+
+- William 的要求：**每次有新的 ipa，都在回复里把直接下载链接发给他**：
+  https://github.com/langhua98/xiaoju-remote/releases/download/latest/XiaojuRemote-latest.ipa
+- 安卓 APK 在 langhua98/meta-work 编，每次编出新的都要传到小橘云盘「软件包」（见那边的 AGENTS.md）。
