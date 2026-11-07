@@ -16,7 +16,12 @@ targets:
   XiaojuRemote:
     type: application
     platform: iOS
-    sources: [App]
+    sources:
+      - App
+      # 机器人模式的脸（Live2D 网页）。模型和运行库由 Robot/live2d/fetch-assets.sh 在编译前下载
+      - path: Robot/live2d
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.langhua98.xiaoju.remote
@@ -32,6 +37,7 @@ targets:
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         ITSAppUsesNonExemptEncryption: false
         NSCameraUsageDescription: 被另一台设备远程请求时拍照
-        NSMicrophoneUsageDescription: 被另一台设备远程请求时录音
+        NSMicrophoneUsageDescription: 被另一台设备远程请求时录音，或者你点屏幕和机器人说话时听你说
+        NSSpeechRecognitionUsageDescription: 把你对机器人说的话转成文字，再交给大模型回答
         NSLocationWhenInUseUsageDescription: 被另一台设备远程请求时上报一次位置
         UIBackgroundModes: [fetch]

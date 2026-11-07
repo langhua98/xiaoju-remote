@@ -1,5 +1,6 @@
 import AVFoundation
 import CoreLocation
+import Speech
 import SwiftUI
 
 let brandOrange = Color(red: 1.0, green: 0.48, blue: 0.09)
@@ -8,6 +9,7 @@ struct ContentView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var engine: RemoteEngine
     @State private var locMgr = CLLocationManager()
+    @State private var showFace = false
 
     var body: some View {
         NavigationView {
@@ -28,7 +30,7 @@ struct ContentView: View {
                 }
 
                 Section {
-                    Button("授权硬件（相机 / 麦克风 / 定位）") { requestPermissions() }
+                    Button("授权硬件（相机 / 麦克风 / 定位 / 语音识别）") { requestPermissions() }
                     Button(engine.running ? "停止待命" : "开始待命") {
                         engine.running ? engine.stop() : engine.start()
                     }
@@ -38,6 +40,37 @@ struct ContentView: View {
                     Text(engine.running ? "● 待命中（设备名：\(store.device)）" : "○ 未运行")
                         .foregroundStyle(engine.running ? .green : .secondary)
                         .font(.body.weight(.semibold))
+                }
+
+                Section {
+                    TextField("接口地址，比如 https://api.deepseek.com/v1", text: $store.llmBase)
+                        .textInputAutocapitalization(.never).disableAutocorrection(true).keyboardType(.URL)
+                    TextField("模型名，比如 deepseek-chat", text: $store.llmModel)
+                        .textInputAutocapitalization(.never).disableAutocorrection(true)
+                    SecureField("API 密钥", text: $store.llmKey)
+                } header: {
+                    Text("对话（大模型）")
+                } footer: {
+                    Text("支持 OpenAI 兼容接口（DeepSeek、智谱、通义、Kimi、OpenAI 等）。密钥只存在这台手机的钥匙串里。")
+                }
+
+                Section {
+                    TextField("语音服务地址（空着用 iOS 自带语音）", text: $store.ttsBase)
+                        .textInputAutocapitalization(.never).disableAutocorrection(true).keyboardType(.URL)
+                    TextField("音色：zf_088（Kokoro）或 melo（MeloTTS）", text: $store.ttsVoice)
+                        .textInputAutocapitalization(.never).disableAutocorrection(true)
+                } header: {
+                    Text("机器人的声音（Kokoro）")
+                } footer: {
+                    Text("默认用小橘视频流式服务上的 Kokoro 中文语音（女声 zf_088）；音色填 melo 换成 MeloTTS 女声（略快）。它闲了会休息，第一次说话可能要等十几秒；连不上时自动改用 iOS 自带语音。")
+                }
+
+                Section {
+                    Button("打开机器人的脸") { showFace = true }
+                } header: {
+                    Text("机器人模式")
+                } footer: {
+                    Text("整个屏幕变成 Live2D 角色的脸，待命照常进行。点一下屏幕和她说话，她用大模型回答并读出来；收到遥控指令时表情会跟着变；拍照、录音、听你说话时屏幕上方会提示。连点三下退出。")
                 }
 
                 Section("记录") {
@@ -54,11 +87,17 @@ struct ContentView: View {
         }
         .navigationViewStyle(.stack)
         .tint(brandOrange)
+        .fullScreenCover(isPresented: $showFace) {
+            RobotModeView { showFace = false }
+                .environmentObject(store)
+                .environmentObject(engine)
+        }
     }
 
     private func requestPermissions() {
         AVCaptureDevice.requestAccess(for: .video) { _ in }
         AVAudioSession.sharedInstance().requestRecordPermission { _ in }
+        SFSpeechRecognizer.requestAuthorization { _ in }
         locMgr.requestWhenInUseAuthorization()
     }
 }

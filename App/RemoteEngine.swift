@@ -5,6 +5,10 @@ import UIKit
 final class RemoteEngine: ObservableObject {
     @Published var running = false
     @Published var log: [String] = []
+    /// 机器人模式的脸，指令执行时跟着变表情（见 RobotFace.swift）
+    let face = FaceBridge()
+    /// 和机器人对话（见 Talk.swift）
+    private(set) lazy var talk = Talk(store: store, face: face, log: { [weak self] in self?.push($0) })
 
     private let store: Store
     private var task: Task<Void, Never>?
@@ -98,13 +102,16 @@ final class RemoteEngine: ObservableObject {
 
         if !store.pair.isEmpty, (cmd["pair"] as? String) != store.pair {
             push("有一条指令口令不对，拒绝")
+            face.commandRejected()
             await reply(["id": id, "ok": false, "text": "配对口令不对"])
             return
         }
 
         let action = cmd["do"] as? String ?? ""
         push("执行：\(action)")
+        face.commandStarted(action)
         let result = await Commands.run(cmd)
+        face.commandFinished(ok: !result.text.hasPrefix("执行出错"))
 
         var files: [Any] = []
         for (name, bytes) in result.files {
