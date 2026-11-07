@@ -19,7 +19,7 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
 
 ### 对话（`App/Talk.swift`）
 
-1. 在设置页「对话（大模型）」填接口地址、模型名、API 密钥（OpenAI 兼容接口，比如 `https://api.deepseek.com/v1` + `deepseek-chat`）。密钥只存钥匙串。
+1. 在设置页「对话（大模型）」填 API 密钥。接口地址默认 DeepSeek（`https://api.deepseek.com/v1`，也能改成别的 OpenAI 兼容接口），模型二选一：`deepseek-chat`（快）或 `deepseek-reasoner`（先想再答，慢）。密钥只存钥匙串。
 2. 进入机器人模式，点一下屏幕开始说话（屏幕上方显示「麦克风工作中」），停顿约 0.8 秒自动结束。
 3. iOS 语音识别把话转成文字 → 大模型流式回答 → 写出一句就交给 Kokoro 合成一句、马上播，后面的边播边合成。脸的状态依次是倾听 → 思考 → 说话，嘴跟着真实音量动。
    - 声音：Kokoro-82M 中文版（Apache-2.0），女声 `zf_088`，跑在小橘视频流式服务的 Space 上（`langhua98/xiaoju-video` 的 `streamer/tts_proxy.py`，地址 `https://langhua1998-douyin-proxy.hf.space/tts`）。它闲 10 分钟会关，进机器人模式时 App 先叫醒它。
@@ -69,4 +69,5 @@ python3 -m http.server 8000 -d ..   # 然后打开 http://电脑IP:8000/live2d/
 ## 还没确认的事
 
 - iPhone 7 Plus（iOS 15）上的流畅度还没实测，默认限 30 FPS。
-- 云台控制端还没接，现在只是脸跟着 `gimbal` 消息转。
+- 云台已经接上（`App/Gimbal.swift`，大疆 OM6）：App 连着云台时每秒把朝向发给脸，远程用 `gimbal` 指令转。
+  真机上还没一起试过：脸的左右方向如果和云台转的方向反了，改 `RemoteEngine` 里发 `gimbal` 消息的正负号。
