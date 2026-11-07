@@ -123,13 +123,13 @@ let model = null;
 
 function layout() {
   if (!model) return;
-  const W = innerWidth, H = innerHeight, portrait = H > W;
+  const W = innerWidth, H = innerHeight;
   const w0 = model.internalModel.originalWidth, h0 = model.internalModel.originalHeight;
-  // 竖屏看到腰部，横屏看到胸口
-  const scale = Math.min(H / (h0 * (portrait ? 0.62 : 0.45)), W / (w0 * (portrait ? 0.42 : 0.75)));
+  // 显示全身：高度撑满屏幕（上下各留一点），横屏时同样按高度放
+  const scale = Math.min((H * 0.96) / h0, W / (w0 * 0.45));
   model.scale.set(scale);
   model.anchor.set(0.5, 0);
-  model.position.set(W / 2, H * (portrait ? 0.08 : 0.02));
+  model.position.set(W / 2, H * 0.02);
 }
 addEventListener('resize', layout);
 
