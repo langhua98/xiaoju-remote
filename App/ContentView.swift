@@ -55,6 +55,17 @@ struct ContentView: View {
                 }
 
                 Section {
+                    TextField("语音服务地址（空着用 iOS 自带语音）", text: $store.ttsBase)
+                        .textInputAutocapitalization(.never).disableAutocorrection(true).keyboardType(.URL)
+                    TextField("音色，比如 zf_088", text: $store.ttsVoice)
+                        .textInputAutocapitalization(.never).disableAutocorrection(true)
+                } header: {
+                    Text("机器人的声音（Kokoro）")
+                } footer: {
+                    Text("默认用小橘视频流式服务上的 Kokoro 中文语音（女声 zf_088）。它闲了会休息，第一次说话可能要等十几秒；连不上时自动改用 iOS 自带语音。")
+                }
+
+                Section {
                     Button("打开机器人的脸") { showFace = true }
                 } header: {
                     Text("机器人模式")

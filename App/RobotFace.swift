@@ -80,7 +80,10 @@ struct RobotModeView: View {
                 .allowsHitTesting(false)
         }
         .statusBar(hidden: true)
-        .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
+        .onAppear {
+            UIApplication.shared.isIdleTimerDisabled = true
+            engine.talk.warmUp()
+        }
         .onDisappear {
             engine.talk.cancel()
             if !engine.running { UIApplication.shared.isIdleTimerDisabled = false }

@@ -2,8 +2,9 @@ import AVFoundation
 import Foundation
 import Speech
 
-/// 和机器人对话：点一下屏幕 → iOS 语音识别听你说 → 大模型（OpenAI 兼容接口）回答 → iOS 自带语音读出来。
-/// 每一步都通过 FaceBridge 让脸变状态：倾听 → 思考 → 说话（带大模型给的情绪）→ 待机。
+/// 和机器人对话：点一下屏幕 → iOS 语音识别听你说 → 大模型（OpenAI 兼容接口，流式）→ 逐句交给 Kokoro 合成并播放。
+/// 大模型写出第一句就开始合成、播放，后面的边播边合成，等待只取决于第一句。
+/// Kokoro 连不上的那句改用 iOS 自带语音读，机器人不会哑。脸的状态：倾听 → 思考 → 说话（嘴跟着真实音量）→ 待机。
 @MainActor
 final class Talk: NSObject, ObservableObject {
     enum Phase { case idle, listening, thinking, speaking }
@@ -14,14 +15,32 @@ final class Talk: NSObject, ObservableObject {
     private let log: (String) -> Void
     private var history: [[String: String]] = []
 
+    // 听
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
     private let audio = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recTask: SFSpeechRecognitionTask?
     private var silenceTimer: Timer?
     private var heard = ""
-    private let synth = AVSpeechSynthesizer()
+
+    // 想：流式回答拆句
     private var llmTask: Task<Void, Never>?
+    private var buffer = ""
+    private var emotion = "neutral"
+    private var emotionKnown = false
+    private var reply = ""
+
+    // 说：一句一句排队
+    private var queue: [(text: String, audio: Task<Data?, Never>)] = []
+    private var llmDone = true
+    private var playLoop: Task<Void, Never>?
+    private var queueWaiter: CheckedContinuation<Void, Never>?
+    private var player: AVAudioPlayer?
+    private var playerDone: CheckedContinuation<Bool, Never>?
+    private var meterTimer: Timer?
+    private let synth = AVSpeechSynthesizer()
+    private var synthDone: CheckedContinuation<Void, Never>?
+    private var startedSpeaking = false
 
     init(store: Store, face: FaceBridge, log: @escaping (String) -> Void) {
         self.store = store
@@ -29,6 +48,12 @@ final class Talk: NSObject, ObservableObject {
         self.log = log
         super.init()
         synth.delegate = self
+    }
+
+    /// 进机器人模式时叫醒语音服务（Space 上的 Kokoro 闲了会关掉，第一次加载要十几秒）
+    func warmUp() {
+        guard let url = Voice.url(base: store.ttsBase, path: "health") else { return }
+        URLSession.shared.dataTask(with: URLRequest(url: url, timeoutInterval: 10)).resume()
     }
 
     /// 点了一下屏幕：没事时开始听；正在听就结束；正在想或正在说就打断。
@@ -44,8 +69,8 @@ final class Talk: NSObject, ObservableObject {
         llmTask?.cancel()
         llmTask = nil
         stopAudio()
+        stopSpeaking()
         phase = .idle
-        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
         face.send(["type": "robot_state", "state": "idle", "emotion": "neutral"])
     }
 
@@ -56,6 +81,7 @@ final class Talk: NSObject, ObservableObject {
             say("请先在设置里填好大模型的接口地址、模型名和密钥。", emotion: "confused")
             return
         }
+        warmUp()
         SFSpeechRecognizer.requestAuthorization { status in
             Task { @MainActor in
                 guard status == .authorized else {
@@ -108,7 +134,7 @@ final class Talk: NSObject, ObservableObject {
         guard phase == .listening else { return }
         if let text = text, !text.isEmpty {
             heard = text
-            armSilence(1.2)   // 停顿 1.2 秒算说完
+            armSilence(0.8)   // 停顿 0.8 秒算说完
         }
         if done { finishListening() }
     }
@@ -147,44 +173,223 @@ final class Talk: NSObject, ObservableObject {
         llmTask = Task { await self.ask(text) }
     }
 
-    // MARK: 想
+    // MARK: 想（流式，边收边拆句）
 
     private func ask(_ text: String) async {
         history.append(["role": "user", "content": text])
         if history.count > 12 { history.removeFirst(history.count - 12) }
         let messages = [["role": "system", "content": Chat.persona]] + history
+        beginSpeaking()
+        buffer = ""; reply = ""; emotion = "neutral"; emotionKnown = false
         do {
-            let reply = try await Chat.complete(base: store.llmBase, key: store.llmKey, model: store.llmModel, messages: messages)
-            guard phase == .thinking, !Task.isCancelled else { return }
-            history.append(["role": "assistant", "content": reply])
-            let (emotion, clean) = Chat.parse(reply)
-            log("回答：\(clean)")
-            say(clean.isEmpty ? "嗯。" : clean, emotion: emotion)
+            try await Chat.stream(base: store.llmBase, key: store.llmKey, model: store.llmModel, messages: messages) { piece in
+                self.onPiece(piece)
+            }
+            guard !Task.isCancelled else { return }
+            flush(final: true)
+            history.append(["role": "assistant", "content": reply.isEmpty ? "嗯。" : reply])
+            log("回答：\(reply)")
         } catch {
-            guard phase == .thinking, !Task.isCancelled else { return }
+            guard !Task.isCancelled else { return }
             history.removeLast()
             log("大模型出错：\(error.localizedDescription)")
-            say("我好像连不上大脑了。", emotion: "confused")
+            if reply.isEmpty {
+                emotion = "confused"; emotionKnown = true
+                enqueue("我好像连不上大脑了。")
+            }
+        }
+        llmDone = true
+        wakeQueue()
+    }
+
+    private func onPiece(_ piece: String) {
+        guard phase == .thinking || phase == .speaking else { return }
+        buffer += piece
+        flush(final: false)
+    }
+
+    /// 从 buffer 里切出完整的句子交给语音；final 时把剩下的也交出去
+    private func flush(final: Bool) {
+        // 有的模型先输出 <think>…</think>，想完之前什么都不读
+        buffer = buffer.replacingOccurrences(of: #"(?s)<think>.*?</think>"#, with: "", options: .regularExpression)
+        if buffer.contains("<think>") && !final { return }
+        if !emotionKnown {
+            let head = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if head.hasPrefix("[") {
+                guard let close = head.firstIndex(of: "]") else {
+                    if !final && head.count < 16 { return }
+                    emotionKnown = true
+                    return flush(final: final)
+                }
+                let tag = String(head[head.index(after: head.startIndex)..<close]).lowercased()
+                if Chat.emotions.contains(tag) { emotion = tag }
+                buffer = String(head[head.index(after: close)...])
+                emotionKnown = true
+            } else if !head.isEmpty || final {
+                emotionKnown = true
+            } else {
+                return
+            }
+        }
+        while let cut = Self.sentenceEnd(in: buffer) {
+            let sentence = String(buffer[..<cut])
+            buffer = String(buffer[cut...])
+            enqueue(sentence)
+        }
+        if final {
+            enqueue(buffer)
+            buffer = ""
         }
     }
 
-    // MARK: 说
+    /// 句号、问号、感叹号、换行处断句；太长的句子在逗号处先断，让第一句尽快读出来
+    private static func sentenceEnd(in s: String) -> String.Index? {
+        let hard: Set<Character> = ["。", "！", "？", "!", "?", "；", ";", "\n", "…"]
+        let soft: Set<Character> = ["，", ",", "、", "："]
+        var count = 0
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            count += 1
+            let next = s.index(after: i)
+            if hard.contains(c) && count >= 2 { return next }
+            if soft.contains(c) && count >= 14 { return next }
+            i = next
+        }
+        return nil
+    }
+
+    // MARK: 说（一句一句排队，下载下一句时播这一句）
+
+    private func beginSpeaking() {
+        stopSpeaking()
+        llmDone = false
+        startedSpeaking = false
+        playLoop = Task { await self.runQueue() }
+    }
 
     private func say(_ text: String, emotion: String) {
+        beginSpeaking()
+        self.emotion = emotion
+        enqueue(text)
+        llmDone = true
+        wakeQueue()
+    }
+
+    private func enqueue(_ raw: String) {
+        let text = Chat.clean(raw)
+        guard text.rangeOfCharacter(from: .letters) != nil || text.rangeOfCharacter(from: .decimalDigits) != nil else { return }
+        reply += text
+        let base = store.ttsBase, voice = store.ttsVoice
+        let fetch = Task.detached { await Voice.fetch(base: base, voice: voice, text: text) }
+        queue.append((text, fetch))
+        wakeQueue()
+    }
+
+    private func wakeQueue() {
+        queueWaiter?.resume()
+        queueWaiter = nil
+    }
+
+    private func runQueue() async {
+        while !Task.isCancelled {
+            if queue.isEmpty {
+                if llmDone { break }
+                await withCheckedContinuation { queueWaiter = $0 }
+                continue
+            }
+            let item = queue.removeFirst()
+            let data = await item.audio.value
+            if Task.isCancelled { break }
+            if !startedSpeaking {
+                startedSpeaking = true
+                phase = .speaking
+                face.send(["type": "robot_state", "state": "speaking", "emotion": emotion])
+            }
+            if let data = data, await play(data) { continue }
+            if Task.isCancelled { break }
+            await speakWithSystemVoice(item.text)
+        }
+        guard !Task.isCancelled else { return }
+        doneSpeaking()
+    }
+
+    private func stopSpeaking() {
+        playLoop?.cancel()
+        playLoop = nil
+        for item in queue { item.audio.cancel() }
+        queue.removeAll()
+        llmDone = true
+        wakeQueue()
+        meterTimer?.invalidate()
+        meterTimer = nil
+        player?.stop()
+        player = nil
+        playerDone?.resume(returning: false)
+        playerDone = nil
+        if synth.isSpeaking { synth.stopSpeaking(at: .immediate) }
+        synthDone?.resume()
+        synthDone = nil
+    }
+
+    private func useSpeaker() {
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try? session.setActive(true)
+    }
+
+    /// 播一段 Kokoro 的 WAV，嘴跟着真实音量动；播完返回 true
+    private func play(_ data: Data) async -> Bool {
+        useSpeaker()
+        guard let p = try? AVAudioPlayer(data: data) else { return false }
+        p.delegate = self
+        p.isMeteringEnabled = true
+        guard p.play() else { return false }
+        player = p
+        meterTimer?.invalidate()
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.06, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.sendMouth() }
+        }
+        let ok = await withCheckedContinuation { playerDone = $0 }
+        meterTimer?.invalidate()
+        meterTimer = nil
+        player = nil
+        face.send(["type": "robot_state", "mouth_level": 0])
+        return ok
+    }
+
+    private func sendMouth() {
+        guard let p = player, p.isPlaying else { return }
+        p.updateMeters()
+        let db = p.averagePower(forChannel: 0)            // -160…0 dB
+        let level = max(0, min(1, (db + 45) / 35))          // 说话一般在 -40…-10 dB
+        face.send(["type": "robot_state", "mouth_level": Double(level)])
+    }
+
+    fileprivate func playerFinished(_ ok: Bool) {
+        playerDone?.resume(returning: ok)
+        playerDone = nil
+    }
+
+    /// Kokoro 连不上时用 iOS 自带语音读这一句（嘴型由脸自己按节奏动）
+    private func speakWithSystemVoice(_ text: String) async {
+        useSpeaker()
         let u = AVSpeechUtterance(string: text)
         u.voice = AVSpeechSynthesisVoice(language: "zh-CN")
         u.rate = 0.52
         u.pitchMultiplier = 1.15
-        phase = .speaking
-        face.send(["type": "robot_state", "state": "speaking", "emotion": emotion])
         synth.speak(u)
+        await withCheckedContinuation { synthDone = $0 }
     }
 
-    fileprivate func doneSpeaking() {
-        guard phase == .speaking else { return }
+    fileprivate func synthFinished() {
+        synthDone?.resume()
+        synthDone = nil
+    }
+
+    private func doneSpeaking() {
+        playLoop = nil
+        guard phase == .speaking || phase == .thinking else { return }
         phase = .idle
         face.send(["type": "robot_state", "state": "idle"])
         // 说完保持一会儿情绪，再回到平静
@@ -195,18 +400,58 @@ final class Talk: NSObject, ObservableObject {
     }
 }
 
-extension Talk: AVSpeechSynthesizerDelegate {
+extension Talk: AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.doneSpeaking() }
+        Task { @MainActor in self.synthFinished() }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in self.doneSpeaking() }
+        Task { @MainActor in self.synthFinished() }
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in self.playerFinished(flag) }
+    }
+
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        Task { @MainActor in self.playerFinished(false) }
     }
 }
 
-/// 大模型：OpenAI 兼容的 /chat/completions 接口（DeepSeek、智谱、通义、Kimi、OpenAI 等都行）。
+/// Kokoro 语音服务（默认是 xiaoju-video 的流式服务 Space 上的 /tts，见那个仓库的 streamer/tts_proxy.py）
+enum Voice {
+    static let defaultBase = "https://langhua1998-douyin-proxy.hf.space/tts"
+    static let defaultVoice = "zf_088"
+
+    static func url(base: String, path: String, query: [URLQueryItem] = []) -> URL? {
+        var b = base.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !b.isEmpty else { return nil }
+        while b.hasSuffix("/") { b.removeLast() }
+        var c = URLComponents(string: b + "/" + path)
+        if !query.isEmpty { c?.queryItems = query }
+        return c?.url
+    }
+
+    /// 合成一句，拿到 WAV；失败返回 nil（调用方改用 iOS 自带语音）
+    static func fetch(base: String, voice: String, text: String) async -> Data? {
+        guard let url = url(base: base, path: "tts", query: [
+            URLQueryItem(name: "text", value: String(text.prefix(300))),
+            URLQueryItem(name: "voice", value: voice.isEmpty ? defaultVoice : voice),
+            URLQueryItem(name: "speed", value: "1.05"),
+        ]) else { return nil }
+        // 服务刚被叫醒时要等模型加载（服务端最多等 40 秒），再长就不等了
+        guard let result = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 45)),
+              let http = result.1 as? HTTPURLResponse, http.statusCode == 200,
+              (http.value(forHTTPHeaderField: "Content-Type") ?? "").hasPrefix("audio"),
+              result.0.count > 44 else { return nil }
+        return result.0
+    }
+}
+
+/// 大模型：OpenAI 兼容的 /chat/completions 接口（DeepSeek、智谱、通义、Kimi、OpenAI 等都行），流式输出。
 enum Chat {
+    static let emotions: Set<String> = ["neutral", "happy", "surprised", "confused", "alert"]
+
     static let persona = """
     你是云来（Yunlai Robot），一个住在手机屏幕里的数字生命体。手机是你的脸，摄像头是你的眼睛，麦克风是你的耳朵，云台是你的身体。
     你的回答会被直接读出来，所以：
@@ -220,38 +465,40 @@ enum Chat {
         var errorDescription: String? { message }
     }
 
-    static func complete(base: String, key: String, model: String, messages: [[String: String]]) async throws -> String {
+    /// 流式请求，每收到一段文字就交给 onPiece（在主线程上调）
+    static func stream(base: String, key: String, model: String, messages: [[String: String]],
+                       onPiece: @MainActor @escaping (String) -> Void) async throws {
         var b = base.trimmingCharacters(in: .whitespacesAndNewlines)
         while b.hasSuffix("/") { b.removeLast() }
         guard let url = URL(string: b + "/chat/completions") else { throw Failure(message: "接口地址不对") }
         var req = URLRequest(url: url, timeoutInterval: 60)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        let body: [String: Any] = ["model": model, "messages": messages, "temperature": 0.8, "max_tokens": 400]
+        let body: [String: Any] = ["model": model, "messages": messages, "temperature": 0.8, "max_tokens": 400, "stream": true]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (bytes, resp) = try await URLSession.shared.bytes(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else { throw Failure(message: "接口返回 \(code)") }
-        guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = obj["choices"] as? [[String: Any]],
-              let msg = choices.first?["message"] as? [String: Any],
-              let content = msg["content"] as? String else {
-            throw Failure(message: "看不懂接口的回复")
+        for try await line in bytes.lines {
+            try Task.checkCancellation()
+            guard line.hasPrefix("data:") else { continue }
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" { break }
+            guard let d = payload.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+                  let choices = obj["choices"] as? [[String: Any]],
+                  let delta = choices.first?["delta"] as? [String: Any],
+                  let piece = delta["content"] as? String, !piece.isEmpty else { continue }
+            await onPiece(piece)
         }
-        return content
     }
 
-    /// 取出情绪标签，去掉朗读时不该念的东西
-    static func parse(_ reply: String) -> (emotion: String, text: String) {
-        var emotion = "neutral"
-        if let r = reply.range(of: #"\[[A-Za-z]+\]"#, options: .regularExpression) {
-            let tag = String(reply[r].dropFirst().dropLast()).lowercased()
-            if ["neutral", "happy", "surprised", "confused", "alert"].contains(tag) { emotion = tag }
-        }
-        var text = reply.replacingOccurrences(of: #"(?s)<think>.*?</think>"#, with: "", options: .regularExpression)
-        text = text.replacingOccurrences(of: #"\[[A-Za-z]+\]"#, with: "", options: .regularExpression)
-        text = text.replacingOccurrences(of: #"[*#`>_|]"#, with: "", options: .regularExpression)
-        return (emotion, text.trimmingCharacters(in: .whitespacesAndNewlines))
+    /// 去掉朗读时不该念的东西
+    static func clean(_ s: String) -> String {
+        var t = s.replacingOccurrences(of: #"\[[A-Za-z]+\]"#, with: "", options: .regularExpression)
+        t = t.replacingOccurrences(of: #"[*#`>_|]"#, with: "", options: .regularExpression)
+        return t.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

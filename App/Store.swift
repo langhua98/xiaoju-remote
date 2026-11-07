@@ -12,6 +12,9 @@ final class Store: ObservableObject {
     @Published var llmBase: String { didSet { d.set(llmBase, forKey: "llmBase") } }
     @Published var llmModel: String { didSet { d.set(llmModel, forKey: "llmModel") } }
     @Published var llmKey: String { didSet { Keychain.set("llmKey", llmKey) } }
+    // 机器人的声音：Kokoro 语音服务地址（空着就用 iOS 自带语音）和音色
+    @Published var ttsBase: String { didSet { d.set(ttsBase, forKey: "ttsBase") } }
+    @Published var ttsVoice: String { didSet { d.set(ttsVoice, forKey: "ttsVoice") } }
 
     private let d = UserDefaults.standard
 
@@ -23,6 +26,8 @@ final class Store: ObservableObject {
         llmBase = d.string(forKey: "llmBase") ?? ""
         llmModel = d.string(forKey: "llmModel") ?? ""
         llmKey = Keychain.get("llmKey") ?? ""
+        ttsBase = d.string(forKey: "ttsBase") ?? Voice.defaultBase
+        ttsVoice = d.string(forKey: "ttsVoice")?.nonEmpty ?? Voice.defaultVoice
     }
 
     // 处理过的指令 id（避免重复执行）
