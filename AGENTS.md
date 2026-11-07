@@ -2,6 +2,8 @@
 
 本仓库是「小橘遥控」的 **iPhone 被控端**，从 `langhua98/meta-work` 的 `src/xiaoju-remote-ios/` 拆出来，单独维护。仓库主人是 William，用中文交流。
 
+> Yunlai 机器人（机器人模式：Live2D 脸、对话、语音、云台）的总览见 [YUNLAI_ROBOT.md](YUNLAI_ROBOT.md)。
+
 ## 这个 App 是干什么的
 
 一台 iPhone（B，被控端）装上这个 App，打开「待命」。另一台设备（A，控制端）通过小橘云盘给 B 发指令，B 用自己的硬件执行，再把结果传回去。两台设备不直连，中间只经过小橘云盘服务端。
