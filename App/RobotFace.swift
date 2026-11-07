@@ -46,6 +46,8 @@ final class FaceBridge: ObservableObject {
             send(["type": "robot_state", "state": "listening", "emotion": "neutral"])
         case "ring":
             send(["type": "robot_state", "state": "speaking", "emotion": "surprised"])
+        case "gimbal":
+            send(["type": "robot_state", "state": "observing", "emotion": "neutral"])
         default:
             send(["type": "robot_state", "state": "thinking", "emotion": "neutral"])
         }

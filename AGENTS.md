@@ -60,6 +60,7 @@
 | `vibrate` | — | 震动 |
 | `ring` | `seconds` | 响铃（用来找手机） |
 | `shell` | — | iOS 不支持，返回一段说明 |
+| `gimbal` | `action`、`yaw`、`pitch`、`ms` | 大疆 OM 云台（见下面「云台」） |
 
 `pair` 和 B 的配对口令不一样时，回执是 `{"id", "ok": false, "text": "配对口令不对"}`。
 
@@ -70,6 +71,33 @@
 ```
 `files` 的每一项有两种写法：即时信箱里是 `{"name","data"}`，文件放在回执里（5 MB 以内）；文件信箱里，或者文件超过 5 MB 时，是云盘路径字符串。回执从哪条路来的指令，就从哪条路回去。
 
+## 云台（大疆 OM，`gimbal` 指令）
+
+iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `langhua98/Linggo` 仓库的 `ble.html`（「OM BLE 控制台 · DUML」，
+在 OM6 上逆向、实测过），`App/Duml.swift` 是逐字节翻译，`Tests/main.swift` 用那个网页的 JS 算出来的帧核对。
+
+- 蓝牙低功耗：服务 `FFF0`，往 `FFF5` 写，`FFF4` 收。按名字（OM / Osmo / DJI 开头）找，连过的记住下次直接连。
+- 转动只用速度指令 `04/0c`（OM6 不理绝对角度 `04/14`）：每 0.1 秒发一帧，停发就停；1 单位约 0.11 °/s。
+- 姿态 `04/05` 大约每秒一帧（四元数）；电池 `05/06`；状态位 `04/27`（第 5 字节最低位 = 睡眠）；版本 `00/01`（OM6 的硬件号 GB66）。
+- 「转到某个角度」是闭环：边发速度边看姿态，两帧之间按速度标度推算，误差大约 ±2～5°，15 秒超时，转到一半不动就停（到头了或被挡住）。
+  速度正负和角度变化方向反了会自己改过来，记在手机上。
+- 连上后第一帧姿态记成归位点；`look`、`center` 都相对归位点。
+
+指令：`{"do":"gimbal","action":"…"}`，回执里多一个 `gimbal`（connected、battery、yaw、pitch、elevation…）。
+
+| action | 参数 | 说明 |
+|--------|------|------|
+| `status` | — | 状态（默认） |
+| `connect` / `disconnect` | — | 连 / 断云台（最多等 10 秒） |
+| `turn` | `yaw`、`pitch`（度） | 从现在的位置再转多少，正 = 右 / 上（方向以实测为准） |
+| `look` | `yaw`、`pitch`（度） | 转到相对归位点的方向 |
+| `move` | `yaw`、`pitch`（度/秒）、`ms` | 按速度转一会儿（最长 5 秒） |
+| `stop` | — | 马上停 |
+| `center` | — | 回到归位点 |
+| `home` | — | 把现在的朝向记成归位点 |
+
+用之前先在 DJI Mimo 里断开云台（同一时间只能连一台手机）。安卓被控端（S4，Android 4.2.2）系统里没有蓝牙低功耗接口，接不了云台。
+
 ## 代码地图
 
 - `App/XiaojuRemoteApp.swift`：入口。
@@ -78,6 +106,9 @@
 - `App/Cloud.swift`：云盘客户端，包括文件接口和即时信箱（`relayWait` / `relaySend` / `relayMissing`）。
 - `App/RemoteEngine.swift`：待命循环（先走即时信箱，没有就退回文件信箱）、`execute` 执行指令并原路回执、`RemoteBox` 信箱名。
 - `App/Commands.swift`：硬件指令，用到 AVFoundation 和 CoreLocation。
+- `App/Duml.swift`：大疆 DUML 协议（帧、CRC、拆帧、速度指令、姿态解算）。只用 Foundation。
+- `App/Gimbal.swift`：用 iOS 蓝牙连大疆 OM 云台，速度驱动、按姿态闭环转到指定角度、`gimbal` 指令。
+- `Tests/main.swift`：DUML 协议自测，编译前在 Mac 上跑（`swiftc App/Duml.swift Tests/main.swift`）。
 - `project.yml`：XcodeGen 工程定义，最低 iOS 15.0。
 - `.github/workflows/build.yml`：在 GitHub 的 Mac 上编译出没签名的 ipa，发到 Release「latest」。
 - `scripts/遥控.py`：电脑上的控制端。

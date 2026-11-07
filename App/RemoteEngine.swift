@@ -9,11 +9,23 @@ final class RemoteEngine: ObservableObject {
     let face = FaceBridge()
     /// 和机器人对话（见 Talk.swift）
     private(set) lazy var talk = Talk(store: store, face: face, log: { [weak self] in self?.push($0) })
+    /// 大疆 OM 云台：机器人的身体（见 Gimbal.swift）
+    let gimbal = Gimbal()
 
     private let store: Store
     private var task: Task<Void, Never>?
 
-    init(store: Store) { self.store = store }
+    init(store: Store) {
+        self.store = store
+        gimbal.onLog = { [weak self] s in Task { @MainActor in self?.push(s) } }
+        // 脸跟着云台的朝向看过去（Robot/README.md 的 gimbal 消息：yaw 负 = 屏幕左，pitch 正 = 抬头）
+        gimbal.onPose = { [weak face] yaw, pitch, connected in
+            Task { @MainActor in
+                face?.send(["type": "gimbal", "yaw": (yaw * 10).rounded() / 10, "pitch": (pitch * 10).rounded() / 10, "connected": connected])
+            }
+        }
+        if store.gimbalAuto { gimbal.connect() }
+    }
 
     func start() {
         guard !running else { return }
@@ -110,7 +122,10 @@ final class RemoteEngine: ObservableObject {
         let action = cmd["do"] as? String ?? ""
         push("执行：\(action)")
         face.commandStarted(action)
-        let result = await Commands.run(cmd)
+        // 云台指令要用这台 App 里连着的云台，不走 Commands
+        let result: CmdResult
+        if action == "gimbal" { result = CmdResult(text: await gimbal.command(cmd)) }
+        else { result = await Commands.run(cmd) }
         face.commandFinished(ok: !result.text.hasPrefix("执行出错"))
 
         var files: [Any] = []
@@ -126,8 +141,10 @@ final class RemoteEngine: ObservableObject {
         }
 
         let f = DateFormatter(); f.dateFormat = "MM-dd HH:mm:ss"
-        await reply(["id": id, "do": action, "ok": true,
-                     "text": result.text, "files": files, "at": f.string(from: Date())])
+        var r: [String: Any] = ["id": id, "do": action, "ok": true,
+                                "text": result.text, "files": files, "at": f.string(from: Date())]
+        if action == "gimbal" { r["gimbal"] = gimbal.statusJSON() }
+        await reply(r)
         push("完成：\(action) — \(result.text.split(separator: "\n").first.map(String.init) ?? "")")
     }
 

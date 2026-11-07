@@ -54,6 +54,8 @@ struct ContentView: View {
                     Text("支持 OpenAI 兼容接口（DeepSeek、智谱、通义、Kimi、OpenAI 等）。密钥只存在这台手机的钥匙串里。")
                 }
 
+                GimbalSection(gimbal: engine.gimbal, auto: $store.gimbalAuto)
+
                 Section {
                     Button("打开机器人的脸") { showFace = true }
                 } header: {
@@ -84,9 +86,56 @@ struct ContentView: View {
     }
 
     private func requestPermissions() {
+        if store.gimbalAuto { engine.gimbal.connect() }
         AVCaptureDevice.requestAccess(for: .video) { _ in }
         AVAudioSession.sharedInstance().requestRecordPermission { _ in }
         SFSpeechRecognizer.requestAuthorization { _ in }
         locMgr.requestWhenInUseAuthorization()
+    }
+}
+
+/// 设置页的「云台」一栏：连接、状态、试着转一转
+private struct GimbalSection: View {
+    @ObservedObject var gimbal: Gimbal
+    @Binding var auto: Bool
+
+    var body: some View {
+        Section {
+            HStack {
+                Text(gimbal.name.isEmpty ? "大疆 OM 云台" : gimbal.name)
+                Spacer()
+                Text(gimbal.busy ? "正在转" : gimbal.phase.rawValue)
+                    .foregroundStyle(gimbal.connected ? Color.green : Color.secondary)
+            }
+            if gimbal.connected {
+                Text(gimbal.status()).font(.footnote).foregroundStyle(.secondary)
+                HStack(spacing: 18) {
+                    Spacer()
+                    pad("arrow.left") { gimbal.move(yawSpeed: -25, pitchSpeed: 0, seconds: 0.6) }
+                    pad("arrow.up") { gimbal.move(yawSpeed: 0, pitchSpeed: 20, seconds: 0.6) }
+                    pad("arrow.down") { gimbal.move(yawSpeed: 0, pitchSpeed: -20, seconds: 0.6) }
+                    pad("arrow.right") { gimbal.move(yawSpeed: 25, pitchSpeed: 0, seconds: 0.6) }
+                    pad("scope") { Task { _ = await gimbal.command(["action": "center"]) } }
+                    Spacer()
+                }
+            } else if !gimbal.note.isEmpty {
+                Text(gimbal.note).font(.footnote).foregroundStyle(.secondary)
+            }
+            Button(gimbal.connected || gimbal.phase == .scanning || gimbal.phase == .connecting ? "断开云台" : "连接云台") {
+                if gimbal.phase == .off || gimbal.phase == .noBluetooth || gimbal.phase == .denied { gimbal.connect() }
+                else { gimbal.disconnect() }
+            }
+            Toggle("打开 App 时自动连", isOn: $auto)
+        } header: {
+            Text("云台（大疆 OM）")
+        } footer: {
+            Text("把这台 iPhone 夹在大疆 OM 云台上，它就是机器人的身体：别的设备可以远程让它转头（gimbal 指令），机器人的脸也跟着云台的朝向看。用之前先在 DJI Mimo 里断开云台。箭头试着转一下，靶心回到归位点（连上时的朝向）。")
+        }
+    }
+
+    private func pad(_ icon: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: icon).font(.title3) }
+            .buttonStyle(.borderless)
+            .disabled(gimbal.busy)
     }
 }

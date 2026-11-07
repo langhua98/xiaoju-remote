@@ -67,4 +67,5 @@ python3 -m http.server 8000 -d ..   # 然后打开 http://电脑IP:8000/live2d/
 ## 还没确认的事
 
 - iPhone 7 Plus（iOS 15）上的流畅度还没实测，默认限 30 FPS。
-- 云台控制端还没接，现在只是脸跟着 `gimbal` 消息转。
+- 云台已经接上（`App/Gimbal.swift`，大疆 OM6）：App 连着云台时每秒把朝向发给脸，远程用 `gimbal` 指令转。
+  真机上还没一起试过：脸的左右方向如果和云台转的方向反了，改 `RemoteEngine` 里发 `gimbal` 消息的正负号。

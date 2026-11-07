@@ -12,6 +12,8 @@ final class Store: ObservableObject {
     @Published var llmBase: String { didSet { d.set(llmBase, forKey: "llmBase") } }
     @Published var llmModel: String { didSet { d.set(llmModel, forKey: "llmModel") } }
     @Published var llmKey: String { didSet { Keychain.set("llmKey", llmKey) } }
+    /// 打开 App 时自动连大疆云台
+    @Published var gimbalAuto: Bool { didSet { d.set(gimbalAuto, forKey: "gimbalAuto") } }
 
     private let d = UserDefaults.standard
 
@@ -23,6 +25,7 @@ final class Store: ObservableObject {
         llmBase = d.string(forKey: "llmBase") ?? ""
         llmModel = d.string(forKey: "llmModel") ?? ""
         llmKey = Keychain.get("llmKey") ?? ""
+        gimbalAuto = d.bool(forKey: "gimbalAuto")
     }
 
     // 处理过的指令 id（避免重复执行）
