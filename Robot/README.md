@@ -8,7 +8,18 @@
 
 我们自己只写了一层接入代码 `live2d/src/main.js`：把说明书里的 `robot_state` 消息翻译成模型参数，再连上 WebSocket。
 
-## 第一次使用
+## 在「小橘遥控」App 里使用（机器人模式）
+
+App 设置页有「机器人模式 → 打开机器人的脸」。打开后整个屏幕是 Hiyori 的脸，待命照常进行，连点三下退出。
+
+- GitHub Actions 编译前先运行 `fetch-assets.sh`，把模型和 Live2D 运行库下载下来，再把 `Robot/live2d` 整个打进 App。
+- App 用 `yunlai://face/index.html` 打开这个网页（`App/RobotFace.swift`），通过 `window.YunlaiFace.apply(...)` 发消息。
+- 待命收到指令时：拍照 → 观察，并提示「摄像头工作中」；录音 → 倾听，并提示「麦克风工作中」；响铃 → 说话；其他 → 思考。完成后开心一下，口令不对就疑惑。
+- 屏幕底部一直有一行淡淡的「● 待命中 · 设备名」，被远程使用时看得出来。
+
+## 在电脑上调试网页
+
+
 
 ```bash
 cd Robot/live2d

@@ -83,6 +83,7 @@
 - `scripts/遥控.py`：电脑上的控制端。
 - `scripts/test/`：本地链路测试，`mock_cloud.py` 是假云盘，`test_remote.py` 是测试本身。
 - `Robot/live2d/`：Yunlai Robot 的 Live2D 面部（AIRI 默认的 Hiyori 角色）。显示交给开源库 pixi-live2d-display，`src/main.js` 只是接入层。模型和 Live2D 运行库用 `fetch-assets.sh` 下载，不进仓库。说明见 `Robot/README.md`。
+- `App/RobotFace.swift`：机器人模式。全屏 WKWebView 通过 `yunlai://face/` 读 App 里的 `live2d` 文件夹（project.yml 把 `Robot/live2d` 打进 App，workflow 编译前先跑 `fetch-assets.sh`）。`RemoteEngine` 执行指令时通过 `FaceBridge` 让脸变表情。
 - `Robot/`：Yunlai Robot 全屏面部动画（网页）。`avatar/` 是 3D 角色版，`face/` 是 2D 眼睛版，`face_server.py` 是本地调试服务器。说明见 `Robot/README.md`。改了 `Robot/avatar/src/` 要重新打包 `avatar.js`，并跑 `node Robot/test/test_face.js`。
 
 ## 怎么编译、怎么测

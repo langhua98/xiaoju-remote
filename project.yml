@@ -16,7 +16,12 @@ targets:
   XiaojuRemote:
     type: application
     platform: iOS
-    sources: [App]
+    sources:
+      - App
+      # 机器人模式的脸（Live2D 网页）。模型和运行库由 Robot/live2d/fetch-assets.sh 在编译前下载
+      - path: Robot/live2d
+        type: folder
+        buildPhase: resources
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.langhua98.xiaoju.remote

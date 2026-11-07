@@ -181,6 +181,7 @@ Live2DModel.from(CFG.model, { autoInteract: false }).then((m) => {
   model.internalModel.on('beforeModelUpdate', beforeModelUpdate);
   layout();
   document.getElementById('loading').style.display = 'none';
+  send({ type: 'face_ready', kind: 'live2d' });
   connect();
   setTimeout(demo, 2000);
 }).catch((e) => {

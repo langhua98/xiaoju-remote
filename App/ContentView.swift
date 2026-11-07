@@ -8,6 +8,7 @@ struct ContentView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var engine: RemoteEngine
     @State private var locMgr = CLLocationManager()
+    @State private var showFace = false
 
     var body: some View {
         NavigationView {
@@ -40,6 +41,14 @@ struct ContentView: View {
                         .font(.body.weight(.semibold))
                 }
 
+                Section {
+                    Button("打开机器人的脸") { showFace = true }
+                } header: {
+                    Text("机器人模式")
+                } footer: {
+                    Text("整个屏幕变成 Live2D 角色的脸，待命照常进行。收到指令时表情会跟着变；拍照、录音时屏幕上方会提示。连点三下退出。")
+                }
+
                 Section("记录") {
                     if engine.log.isEmpty {
                         Text("还没有动作").foregroundStyle(.secondary).font(.footnote)
@@ -54,6 +63,11 @@ struct ContentView: View {
         }
         .navigationViewStyle(.stack)
         .tint(brandOrange)
+        .fullScreenCover(isPresented: $showFace) {
+            RobotModeView { showFace = false }
+                .environmentObject(store)
+                .environmentObject(engine)
+        }
     }
 
     private func requestPermissions() {
