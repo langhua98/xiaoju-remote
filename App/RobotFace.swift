@@ -67,12 +67,13 @@ struct RobotModeView: View {
     @EnvironmentObject var engine: RemoteEngine
     var onExit: () -> Void
     @State private var taps: [Date] = []
+    @State private var tapGen = 0
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.black.ignoresSafeArea()
             FaceWebView(face: engine.face, onMessage: handle).ignoresSafeArea()
-            Text(engine.running ? "● 待命中 · \(store.device) · 连点三下退出" : "○ 未待命 · 连点三下退出")
+            StatusLine(talk: engine.talk, prefix: engine.running ? "● 待命中 · \(store.device)" : "○ 未待命")
                 .font(.caption2)
                 .foregroundColor(.white.opacity(0.35))
                 .padding(.bottom, 6)
@@ -80,14 +81,50 @@ struct RobotModeView: View {
         }
         .statusBar(hidden: true)
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
-        .onDisappear { if !engine.running { UIApplication.shared.isIdleTimerDisabled = false } }
+        .onDisappear {
+            engine.talk.cancel()
+            if !engine.running { UIApplication.shared.isIdleTimerDisabled = false }
+        }
     }
 
+    /// 点一下：说话 / 打断；连点三下：退出。等 0.45 秒看还有没有下一下，避免两种操作打架。
     private func handle(_ msg: [String: Any]) {
         guard (msg["type"] as? String) == "touch" else { return }
         let now = Date()
         taps = taps.filter { now.timeIntervalSince($0) < 1.2 } + [now]
-        if taps.count >= 3 { taps = []; onExit() }
+        if taps.count >= 3 {
+            taps = []
+            tapGen += 1
+            engine.talk.cancel()
+            onExit()
+            return
+        }
+        tapGen += 1
+        let gen = tapGen
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            guard gen == tapGen else { return }
+            if taps.count == 1 { engine.talk.tap() }
+            taps = []
+        }
+    }
+}
+
+/// 底部那行淡淡的状态：待命情况 + 对话进行到哪一步
+private struct StatusLine: View {
+    @ObservedObject var talk: Talk
+    let prefix: String
+
+    var body: some View {
+        Text("\(prefix) · \(hint) · 连点三下退出")
+    }
+
+    private var hint: String {
+        switch talk.phase {
+        case .idle: return "点一下说话"
+        case .listening: return "正在听"
+        case .thinking: return "在想"
+        case .speaking: return "点一下打断"
+        }
     }
 }
 

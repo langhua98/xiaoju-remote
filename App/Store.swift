@@ -8,6 +8,10 @@ final class Store: ObservableObject {
     @Published var device: String { didSet { d.set(device, forKey: "device") } }
     @Published var pair: String { didSet { Keychain.set("pair", pair) } }
     @Published var token: String { didSet { Keychain.set("token", token) } }
+    // 机器人对话用的大模型（OpenAI 兼容接口）。密钥只存钥匙串
+    @Published var llmBase: String { didSet { d.set(llmBase, forKey: "llmBase") } }
+    @Published var llmModel: String { didSet { d.set(llmModel, forKey: "llmModel") } }
+    @Published var llmKey: String { didSet { Keychain.set("llmKey", llmKey) } }
 
     private let d = UserDefaults.standard
 
@@ -16,6 +20,9 @@ final class Store: ObservableObject {
         device = d.string(forKey: "device")?.nonEmpty ?? UIDeviceName()
         pair = Keychain.get("pair") ?? ""
         token = Keychain.get("token") ?? ""
+        llmBase = d.string(forKey: "llmBase") ?? ""
+        llmModel = d.string(forKey: "llmModel") ?? ""
+        llmKey = Keychain.get("llmKey") ?? ""
     }
 
     // 处理过的指令 id（避免重复执行）
