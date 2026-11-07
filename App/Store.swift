@@ -17,13 +17,21 @@ final class Store: ObservableObject {
 
     private let d = UserDefaults.standard
 
+    static let defaultLLMBase = "https://api.deepseek.com/v1"
+    /// 可选的两个模型（DeepSeek）
+    static let llmModels: [(id: String, name: String)] = [
+        ("deepseek-chat", "对话（快）"),
+        ("deepseek-reasoner", "深度思考（慢）"),
+    ]
+
     init() {
         base = d.string(forKey: "base")?.nonEmpty ?? "https://langhua1998-xiaoju-cloud.hf.space"
         device = d.string(forKey: "device")?.nonEmpty ?? UIDeviceName()
         pair = Keychain.get("pair") ?? ""
         token = Keychain.get("token") ?? ""
-        llmBase = d.string(forKey: "llmBase") ?? ""
-        llmModel = d.string(forKey: "llmModel") ?? ""
+        // 默认用 DeepSeek；模型只在 Store.llmModels 两个里选
+        llmBase = d.string(forKey: "llmBase")?.nonEmpty ?? Store.defaultLLMBase
+        llmModel = d.string(forKey: "llmModel").flatMap { m in Store.llmModels.contains { $0.id == m } ? m : nil } ?? Store.llmModels[0].id
         llmKey = Keychain.get("llmKey") ?? ""
         gimbalAuto = d.bool(forKey: "gimbalAuto")
     }

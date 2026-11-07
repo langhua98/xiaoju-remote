@@ -43,15 +43,17 @@ struct ContentView: View {
                 }
 
                 Section {
-                    TextField("接口地址，比如 https://api.deepseek.com/v1", text: $store.llmBase)
+                    TextField("接口地址（默认 DeepSeek）", text: $store.llmBase)
                         .textInputAutocapitalization(.never).disableAutocorrection(true).keyboardType(.URL)
-                    TextField("模型名，比如 deepseek-chat", text: $store.llmModel)
-                        .textInputAutocapitalization(.never).disableAutocorrection(true)
+                    Picker("模型", selection: $store.llmModel) {
+                        ForEach(Store.llmModels, id: \.id) { m in Text(m.name).tag(m.id) }
+                    }
+                    .pickerStyle(.segmented)
                     SecureField("API 密钥", text: $store.llmKey)
                 } header: {
                     Text("对话（大模型）")
                 } footer: {
-                    Text("支持 OpenAI 兼容接口（DeepSeek、智谱、通义、Kimi、OpenAI 等）。密钥只存在这台手机的钥匙串里。")
+                    Text("默认用 DeepSeek（\(Store.defaultLLMBase)），填 DeepSeek 的 API 密钥就能用。模型二选一：deepseek-chat 回答快；deepseek-reasoner 先想再答，慢一些。密钥只存在这台手机的钥匙串里。")
                 }
 
                 GimbalSection(gimbal: engine.gimbal, auto: $store.gimbalAuto)
