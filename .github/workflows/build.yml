@@ -12,6 +12,7 @@ on:
     paths:
       - "App/**"
       - "Robot/live2d/**"
+      - "Tests/**"
       - "project.yml"
       - ".github/workflows/build.yml"
 
@@ -33,6 +34,12 @@ jobs:
           xcode=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
           sudo xcode-select -s "$xcode"
           xcodebuild -version
+
+      - name: DUML protocol self-test
+        # 云台协议（App/Duml.swift）拿 Linggo 仓库 ble.html 在 OM6 上实测过的帧逐字节核对，对不上就不出包
+        run: |
+          swiftc App/Duml.swift Tests/main.swift -o "$RUNNER_TEMP/dumlcheck"
+          "$RUNNER_TEMP/dumlcheck"
 
       - name: Install XcodeGen
         run: brew install xcodegen

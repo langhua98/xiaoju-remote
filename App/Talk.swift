@@ -471,12 +471,17 @@ enum Chat {
         var b = base.trimmingCharacters(in: .whitespacesAndNewlines)
         while b.hasSuffix("/") { b.removeLast() }
         guard let url = URL(string: b + "/chat/completions") else { throw Failure(message: "接口地址不对") }
-        var req = URLRequest(url: url, timeoutInterval: 60)
+        let reasoner = model.contains("reasoner")
+        var req = URLRequest(url: url, timeoutInterval: reasoner ? 120 : 60)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
-        let body: [String: Any] = ["model": model, "messages": messages, "temperature": 0.8, "max_tokens": 400, "stream": true]
+        // deepseek-reasoner 不认 temperature，而且 max_tokens 把思考过程也算进去，给少了会只想不答；
+        // 它先流出 reasoning_content（思考，不读），再流出 content（回答）
+        let body: [String: Any] = reasoner
+            ? ["model": model, "messages": messages, "max_tokens": 4000, "stream": true]
+            : ["model": model, "messages": messages, "temperature": 0.8, "max_tokens": 400, "stream": true]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
