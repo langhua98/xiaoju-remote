@@ -14,6 +14,24 @@ final class Store: ObservableObject {
     @Published var llmKey: String { didSet { Keychain.set("llmKey", llmKey) } }
     /// 打开 App 时自动连大疆云台
     @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
+    /// 机器人穿哪套衣服（Robot/live2d/outfits/<id>/clothes.png；default 是原版）
+    @Published var outfit: String { didSet { save("outfit", outfit) } }
+
+    /// 衣服列表：id、名字、对她说话时认的叫法。新加衣服时这里和 Robot/live2d/outfits/index.json 一起加
+    static let outfits: [(id: String, name: String, words: [String])] = [
+        ("default", "原版", ["原版", "原来", "校服"]),
+        ("heibai", "黑白经典", ["黑白经典", "黑白", "黑色"]),
+        ("yeye", "暗夜洋装", ["暗夜洋装", "暗夜", "洋装", "哥特"]),
+    ]
+
+    /// 「换上黑白经典」「穿黑色的」「换回原来的」→ 衣服 id；不是换装的话返回 nil
+    static func outfitCommand(_ text: String) -> String? {
+        guard ["换", "穿上", "穿回"].contains(where: { text.contains($0) }) else { return nil }
+        if text.contains("换回") || text.contains("穿回") { return "default" }
+        return outfits.first { o in o.words.contains { text.contains($0) } }?.id
+    }
+
+    static func outfitName(_ id: String) -> String { outfits.first { $0.id == id }?.name ?? "原版" }
 
     private let d = UserDefaults.standard
 
@@ -46,6 +64,7 @@ final class Store: ObservableObject {
         llmModel = load("llmModel").flatMap { m in Store.llmModels.contains { $0.id == m } ? m : nil } ?? Store.llmModels[0].id
         llmKey = Keychain.get("llmKey") ?? ""
         gimbalAuto = d.object(forKey: "gimbalAuto") is Bool ? d.bool(forKey: "gimbalAuto") : (load("gimbalAuto") == "1")
+        outfit = load("outfit").flatMap { id in Store.outfits.contains { $0.id == id } ? id : nil } ?? "default"
     }
 
     // 处理过的指令 id（避免重复执行）

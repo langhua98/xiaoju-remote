@@ -85,6 +85,7 @@ struct RobotModeView: View {
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             engine.talk.warmUp()
+            engine.face.send(["type": "outfit", "id": store.outfit])
         }
         .onDisappear {
             engine.talk.cancel()
