@@ -169,6 +169,14 @@ final class Talk: NSObject, ObservableObject {
         }
         log("听到：\(text)")
         phase = .thinking
+        // 换装直接办，不问大模型
+        if let id = Store.outfitCommand(text) {
+            store.outfit = id
+            face.send(["type": "outfit", "id": id])
+            log("换装：\(Store.outfitName(id))")
+            say(id == "default" ? "好，换回原来的衣服啦。" : "好呀，换上\(Store.outfitName(id))啦，好看吗？", emotion: "happy")
+            return
+        }
         face.send(["type": "robot_state", "state": "thinking", "emotion": "neutral"])
         llmTask = Task { await self.ask(text) }
     }

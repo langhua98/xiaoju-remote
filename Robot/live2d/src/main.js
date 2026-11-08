@@ -70,12 +70,49 @@ function apply(msg) {
     // 真实语音：库自己分析音量驱动嘴型
     S.state = 'speaking'; S.speaking = true;
     model.speak(String(msg.url), { crossOrigin: 'anonymous', onFinish: endSpeak, onError: endSpeak });
+  } else if (type === 'outfit') {
+    // 换装：{"type":"outfit","id":"heibai"}，id 见 outfits/index.json，"default" 是原版
+    setOutfit(String(msg.id || 'default'));
   } else if (type === 'sensing') {
     if ('camera' in msg) document.getElementById('pill-cam').classList.toggle('on', !!msg.camera);
     if ('mic' in msg) document.getElementById('pill-mic').classList.toggle('on', !!msg.mic);
   } else return false;
   return true;
 }
+// ───────── 换装：只换贴图上衣服那几块 ─────────
+// outfits/<id>/clothes.png 是 2048×2048 的衣服层（衣服范围内不透明，别处透明，只有 AI 画的衣服，不含 Live2D 原图）。
+// 用 source-atop 盖到原贴图上：颜色换成新衣服，透明度沿用原贴图，所以轮廓、动作、物理都不变。
+let wantOutfit = 'default';
+let originalTexture = null;
+const outfitTextures = {};
+function loadImage(src) {
+  return new Promise((ok, fail) => { const img = new Image(); img.onload = () => ok(img); img.onerror = fail; img.src = src; });
+}
+async function setOutfit(id) {
+  wantOutfit = id;
+  if (!model) return;   // 模型加载完会再换
+  if (!originalTexture) originalTexture = model.textures[0];
+  try {
+    if (id !== 'default' && !outfitTextures[id]) {
+      const clothes = await loadImage(`outfits/${encodeURIComponent(id)}/clothes.png`);
+      const src = originalTexture.baseTexture.resource.source;
+      const c = document.createElement('canvas');
+      c.width = src.width; c.height = src.height;
+      const g = c.getContext('2d');
+      g.drawImage(src, 0, 0);
+      g.globalCompositeOperation = 'source-atop';
+      g.drawImage(clothes, 0, 0, c.width, c.height);
+      outfitTextures[id] = PIXI.Texture.from(c);
+    }
+    if (wantOutfit !== id) return;   // 加载期间又换了别的
+    model.textures[0] = id === 'default' ? originalTexture : outfitTextures[id];
+    send({ type: 'outfit_done', id, ok: true });
+  } catch (e) {
+    console.error('换装失败', id, e);
+    send({ type: 'outfit_done', id, ok: false });
+  }
+}
+
 function endSpeak() { S.speaking = false; if (S.state === 'speaking') S.state = 'idle'; send({ type: 'speak_end' }); }
 function setEmotion(name, ms) {
   if (ms) { if (!S.emotionUntil) S.emotionBack = S.emotion; S.emotionUntil = now() + ms / 1000; } else S.emotionUntil = 0;
@@ -182,6 +219,7 @@ Live2DModel.from(CFG.model, { autoInteract: false }).then((m) => {
   model.internalModel.on('beforeModelUpdate', beforeModelUpdate);
   layout();
   document.getElementById('loading').style.display = 'none';
+  if (wantOutfit !== 'default') setOutfit(wantOutfit);
   send({ type: 'face_ready', kind: 'live2d' });
   connect();
   setTimeout(demo, 2000);

@@ -60,10 +60,15 @@ struct ContentView: View {
 
                 Section {
                     Button("打开机器人的脸") { showFace = true }
+                    Picker("衣服", selection: $store.outfit) {
+                        ForEach(Store.outfits.indices, id: \.self) { i in
+                            Text(Store.outfits[i].name).tag(Store.outfits[i].id)
+                        }
+                    }
                 } header: {
                     Text("机器人模式")
                 } footer: {
-                    Text("整个屏幕变成 Live2D 角色的脸，待命照常进行。点一下屏幕和她说话，她用大模型回答并读出来；收到遥控指令时表情会跟着变；拍照、录音、听你说话时屏幕上方会提示。连点三下退出。")
+                    Text("整个屏幕变成 Live2D 角色的脸，待命照常进行。点一下屏幕和她说话，她用大模型回答并读出来；收到遥控指令时表情会跟着变；拍照、录音、听你说话时屏幕上方会提示。也可以对她说「换上黑白经典」「换回原版」来换衣服。连点三下退出。")
                 }
 
                 Section("记录") {
