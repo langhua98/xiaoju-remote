@@ -73,6 +73,7 @@ object Camera {
                 var feed: Feed? = null
                 h.post {
                     try {
+                        val t0 = System.currentTimeMillis()
                         val id = findCamera(front)
                         val c = LegacyCamera.open(id)
                         cam = c
@@ -85,9 +86,8 @@ object Camera {
                         // 传感器帧率：够用的最低一档（跑得越快越费电）
                         p.supportedPreviewFpsRange?.let { LiveSettings.pickFpsRange(it, s.fps, s.watch) }
                             ?.let { p.setPreviewFpsRange(it[0], it[1]) }
-                        val modes = p.supportedFocusModes ?: emptyList()
-                        if ("continuous-video" in modes) p.focusMode = "continuous-video"
-                        else if ("continuous-picture" in modes) p.focusMode = "continuous-picture"
+                        // 对焦：守望时定住（对焦马达不来回找），录像、直播时连续对焦
+                        LiveSettings.pickFocus(p.supportedFocusModes ?: emptyList(), s.watch)?.let { p.focusMode = it }
                         try { c.parameters = p } catch (e: RuntimeException) {
                             // 有的手机不接受这个帧率范围：去掉再试
                             val q = c.parameters
@@ -109,6 +109,7 @@ object Camera {
                         c.setPreviewCallbackWithBuffer { data, _ ->
                             if (data == null) return@setPreviewCallbackWithBuffer
                             st.inCam = maxOf(0, st.inCam - 1)
+                            CamStats.callbacks++
                             val now = System.currentTimeMillis()
                             // 按节拍抽帧：平均下来正好是要的帧率（守望时每秒 4 帧）
                             if (running() && pacer.due(now, s.frameFps)) {
@@ -124,6 +125,7 @@ object Camera {
                         }
                         st.run()
                         c.startPreview()
+                        CamStats.opened(c.parameters, System.currentTimeMillis() - t0)
                     } catch (e: Throwable) { startErr = e } finally { ready.countDown() }
                 }
                 ready.await(8, TimeUnit.SECONDS)
@@ -146,6 +148,7 @@ object Camera {
                     runCatching { cam?.setPreviewCallbackWithBuffer(null) }; cleanup(cam, tex); closed.countDown()
                 }
                 closed.await(3, TimeUnit.SECONDS)
+                CamStats.closed()
             }
         } finally {
             ht.quit()
@@ -169,10 +172,14 @@ object Camera {
      */
     private fun switchFps(c: LegacyCamera, s: LiveSettings, feed: Feed?) {
         val p = c.parameters
-        val r = p.supportedPreviewFpsRange?.let { LiveSettings.pickFpsRange(it, s.fps, s.watch) } ?: return
+        var changed = false
+        val r = p.supportedPreviewFpsRange?.let { LiveSettings.pickFpsRange(it, s.fps, s.watch) }
         val cur = IntArray(2).also { p.getPreviewFpsRange(it) }
-        if (cur[0] == r[0] && cur[1] == r[1]) return
-        p.setPreviewFpsRange(r[0], r[1])
+        if (r != null && (cur[0] != r[0] || cur[1] != r[1])) { p.setPreviewFpsRange(r[0], r[1]); changed = true }
+        // 守望时对焦定住，录像、直播时连续对焦
+        val focus = LiveSettings.pickFocus(p.supportedFocusModes ?: emptyList(), s.watch)
+        if (focus != null && focus != p.focusMode) { p.focusMode = focus; changed = true }
+        if (!changed) return
         try {
             c.parameters = p
         } catch (e: RuntimeException) {
@@ -181,6 +188,7 @@ object Camera {
             c.startPreview()
             feed?.let { it.inCam = 0; it.run() }
         }
+        CamStats.update(c.parameters)
     }
 
     /** 在开着的相机上设亮度、变焦、手电；不支持的记到 s.unsupported。 */
@@ -267,6 +275,48 @@ object Camera {
         error?.let { throw it }
         return result ?: throw IllegalStateException("没拿到照片数据")
     }
+}
+
+/**
+ * 相机的耗电诊断（monitor_status 的 power 里给出来）：这台手机实际用的帧率档、尺寸、对焦，
+ * 开了几次相机、每次开要多久、一共开了多久、预览回调来了几次。
+ */
+@Suppress("DEPRECATION")
+object CamStats {
+    @Volatile var opens = 0; private set
+    @Volatile var lastOpenMs = 0L; private set
+    @Volatile var fpsRanges = ""; private set
+    @Volatile var fpsNow = ""; private set
+    @Volatile var size = ""; private set
+    @Volatile var focus = ""; private set
+    /** 预览回调次数（只在相机线程上加） */
+    @Volatile var callbacks = 0L
+    private var onSince = 0L
+    private var onTotal = 0L
+
+    @Synchronized fun opened(p: LegacyCamera.Parameters, ms: Long) {
+        opens++; lastOpenMs = ms; onSince = System.currentTimeMillis()
+        update(p)
+    }
+
+    @Synchronized fun closed() {
+        if (onSince > 0) { onTotal += System.currentTimeMillis() - onSince; onSince = 0L }
+    }
+
+    fun update(p: LegacyCamera.Parameters) {
+        runCatching {
+            fpsRanges = p.supportedPreviewFpsRange?.joinToString(" ") { "${fps(it[0])}-${fps(it[1])}" } ?: ""
+            val cur = IntArray(2).also { p.getPreviewFpsRange(it) }
+            fpsNow = "${fps(cur[0])}-${fps(cur[1])}"
+            size = "${p.previewSize.width}x${p.previewSize.height}"
+            focus = p.focusMode ?: ""
+        }
+    }
+
+    private fun fps(v: Int): String = if (v % 1000 == 0) "${v / 1000}" else String.format(java.util.Locale.US, "%.1f", v / 1000.0)
+
+    /** 相机一共开了多少毫秒 */
+    val onMs: Long @Synchronized get() = onTotal + (if (onSince > 0) System.currentTimeMillis() - onSince else 0L)
 }
 
 /** 手电筒：Android 6.0+ 用 CameraManager.setTorchMode，更老的用老相机接口的常亮闪光灯。 */

@@ -114,6 +114,19 @@ class LiveSettings(front: Boolean, width: Int, quality: Int, fps: Int, codec: St
             return pick(sizes)
         }
 
+        /**
+         * 选对焦方式。守望（watch）：只看有没有动静，不用清楚，定在无限远 / 固定焦，对焦马达不来回找（省电）；
+         * 都没有就不改（null）。平时：连续视频对焦，没有就连续拍照对焦，再没有不改。
+         */
+        fun pickFocus(modes: List<String>, watch: Boolean): String? = when {
+            watch && "infinity" in modes -> "infinity"
+            watch && "fixed" in modes -> "fixed"
+            watch -> null
+            "continuous-video" in modes -> "continuous-video"
+            "continuous-picture" in modes -> "continuous-picture"
+            else -> null
+        }
+
         /** -1…1 映射到相机的曝光补偿档位 [min, max] */
         fun exposureIndex(v: Float, min: Int, max: Int): Int =
             if (v >= 0) Math.round(v * max) else Math.round(-v * min)

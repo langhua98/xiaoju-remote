@@ -47,6 +47,18 @@ class MotionDetector(val cols: Int = 32, val rows: Int = 24) {
     /** 重新开始（换镜头、调亮度以后），前 2 秒不报。 */
     @Synchronized fun reset() { bg = null; warm = 0; hits = 0; score = 0f }
 
+    /**
+     * 相机关了一会儿又开（间歇守望）：背景、噪点都留着（场景没变，不用重新学），
+     * 只把「连续几次看到变化」清零（隔着一段空白的两次不能算连续）。
+     */
+    @Synchronized fun pause() { hits = 0 }
+
+    /** 背景学好了、能报动静了（间歇守望至少要等到这时候才歇） */
+    val ready: Boolean @Synchronized get() = bg != null && warm >= WARM
+
+    /** 正连着看到变化（还差一次就报）：这时候不能歇 */
+    val pending: Boolean @Synchronized get() = hits > 0
+
     /** 看一帧（y = NV21 数据，前 w*h 字节是亮度）。返回这一帧算不算「有动静」。 */
     @Synchronized fun analyze(y: ByteArray, w: Int, h: Int): Boolean {
         sample(y, w, h)
@@ -89,7 +101,7 @@ class MotionDetector(val cols: Int = 32, val rows: Int = 24) {
         val a = if (moving) 0.02f else 0.1f
         for (i in cur.indices) b[i] += (cur[i] - b[i]) * a
 
-        if (warm < 10) { hits = 0; return false }   // 刚开始曝光还在变
+        if (warm < WARM) { hits = 0; return false }   // 刚开始曝光还在变
         hits = if (moving) hits + 1 else 0
         return hits >= 2
     }
@@ -131,6 +143,9 @@ class MotionDetector(val cols: Int = 32, val rows: Int = 24) {
     }
 
     companion object {
+        /** 背景重新学的时候前几次不报（刚开始曝光还在变） */
+        const val WARM = 10
+
         /** 相机原始画面上的点 (x, y)（0…1）→ 顺时针转 rot 度以后的位置。 */
         fun upright(x: Float, y: Float, rot: Int): Pair<Float, Float> = when ((rot % 360 + 360) % 360) {
             90 -> (1 - y) to x

@@ -36,7 +36,8 @@ class FramePacer {
  * 缓冲区重复用，不每帧分配内存；最多 maxBytes。只在相机线程上用。
  */
 class PreRoll(private val maxBytes: Long = 8L shl 20) {
-    class Frame(var data: ByteArray, var w: Int, var h: Int, var ts: Long)
+    /** wall：拍下这一帧时的钟点（毫秒），开始录时才按它补印时间（守望时不印，省一点 CPU） */
+    class Frame(var data: ByteArray, var w: Int, var h: Int, var ts: Long, var wall: Long = 0L)
 
     private val frames = ArrayDeque<Frame>()
     private val spare = ArrayList<Frame>()
@@ -45,7 +46,7 @@ class PreRoll(private val maxBytes: Long = 8L shl 20) {
     val size get() = frames.size
 
     /** 留一份这一帧（拷贝）。比 windowMs 早的、超出内存上限的都扔掉。 */
-    fun add(nv21: ByteArray, w: Int, h: Int, ts: Long) {
+    fun add(nv21: ByteArray, w: Int, h: Int, ts: Long, wall: Long = System.currentTimeMillis()) {
         if (windowMs <= 0) { clear(); return }
         val n = w * h * 3 / 2
         if (n <= 0 || nv21.size < n) return
@@ -53,7 +54,7 @@ class PreRoll(private val maxBytes: Long = 8L shl 20) {
         while (frames.isNotEmpty() && (frames.size >= cap || frames.first().ts < ts - windowMs)) spare += frames.removeFirst()
         val f = spare.removeLastOrNull()?.also { if (it.data.size != n) it.data = ByteArray(n) } ?: Frame(ByteArray(n), w, h, ts)
         System.arraycopy(nv21, 0, f.data, 0, n)
-        f.w = w; f.h = h; f.ts = ts
+        f.w = w; f.h = h; f.ts = ts; f.wall = wall
         frames.addLast(f)
     }
 

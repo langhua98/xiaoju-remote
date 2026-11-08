@@ -26,9 +26,10 @@ class TimeStamp {
     private var alpha = IntArray(0)    // 字在这里的不透明度 0…255
     private var uv = IntArray(0)       // 要去掉颜色的 UV 下标
 
-    fun draw(nv21: ByteArray, w: Int, h: Int, rot: Int) {
+    /** at：印哪个钟点（默认现在；守望时留下的帧开始录时才补印，用它拍下时的钟点） */
+    fun draw(nv21: ByteArray, w: Int, h: Int, rot: Int, at: Long = System.currentTimeMillis()) {
         if (nv21.size < w * h * 3 / 2) return
-        val text = fmt.format(Date())
+        val text = fmt.format(Date(at))
         val key = "$w×$h/$rot"
         if (text != lastText || key != lastKey) {
             try { build(text, w, h, rot) } catch (e: Throwable) { idx = IntArray(0); uv = IntArray(0) }

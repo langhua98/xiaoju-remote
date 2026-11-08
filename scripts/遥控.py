@@ -80,7 +80,8 @@ def download(item_id):
 def main():
     ap = argparse.ArgumentParser(description="小橘遥控发送端")
     ap.add_argument("device", help="B 设备的名字，和 App 里填的一样")
-    ap.add_argument("action", choices=["info", "photo", "audio", "location", "torch", "vibrate", "ring", "shell", "gimbal"])
+    ap.add_argument("action", choices=["info", "photo", "audio", "location", "torch", "vibrate", "ring", "shell", "gimbal",
+                                       "monitor", "monitor_status"])
     ap.add_argument("--lens", choices=["back", "front"], default="back")
     ap.add_argument("--seconds", type=int, default=5)
     ap.add_argument("--on", action="store_true")
@@ -94,6 +95,7 @@ def main():
     ap.add_argument("--pitch", type=float, help="gimbal：上下（度，或 move 时的度每秒）")
     ap.add_argument("--save", default=".", help="回执里的文件下载到哪个目录")
     ap.add_argument("--timeout", type=int, default=90, help="等回执最多多少秒")
+    ap.add_argument("--set", default="", help='monitor：要改的字段（JSON），例如 \'{"duty": false}\'')
     a = ap.parse_args()
 
     if not TOKEN:
@@ -109,6 +111,8 @@ def main():
         cmd["on"] = not a.off  # 默认开，--off 关
     elif a.action == "vibrate":
         cmd["ms"] = a.ms
+    elif a.action == "monitor" and a.set:
+        cmd.update({k: v for k, v in json.loads(a.set).items() if k not in ("id", "pair", "do")})
     elif a.action == "shell":
         if not a.cmd:
             sys.exit("shell 要用 --cmd 给命令")
@@ -146,6 +150,8 @@ def main():
             continue
         print(f"—— 回执（{time.time() - sent:.1f} 秒）——")
         print(r.get("text", ""))
+        if isinstance(r.get("status"), dict):  # monitor / monitor_status：侦测状态和耗电诊断
+            print(json.dumps(r["status"], ensure_ascii=False, indent=2))
         for fp in r.get("files", []):
             if isinstance(fp, dict):  # 即时信箱：文件直接放在回执里
                 out = os.path.join(a.save, f"{cid}-{fp.get('name', 'file')}")

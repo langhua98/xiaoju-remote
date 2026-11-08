@@ -158,7 +158,8 @@ class RemoteService : Service() {
     private fun powerText(h: CameraHub?): String {
         val on = ArrayList<String>()
         if (h?.monitor?.on == true) on.add(when (h.stage()) {
-            "watch" -> "移动侦测（省电守望：相机每秒看 4 帧，不录像）"
+            "watch" -> if (h.monitor.dutyActive) "移动侦测（间歇守望：相机看 ${h.monitor.dutyOn} 秒、关 ${h.monitor.dutyOff} 秒，${if (h.resting) "现在歇着" else "现在在看"}）"
+                       else "移动侦测（省电守望：相机每秒看 4 帧，不录像）"
             else -> if (h.monitor.eco) "移动侦测（正在录像）" else "移动侦测（不省电：编码器一直开着，最费电）"
         })
         if (h?.liveActive() == true) on.add("实时画面")
@@ -170,6 +171,8 @@ class RemoteService : Service() {
         @Suppress("DEPRECATION")
         val screen = runCatching { (getSystemService(Context.POWER_SERVICE) as PowerManager).isScreenOn }.getOrDefault(false)
         if (screen) lines.add("屏幕：亮着（很费电，不用时关掉屏幕）")
+        val up = Power.upMs.coerceAtLeast(1)
+        lines.add("启动以来：拿着 CPU 锁 ${Power.heldMs * 100 / up}%，相机开着 ${CamStats.onMs * 100 / up}%（开过 ${CamStats.opens} 次）")
         lines.add(if (on.isEmpty()) "耗电：只在待命收指令" + (if (Power.canSleep) "（等指令时 CPU 可以睡）" else "")
                   else "耗电：开着 " + on.joinToString("、"))
         return lines.joinToString("\n")
