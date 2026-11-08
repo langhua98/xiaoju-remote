@@ -45,12 +45,22 @@ final class Talk: NSObject, ObservableObject {
     private var synthDone: CheckedContinuation<Void, Never>?
     private var startedSpeaking = false
 
+    /// 实时语音（Gemini Live）：填了 Gemini 密钥就优先用它，连不上退回下面的普通模式
+    let live: LiveTalk
+
     init(store: Store, face: FaceBridge, log: @escaping (String) -> Void) {
         self.store = store
         self.face = face
         self.log = log
+        self.live = LiveTalk(store: store, face: face, log: log)
         super.init()
         synth.delegate = self
+        live.onFail = { [weak self] _ in
+            guard let self = self else { return }
+            self.log("改用普通对话模式")
+            self.conversing = true
+            self.startListening()
+        }
     }
 
     /// 进机器人模式时叫醒语音服务（Space 上的 Kokoro 闲了会关掉，第一次加载要十几秒）
@@ -62,6 +72,9 @@ final class Talk: NSObject, ObservableObject {
     /// 点了一下屏幕：没事时开始听；正在听就结束；正在想或正在说就打断。
     /// 点了一下屏幕：没事时开始连续对话；正在听就当说完了；正在想或正在说就打断她，接着听你说。
     func tap() {
+        // 实时语音：点一下开始，再点一下结束（中间直接说话就行，能随时插话）
+        if live.phase != .off { live.stop(); return }
+        if phase == .idle && live.available { live.start(); return }
         switch phase {
         case .idle:
             conversing = true
@@ -82,6 +95,7 @@ final class Talk: NSObject, ObservableObject {
     }
 
     func cancel() {
+        live.stop()
         conversing = false
         llmTask?.cancel()
         llmTask = nil
