@@ -252,8 +252,7 @@ App 调 `window.YunlaiFace.apply({...})`；网页调试时也可以走 WebSocket
 | 大模型接口地址 | `https://api.deepseek.com/v1` | UserDefaults + 钥匙串备份 |
 | 模型 | `deepseek-chat`（可选 `deepseek-reasoner`） | UserDefaults + 钥匙串备份 |
 | API 密钥 | — | 钥匙串 |
-| 语音服务地址 | `https://yunlai-tts.langhua98.workers.dev`（空着就用 iOS 语音） | UserDefaults |
-| 备用 Space 的音色 | `zf_088`（或 `melo`、其他 `zf_…`） | UserDefaults |
+| 语音 | 固定：Cloudflare MeloTTS → 备用 Space Kokoro `zf_088` → iOS 自带语音 | 写死在 `App/Talk.swift` 的 `Voice`，设置页不让改 |
 | 打开 App 时自动连云台 | 关 | UserDefaults + 钥匙串备份 |
 
 ---

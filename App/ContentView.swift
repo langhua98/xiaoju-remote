@@ -59,17 +59,6 @@ struct ContentView: View {
                 GimbalSection(gimbal: engine.gimbal, auto: $store.gimbalAuto)
 
                 Section {
-                    TextField("语音服务地址（空着用 iOS 自带语音）", text: $store.ttsBase)
-                        .textInputAutocapitalization(.never).disableAutocorrection(true).keyboardType(.URL)
-                    TextField("备用 Space 的音色：zf_088（Kokoro）或 melo", text: $store.ttsVoice)
-                        .textInputAutocapitalization(.never).disableAutocorrection(true)
-                } header: {
-                    Text("机器人的声音")
-                } footer: {
-                    Text("默认用 Cloudflare 上的 MeloTTS 中文女声（温柔、不用等冷启动）。它连不上时改用小橘视频流式服务上的 Kokoro（音色在上面填：zf_088 等，或 melo），再不行用 iOS 自带语音。地址空着就一直用 iOS 自带语音。")
-                }
-
-                Section {
                     Button("打开机器人的脸") { showFace = true }
                 } header: {
                     Text("机器人模式")
