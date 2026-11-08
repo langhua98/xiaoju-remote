@@ -10,8 +10,8 @@
 
 ## 装
 
-1. 推送 `src/xiaoju-remote-android/` 的改动，`.github/workflows/xiaoju-remote-android.yml` 会在 GitHub 的 Ubuntu 机器上编译。
-2. 编好的 APK 发布到 Release「xiaoju-remote-android」，下载 `xiaoju-remote-latest.apk`。
+1. 代码在 `langhua98/xiaoju-remote` 仓库的 `android/`（2026-11 从 meta-work 的 `src/xiaoju-remote-android/` 搬过来）。在 Actions 里手动运行 `.github/workflows/android.yml`（「Build 小橘遥控 apk」），它会在 GitHub 的 Ubuntu 机器上编译。
+2. 编好的 APK 发布到本仓库的 Release「xiaoju-remote-android」，下载 `xiaoju-remote-latest.apk`。
 3. B 手机：设置里允许「安装未知来源」，装上。App 名字叫「法莉娅」（0.16 起，图标是她的头像）。
    签名：0.16 起用固定密钥（在小橘云盘私有文件夹 `/小橘推送/签名/android-signing.json`，GitHub 编译时用 `XIAOJU_TOKEN` 取来签）。
    0.12～0.15 是在 GitHub 上编的临时签名，每个包都不一样，所以从这些版本升到 0.16 要先卸载一次；以后就能直接覆盖安装。
@@ -25,18 +25,18 @@ B 手机，打开 App：
 - 点**授权硬件**，把相机 / 麦克风 / 定位 / 通知的权限都允许（想用哪个就给哪个）。
 - 点**开始待命**。通知栏出现「小橘遥控 · 待命中」就对了。建议插着电、屏幕可以息屏，但别在系统里把 App 强制「省电 / 休眠」。
 
-A 设备发指令，用 `scripts/遥控/遥控.py`：
+A 设备发指令，用 `scripts/遥控.py`：
 
 ```bash
 export XIAOJU_TOKEN=xa_你的令牌
 export XIAOJU_PAIR=你定的口令
-python3 scripts/遥控/遥控.py 测试机B info
-python3 scripts/遥控/遥控.py 测试机B photo --lens front   # 拍完照片下载到当前目录
-python3 scripts/遥控/遥控.py 测试机B audio --seconds 8
-python3 scripts/遥控/遥控.py 测试机B location
-python3 scripts/遥控/遥控.py 测试机B torch --on
-python3 scripts/遥控/遥控.py 测试机B ring --seconds 5      # 找手机：响铃
-python3 scripts/遥控/遥控.py 测试机B shell --cmd "ls /sdcard"
+python3 scripts/遥控.py 测试机B info
+python3 scripts/遥控.py 测试机B photo --lens front   # 拍完照片下载到当前目录
+python3 scripts/遥控.py 测试机B audio --seconds 8
+python3 scripts/遥控.py 测试机B location
+python3 scripts/遥控.py 测试机B torch --on
+python3 scripts/遥控.py 测试机B ring --seconds 5      # 找手机：响铃
+python3 scripts/遥控.py 测试机B shell --cmd "ls /sdcard"
 ```
 
 ## 指令

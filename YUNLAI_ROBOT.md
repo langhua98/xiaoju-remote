@@ -102,11 +102,11 @@
 
 | 仓库 | 放了什么 | 和机器人的关系 |
 |---|---|---|
-| **langhua98/xiaoju-remote**（本仓库） | 小橘遥控 iOS App | 机器人本体：脸、对话、云台、遥控 |
+| **langhua98/xiaoju-remote**（本仓库） | 小橘遥控 iOS App | 机器人本体：脸、对话、云台、遥控；`android/` 是安卓被控端 |
 | **langhua98/xiaoju-video**（私有） | 小橘视频；`streamer/` 是 HF Space `langhua1998/douyin-proxy` 的源码 | 备用语音服务 `/tts` 在这里 |
 | **langhua98/xiaoju-music** | 小橘音乐；`yunlai-tts/` 是机器人的默认语音 Worker（借用这个仓库的 Cloudflare 部署令牌） | 默认语音在这里 |
 | langhua98/xiaoju-cloud | 小橘云盘服务端（Go） | 遥控指令走它的即时信箱 |
-| langhua98/meta-work | 控制端（小橘推送 iOS 17）、安卓被控端 | 改遥控协议要同步改这里 |
+| langhua98/meta-work | 控制端（小橘推送 iOS 17） | 改遥控协议要同步改这里 |
 | langhua98/Linggo | 英文阅读器；`ble.html` 是大疆 OM 云台协议的来源 | 云台协议参考 |
 
 本仓库里和机器人有关的文件：
