@@ -25,7 +25,7 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
    - 声音：默认是 Cloudflare Workers AI 上的 MeloTTS 中文女声（`langhua98/xiaoju-music` 的 `yunlai-tts/`，地址 `https://yunlai-tts.langhua98.workers.dev`，免费额度每天 1 万 Neurons，合成过的句子缓存一天）。8 秒没回音就改问备用：小橘视频流式服务 Space 上的 Kokoro（`langhua98/xiaoju-video` 的 `streamer/tts_proxy.py`，`https://langhua1998-douyin-proxy.hf.space/tts`，音色 `zf_088` 或 `melo`，闲 10 分钟会关）。
    - 两个都连不上或没回音频时，那一句改用 iOS 自带中文语音读。两个地址都固定写在 `App/Talk.swift` 的 `Voice` 里，设置页不让改。
 4. 大模型被要求在回答前写一个情绪标签（`[happy]` 等），脸按这个情绪变表情，标签不会被读出来。
-5. 她在想或在说的时候，点一下可以打断。最近 12 句对话会作为上下文。
+5. **连续对话**：点一下开始，之后她说完自动接着听，不用每句都点；说「再见」「拜拜」「不聊了」（她会道个别）或者 8 秒不说话就结束。她在想或在说的时候点一下可以打断，她马上停下来听你说。最近 12 句对话会作为上下文。
 
 ### 换装（`Robot/live2d/outfits/`）
 

@@ -126,8 +126,8 @@ private struct StatusLine: View {
 
     private var hint: String {
         switch talk.phase {
-        case .idle: return "点一下说话"
-        case .listening: return "正在听"
+        case .idle: return "点一下开始聊天"
+        case .listening: return talk.conversing ? "在听，说「再见」结束" : "正在听"
         case .thinking: return "在想"
         case .speaking: return "点一下打断"
         }
