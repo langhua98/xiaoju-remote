@@ -49,11 +49,16 @@ final class Talk: NSObject, ObservableObject {
     /// 实时语音（Gemini Live）：填了 Gemini 密钥就优先用它，连不上退回下面的普通模式
     let live: LiveTalk
 
-    init(store: Store, face: FaceBridge, log: @escaping (String) -> Void) {
+    /// 机器人的身体（大疆云台）：大模型回答里的动作标签会让它转
+    private let gimbal: Gimbal
+    private var gimbalChain: Task<Void, Never>?
+
+    init(store: Store, face: FaceBridge, gimbal: Gimbal, log: @escaping (String) -> Void) {
         self.store = store
         self.face = face
         self.log = log
-        self.live = LiveTalk(store: store, face: face, log: log)
+        self.gimbal = gimbal
+        self.live = LiveTalk(store: store, face: face, gimbal: gimbal, log: log)
         super.init()
         synth.delegate = self
         live.onFail = { [weak self] _ in
@@ -230,7 +235,7 @@ final class Talk: NSObject, ObservableObject {
     private func ask(_ text: String) async {
         history.append(["role": "user", "content": text])
         if history.count > 12 { history.removeFirst(history.count - 12) }
-        let messages = [["role": "system", "content": Chat.persona]] + history
+        let messages = [["role": "system", "content": Chat.persona + "\n" + Body.personaForTags]] + history
         beginSpeaking()
         buffer = ""; reply = ""; emotion = "neutral"; emotionKnown = false
         do {
@@ -274,8 +279,11 @@ final class Talk: NSObject, ObservableObject {
                     return flush(final: final)
                 }
                 let tag = String(head[head.index(after: head.startIndex)..<close]).lowercased()
-                if Chat.emotions.contains(tag) { emotion = tag }
-                buffer = String(head[head.index(after: close)...])
+                // 只拿走情绪标签；开头要是动作标签（[左转 30]）就留着，后面照样执行
+                if Chat.emotions.contains(tag) {
+                    emotion = tag
+                    buffer = String(head[head.index(after: close)...])
+                }
                 emotionKnown = true
             } else if !head.isEmpty || final {
                 emotionKnown = true
@@ -329,7 +337,16 @@ final class Talk: NSObject, ObservableObject {
     }
 
     private func enqueue(_ raw: String) {
-        let text = Chat.clean(raw)
+        // 动作标签：一个接一个转（上一个转完再转下一个），不耽误说话
+        for tag in Body.tags(in: raw) {
+            let previous = gimbalChain
+            gimbalChain = Task { @MainActor in
+                await previous?.value
+                let r = await Body.perform(self.gimbal, direction: tag.direction, degrees: tag.degrees)
+                self.log("云台（\(tag.direction) \(tag.degrees.map { String(Int($0)) } ?? "")）：\(r)")
+            }
+        }
+        let text = Chat.clean(Body.strip(raw))
         guard text.rangeOfCharacter(from: .letters) != nil || text.rangeOfCharacter(from: .decimalDigits) != nil else { return }
         reply += text
         let fetch = Task.detached { await Voice.fetchWithBackup(text: text) }

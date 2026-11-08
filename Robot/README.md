@@ -37,6 +37,13 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
 - 连不上（密钥不对、免费额度用完、10 秒没 setupComplete）就自动改用 DeepSeek + 语音合成的普通连续对话。
 - 免费档有用量上限；免费档的数据谷歌可能用来改进产品。
 
+### 让她自己转云台（`App/Body.swift`）
+
+- 普通模式（DeepSeek）：系统提示让她在回答里写动作标签 `[左转 30]` `[右转 30]` `[抬头 15]` `[低头 15]` `[回正]`。App 边念边转（一个转完再转下一个），标签不念出来。
+- 实时模式（Gemini Live）：`setup.tools` 里声明 `move_gimbal(direction, degrees)`；服务器发 `toolCall.functionCalls`，App 转完回 `toolResponse.functionResponses`（带同一个 `id`），她再告诉你转好了。
+- 左右 5～90°，上下 5～45°，`center` 回到归位点。云台没连上就告诉她「转不了」，不会装作转了。
+- 每次转动都记在「记录」里（`云台（left 30）：…`）。真机上左右反了就改 `Body.perform` 里的正负号。
+
 ### 换装（`Robot/live2d/outfits/`）
 
 - 每套衣服一个文件夹：`outfits/<id>/clothes.png`，2048×2048，**只有衣服**（衣服范围内不透明，别处透明），不含 Live2D 原贴图。

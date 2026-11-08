@@ -49,7 +49,10 @@ final class LiveTalk: NSObject, ObservableObject {
     private var configObserver: NSObjectProtocol?
     private var interruptObserver: NSObjectProtocol?
 
-    init(store: Store, face: FaceBridge, log: @escaping (String) -> Void) {
+    private let gimbal: Gimbal
+
+    init(store: Store, face: FaceBridge, gimbal: Gimbal, log: @escaping (String) -> Void) {
+        self.gimbal = gimbal
         self.store = store
         self.face = face
         self.log = log
@@ -112,7 +115,8 @@ final class LiveTalk: NSObject, ObservableObject {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": ["voiceConfig": ["prebuiltVoiceConfig": ["voiceName": Self.voice]]],
             ],
-            "systemInstruction": ["parts": [["text": Self.persona]]],
+            "systemInstruction": ["parts": [["text": Self.persona + "\n" + Body.personaForTool]]],
+            "tools": [Body.toolDeclaration],
             "inputAudioTranscription": [String: Any](),
             "outputAudioTranscription": [String: Any](),
         ]]
@@ -193,6 +197,10 @@ final class LiveTalk: NSObject, ObservableObject {
             let m = (err["message"] as? String) ?? "出错"
             return phase == .connecting ? fail(m) : log("实时语音：\(m)")
         }
+        // 模型要转云台：转完把结果回给它
+        if let calls = (obj["toolCall"] as? [String: Any])?["functionCalls"] as? [[String: Any]] {
+            for call in calls { runTool(call) }
+        }
         if obj["goAway"] != nil { log("实时语音：服务器说快要断开了（单次连接有时长上限）") }
         guard let sc = obj["serverContent"] as? [String: Any] else { return }
         if (sc["interrupted"] as? Bool) == true { interrupted() }
@@ -210,6 +218,23 @@ final class LiveTalk: NSObject, ObservableObject {
             }
         }
         if (sc["turnComplete"] as? Bool) == true { turnComplete() }
+    }
+
+    private func runTool(_ call: [String: Any]) {
+        let id = call["id"] as? String ?? ""
+        let name = call["name"] as? String ?? ""
+        let args = call["args"] as? [String: Any] ?? [:]
+        Task { @MainActor in
+            var result = "不认识的工具：\(name)"
+            if name == "move_gimbal" {
+                let dir = (args["direction"] as? String) ?? "center"
+                let deg = (args["degrees"] as? NSNumber)?.doubleValue
+                result = await Body.perform(self.gimbal, direction: dir, degrees: deg)
+                self.log("云台（\(dir) \(deg.map { String(Int($0)) } ?? "")）：\(result)")
+            }
+            self.lastActivity = Date()
+            self.send(["toolResponse": ["functionResponses": [["id": id, "name": name, "response": ["result": result]]]]])
+        }
     }
 
     private func ready() {
