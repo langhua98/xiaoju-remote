@@ -50,6 +50,8 @@ final class Gimbal: NSObject, ObservableObject {
     private var attSeq = 0
     private var lastAttAt = Date.distantPast
     private var connectTimer: Timer?
+    /// 这次找云台时连过、但不是 OM 云台（没有 FFF0/FFF5）的设备，扫描时跳过
+    private var notGimbal = Set<UUID>()
 
     // 定时转（move）：每 0.1 秒发一帧，到时间发零速
     private var driveYaw = 0, drivePitch = 0
@@ -86,7 +88,10 @@ final class Gimbal: NSObject, ObservableObject {
             central = CBCentralManager(delegate: self, queue: .main)
             return   // 等 centralManagerDidUpdateState 说蓝牙开了再找
         }
-        if peripheral == nil || phase == .off { start() }
+        // 正在找、正在连的时候不重来（都有超时）；其他状态（没连上、蓝牙刚打开、上次失败）都重新开始
+        if phase == .scanning || phase == .connecting || phase == .ready { return }
+        notGimbal.removeAll()
+        start()
     }
 
     func disconnect() {
@@ -101,25 +106,34 @@ final class Gimbal: NSObject, ObservableObject {
     }
 
     private func start() {
-        guard let c = central, c.state == .poweredOn, wantConnected else { return }
-        // 先连上次那台（不用扫描）；8 秒没连上再扫描
-        if let s = d.string(forKey: "gimbalId"), let id = UUID(uuidString: s),
-           let p = c.retrievePeripherals(withIdentifiers: [id]).first {
-            attach(p)
-            connectTimer?.invalidate()
-            connectTimer = Timer.scheduledTimer(withTimeInterval: 8, repeats: false) { [weak self] _ in
-                guard let self = self, self.phase == .connecting else { return }
-                if let p = self.peripheral { self.central?.cancelPeripheralConnection(p) }
-                self.peripheral = nil
-                self.scan()
-            }
+        guard let c = central, wantConnected else { return }
+        switch c.state {
+        case .poweredOn: break
+        case .poweredOff: phase = .noBluetooth; note = "在控制中心或设置里打开蓝牙"; return
+        case .unauthorized: phase = .denied; note = "在 设置 → Vania → 蓝牙 里打开权限"; return
+        case .unsupported: phase = .unsupported; return
+        default: return   // 蓝牙还在启动，centralManagerDidUpdateState 会再叫 start
+        }
+        // 1. 云台已经和这台手机连着（比如刚用过 Mimo）：这时它不广播，扫描找不到，要直接拿
+        if let p = c.retrieveConnectedPeripherals(withServices: [Self.service])
+            .first(where: { !notGimbal.contains($0.identifier) }) {
+            log("云台已经和手机连着：\(p.name ?? "云台")")
+            attach(p, fallbackToScan: true)
             return
         }
+        // 2. 上次连过的那台（不用扫描）
+        if let s = d.string(forKey: "gimbalId"), let id = UUID(uuidString: s), !notGimbal.contains(id),
+           let p = c.retrievePeripherals(withIdentifiers: [id]).first {
+            attach(p, fallbackToScan: true)
+            return
+        }
+        // 3. 扫描
         scan()
     }
 
     private func scan() {
         guard let c = central, c.state == .poweredOn else { return }
+        peripheral = nil; writer = nil
         phase = .scanning
         note = "把云台打开、放在手机旁边"
         // OM 系列不一定在广播包里放 FFF0，所以不按服务过滤，按名字认（ble.html 也是这么找的）
@@ -133,16 +147,48 @@ final class Gimbal: NSObject, ObservableObject {
         }
     }
 
-    private func attach(_ p: CBPeripheral) {
+    /// 连一台设备。iOS 的 connect 自己不会超时，所以这里 10 秒没连好就放弃：
+    /// fallbackToScan = true（上次那台 / 系统里连着的那台）就改成扫描，否则报连不上。
+    private func attach(_ p: CBPeripheral, fallbackToScan: Bool = false) {
         peripheral = p
         p.delegate = self
         name = p.name ?? "云台"
         phase = .connecting
         note = ""
         central?.connect(p, options: nil)
+        connectTimer?.invalidate()
+        connectTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in
+            guard let self = self, self.phase == .connecting, self.peripheral === p else { return }
+            self.drop(p)
+            if fallbackToScan {
+                self.log("连不上上次那台云台，改成扫描")
+                self.scan()
+            } else {
+                self.phase = .off
+                self.note = "10 秒没连上云台：把云台关机再开，确认没被 Mimo 或别的手机连着"
+                self.log("云台连接超时")
+            }
+        }
     }
 
-    private func lost(_ why: String) {
+    /// 放弃当前这台（之后它的回调都不理）
+    private func drop(_ p: CBPeripheral) {
+        if peripheral === p { peripheral = nil; writer = nil }
+        central?.cancelPeripheralConnection(p)
+    }
+
+    /// 连上了却不是 OM 云台：记下来，换一台接着找
+    private func notThisOne(_ p: CBPeripheral, _ why: String) {
+        log("\(p.name ?? "这台设备")不是 OM 云台（\(why)），接着找")
+        notGimbal.insert(p.identifier)
+        if d.string(forKey: "gimbalId") == p.identifier.uuidString { d.removeObject(forKey: "gimbalId") }
+        drop(p)
+        scan()
+    }
+
+    private func lost(_ p: CBPeripheral, _ why: String) {
+        guard peripheral === p else { return }   // 已经放弃的那台（超时、不是云台）的回调，不管
+        connectTimer?.invalidate(); connectTimer = nil
         writer = nil
         busy = false
         ticker?.invalidate(); ticker = nil
@@ -153,8 +199,8 @@ final class Gimbal: NSObject, ObservableObject {
         // 想连着的话 3 秒后重连（云台关机、走远了都会断）
         if wantConnected, let p = peripheral {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                guard let self = self, self.wantConnected, self.phase == .off else { return }
-                self.attach(p)
+                guard let self = self, self.wantConnected, self.phase == .off, self.peripheral === p else { return }
+                self.attach(p, fallbackToScan: true)
             }
         }
     }
@@ -323,7 +369,10 @@ final class Gimbal: NSObject, ObservableObject {
         switch action {
         case "connect":
             connect()
-            for _ in 0..<100 where !connected { try? await Task.sleep(nanoseconds: 100_000_000) }   // 最多等 10 秒
+            // 最多等 20 秒（上次那台连不上要 10 秒，再扫描找一会儿）
+            for _ in 0..<200 where !connected && phase != .off && phase != .noBluetooth && phase != .denied && phase != .unsupported {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
             return connected ? "云台已连接。\n" + status() : "还没连上云台：\(phase.rawValue)。\(note)"
         case "disconnect":
             disconnect()
@@ -412,9 +461,13 @@ final class Gimbal: NSObject, ObservableObject {
 extension Gimbal: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManagerDidUpdateState(_ c: CBCentralManager) {
         switch c.state {
-        case .poweredOn: if wantConnected { start() }
-        case .poweredOff: phase = .noBluetooth
-        case .unauthorized: phase = .denied
+        case .poweredOn: if wantConnected, phase != .ready, phase != .connecting { start() }
+        case .poweredOff:
+            connectTimer?.invalidate(); connectTimer = nil
+            peripheral = nil; writer = nil
+            phase = .noBluetooth; note = "在控制中心或设置里打开蓝牙"
+            onPose?(0, 0, false)
+        case .unauthorized: phase = .denied; note = "在 设置 → Vania → 蓝牙 里打开权限"
         case .unsupported: phase = .unsupported
         default: break
         }
@@ -424,7 +477,8 @@ extension Gimbal: CBCentralManagerDelegate, CBPeripheralDelegate {
                         advertisementData ad: [String: Any], rssi RSSI: NSNumber) {
         let n = p.name ?? (ad[CBAdvertisementDataLocalNameKey] as? String) ?? ""
         let svcs = (ad[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
-        guard ["OM", "Osmo", "DJI"].contains(where: { n.hasPrefix($0) }) || svcs.contains(Self.service) else { return }
+        guard !notGimbal.contains(p.identifier), phase == .scanning,
+              ["OM", "Osmo", "DJI"].contains(where: { n.hasPrefix($0) }) || svcs.contains(Self.service) else { return }
         c.stopScan()
         connectTimer?.invalidate(); connectTimer = nil
         log("找到云台：\(n)")
@@ -432,35 +486,41 @@ extension Gimbal: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
-        connectTimer?.invalidate(); connectTimer = nil
-        d.set(p.identifier.uuidString, forKey: "gimbalId")
+        guard peripheral === p else { return }
+        // 连接计时器先留着：找服务、找特征也算在 10 秒里，卡在这一步也会超时
         parser = Duml.Parser()
         p.discoverServices([Self.service])
     }
 
     func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
-        lost("连不上：\(error?.localizedDescription ?? "未知原因")")
+        lost(p, "连不上：\(error?.localizedDescription ?? "未知原因")")
     }
 
     func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
-        lost(error?.localizedDescription ?? "云台关了或走远了")
+        lost(p, error?.localizedDescription ?? "云台关了或走远了")
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        guard peripheral === p else { return }
+        if let e = error { lost(p, "读不到云台的服务：\(e.localizedDescription)"); drop(p); return }
         guard let s = p.services?.first(where: { $0.uuid == Self.service }) else {
-            note = "这台设备没有 FFF0 服务，不是 OM 云台"
-            central?.cancelPeripheralConnection(p)
+            notThisOne(p, "没有 FFF0 服务")
             return
         }
         p.discoverCharacteristics([Self.notifyChar, Self.writeChar], for: s)
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
+        guard peripheral === p else { return }
+        if let e = error { lost(p, "读不到云台的特征：\(e.localizedDescription)"); drop(p); return }
         for ch in s.characteristics ?? [] {
             if ch.uuid == Self.writeChar { writer = ch }
             if ch.uuid == Self.notifyChar { p.setNotifyValue(true, for: ch) }
         }
-        guard writer != nil else { note = "找不到 FFF5 写特征"; return }
+        guard writer != nil else { notThisOne(p, "没有 FFF5 写特征"); return }
+        // 确认是 OM 云台了才记住，下次直接连（以前连上就记，连错一台以后每次都先去连那台）
+        connectTimer?.invalidate(); connectTimer = nil
+        d.set(p.identifier.uuidString, forKey: "gimbalId")
         phase = .ready
         note = ""
         log("云台已连接：\(name)")
@@ -468,8 +528,12 @@ extension Gimbal: CBCentralManagerDelegate, CBPeripheralDelegate {
         send(cmdSet: 0x00, cmdId: 0x01)
     }
 
+    func peripheral(_ p: CBPeripheral, didUpdateNotificationStateFor ch: CBCharacteristic, error: Error?) {
+        if let e = error { log("订阅云台推送失败：\(e.localizedDescription)（收不到姿态，转到指定角度会不准）") }
+    }
+
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
-        guard let v = ch.value else { return }
+        guard peripheral === p, let v = ch.value else { return }
         for f in parser.push([UInt8](v)) { handle(f) }
     }
 }
