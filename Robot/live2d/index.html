@@ -12,8 +12,8 @@
   :root { --bg: #000; --ice: #7fe9ff; --ice-dim: rgba(127,233,255,.55); --ice-line: rgba(127,233,255,.22); }
   html, body { margin: 0; height: 100%; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none;
     -webkit-tap-highlight-color: transparent;
-    /* OLED 黑底 + 冰蓝光晕 */
-    background: radial-gradient(ellipse 70% 55% at 50% 38%, rgba(43,196,240,.22), rgba(10,92,168,.08) 55%, #000 80%), var(--bg); }
+    /* 背景：夜景客厅（bg.jpg，941×1672，和 iPhone 7 Plus 竖屏一样比例），角色站在地上那圈光环上 */
+    background: var(--bg) url(bg.jpg) center / cover no-repeat; }
   #stage { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: block; }
   #loading { position: fixed; top: 50%; left: 0; right: 0; text-align: center; color: var(--ice-dim);
     font: 13px -apple-system, "PingFang SC", sans-serif; }
