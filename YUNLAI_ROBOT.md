@@ -16,7 +16,7 @@
 | 脸 | 手机屏幕，全屏显示 Live2D 角色（桃濑日和 Hiyori） |
 | 眼睛 | 手机摄像头 |
 | 耳朵 | 手机麦克风 + iOS 语音识别 |
-| 嘴 | 手机扬声器 + Kokoro / MeloTTS 中文语音 |
+| 嘴 | 手机扬声器 + MeloTTS 中文女声（Cloudflare），备用 Kokoro |
 | 大脑 | 云端大模型（默认 DeepSeek，OpenAI 兼容接口） |
 | 头和身体 | 大疆 OM 云台（蓝牙控制转头） |
 
@@ -41,7 +41,7 @@
 | 采集提示 | ✅ 完成 | 用摄像头、麦克风时屏幕上方显示提示，底部一直显示待命状态 |
 | 语音对话 | ✅ 完成 | 点一下屏幕说话 → 识别 → 大模型 → 语音回答 |
 | 大模型流式输出 | ✅ 完成 | 写出一句就开始读 |
-| Kokoro / Melo 中文语音 | ✅ 完成 | 部署在 Hugging Face Space，逐句合成 |
+| 中文语音 | ✅ 完成 | 默认 Cloudflare Workers AI 的 MeloTTS（不冷启动）；备用 Hugging Face Space 的 Kokoro / Melo；逐句合成 |
 | 嘴型跟真实音量 | ✅ 完成 | Kokoro / Melo 播放时按音量开合 |
 | 大疆 OM 云台 | ✅ 完成 | 蓝牙连接，遥控转头，脸跟着云台朝向看 |
 | 设置钥匙串备份 | ✅ 完成 | 更新 App 不用重填 |
@@ -60,7 +60,10 @@
                   │                                                   │
    DeepSeek API ◀─┤  大模型（流式 /chat/completions）                  │
                   │                                                   │
-   HF Space ◀─────┤  语音服务 /tts（Kokoro zf_088 / MeloTTS）          │
+   Cloudflare ◀───┤  语音（默认）：yunlai-tts.langhua98.workers.dev    │
+   Workers AI     │  MeloTTS 中文女声，免费额度每天 1 万 Neurons       │
+                  │                                                   │
+   HF Space ◀─────┤  语音（备用）/tts（Kokoro zf_088 / MeloTTS）       │
    douyin-proxy   │  langhua1998-douyin-proxy.hf.space/tts            │
                   │                                                   │
    HF Space ◀─────┤  小橘云盘：即时信箱（遥控指令和回执）              │
@@ -100,7 +103,8 @@
 | 仓库 | 放了什么 | 和机器人的关系 |
 |---|---|---|
 | **langhua98/xiaoju-remote**（本仓库） | 小橘遥控 iOS App | 机器人本体：脸、对话、云台、遥控 |
-| **langhua98/xiaoju-video**（私有） | 小橘视频；`streamer/` 是 HF Space `langhua1998/douyin-proxy` 的源码 | 语音服务 `/tts` 在这里 |
+| **langhua98/xiaoju-video**（私有） | 小橘视频；`streamer/` 是 HF Space `langhua1998/douyin-proxy` 的源码 | 备用语音服务 `/tts` 在这里 |
+| **langhua98/xiaoju-music** | 小橘音乐；`yunlai-tts/` 是机器人的默认语音 Worker（借用这个仓库的 Cloudflare 部署令牌） | 默认语音在这里 |
 | langhua98/xiaoju-cloud | 小橘云盘服务端（Go） | 遥控指令走它的即时信箱 |
 | langhua98/meta-work | 控制端（小橘推送 iOS 17）、安卓被控端 | 改遥控协议要同步改这里 |
 | langhua98/Linggo | 英文阅读器；`ble.html` 是大疆 OM 云台协议的来源 | 云台协议参考 |
@@ -172,7 +176,7 @@
    - `deepseek-chat`：快。
    - `deepseek-reasoner`：先想再答；不传 temperature，max_tokens 4000，超时 120 秒，只读 `content` 不读思考过程。
 3. **拆句**：遇到 `。！？!?；\n…` 断句；超过 14 个字遇到逗号也先断，让第一句尽快读出来。
-4. **说**：每句马上请求 `/tts`，第一句一到就播，后面的边播边下载。用 AVAudioPlayer 播放，每 0.06 秒取一次音量发给脸当嘴型。
+4. **说**：每句马上请求语音服务（默认 Cloudflare，8 秒没回音改问备用 Space），第一句一到就播，后面的边播边下载。用 AVAudioPlayer 播放，每 0.06 秒取一次音量发给脸当嘴型。
 5. **兜底**：某句 `/tts` 失败或返回的不是音频，这句改用 iOS 自带中文语音（AVSpeechSynthesizer）。
 6. **打断**：想或说的时候点一下，全部停掉。
 
@@ -189,6 +193,14 @@
 - **用到才起、闲 10 分钟就关**（`tts_proxy.py`），把 CPU 和内存还给别的服务；子进程拿不到任何密钥。
 - 模型在构建镜像时下载好（`tts_server.py --warm`），运行时不联网。
 - 部署：`xiaoju-video` 仓库 Actions →「Deploy streamer」（手动触发，用仓库的 `HF_TOKEN`）。**部署时整个 Space 会重启几分钟，抖音转发会中断。**
+
+### 5.4b 默认语音：Cloudflare（`xiaoju-music/yunlai-tts/`）
+
+- 地址：`https://yunlai-tts.langhua98.workers.dev/tts?text=一句话` → MP3。接口和 Space 的 `/tts` 一样。
+- 模型：Workers AI 上的 MeloTTS（`@cf/myshell-ai/melotts`，MIT），中文女声，声音温柔。
+- 免费额度：Workers AI 每天 1 万 Neurons；合成过的句子在 Cloudflare 缓存一天，再要不花额度。
+- 实测（从 GitHub 的美国机器）：短句首字节 0.7～1.3 秒，长句约 1 秒，缓存命中 0.06～0.12 秒，**没有冷启动**。
+- 部署：`xiaoju-music` 仓库 Actions →「Deploy yunlai-tts」（用那个仓库的 `CLOUDFLARE_API_TOKEN`，部署完自动测几句中文）。和小橘音乐互不影响。
 
 ### 5.5 云台（大疆 OM）
 
@@ -240,8 +252,8 @@ App 调 `window.YunlaiFace.apply({...})`；网页调试时也可以走 WebSocket
 | 大模型接口地址 | `https://api.deepseek.com/v1` | UserDefaults + 钥匙串备份 |
 | 模型 | `deepseek-chat`（可选 `deepseek-reasoner`） | UserDefaults + 钥匙串备份 |
 | API 密钥 | — | 钥匙串 |
-| 语音服务地址 | `https://langhua1998-douyin-proxy.hf.space/tts`（空着就用 iOS 语音） | UserDefaults |
-| 音色 | `zf_088`（或 `melo`、其他 `zf_…`） | UserDefaults |
+| 语音服务地址 | `https://yunlai-tts.langhua98.workers.dev`（空着就用 iOS 语音） | UserDefaults |
+| 备用 Space 的音色 | `zf_088`（或 `melo`、其他 `zf_…`） | UserDefaults |
 | 打开 App 时自动连云台 | 关 | UserDefaults + 钥匙串备份 |
 
 ---

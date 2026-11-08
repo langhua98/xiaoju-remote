@@ -61,12 +61,12 @@ struct ContentView: View {
                 Section {
                     TextField("语音服务地址（空着用 iOS 自带语音）", text: $store.ttsBase)
                         .textInputAutocapitalization(.never).disableAutocorrection(true).keyboardType(.URL)
-                    TextField("音色：zf_088（Kokoro）或 melo（MeloTTS）", text: $store.ttsVoice)
+                    TextField("备用 Space 的音色：zf_088（Kokoro）或 melo", text: $store.ttsVoice)
                         .textInputAutocapitalization(.never).disableAutocorrection(true)
                 } header: {
-                    Text("机器人的声音（Kokoro）")
+                    Text("机器人的声音")
                 } footer: {
-                    Text("默认用小橘视频流式服务上的 Kokoro 中文语音（女声 zf_088）；音色填 melo 换成 MeloTTS 女声（略快）。它闲了会休息，第一次说话可能要等十几秒；连不上时自动改用 iOS 自带语音。")
+                    Text("默认用 Cloudflare 上的 MeloTTS 中文女声（温柔、不用等冷启动）。它连不上时改用小橘视频流式服务上的 Kokoro（音色在上面填：zf_088 等，或 melo），再不行用 iOS 自带语音。地址空着就一直用 iOS 自带语音。")
                 }
 
                 Section {

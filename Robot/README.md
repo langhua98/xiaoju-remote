@@ -22,8 +22,8 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
 1. 在设置页「对话（大模型）」填 API 密钥。接口地址默认 DeepSeek（`https://api.deepseek.com/v1`，也能改成别的 OpenAI 兼容接口），模型二选一：`deepseek-chat`（快）或 `deepseek-reasoner`（先想再答，慢）。密钥只存钥匙串。
 2. 进入机器人模式，点一下屏幕开始说话（屏幕上方显示「麦克风工作中」），停顿约 0.8 秒自动结束。
 3. iOS 语音识别把话转成文字 → 大模型流式回答 → 写出一句就交给 Kokoro 合成一句、马上播，后面的边播边合成。脸的状态依次是倾听 → 思考 → 说话，嘴跟着真实音量动。
-   - 声音：Kokoro-82M 中文版（Apache-2.0），女声 `zf_088`，跑在小橘视频流式服务的 Space 上（`langhua98/xiaoju-video` 的 `streamer/tts_proxy.py`，地址 `https://langhua1998-douyin-proxy.hf.space/tts`）。它闲 10 分钟会关，进机器人模式时 App 先叫醒它。
-   - Kokoro 连不上或没回音频时，那一句改用 iOS 自带中文语音读。设置页可以改语音服务地址和音色（`zf_001`…`zf_099` 等 Kokoro 音色，或 `melo` 换 MeloTTS 女声），地址空着就一直用 iOS 自带语音。
+   - 声音：默认是 Cloudflare Workers AI 上的 MeloTTS 中文女声（`langhua98/xiaoju-music` 的 `yunlai-tts/`，地址 `https://yunlai-tts.langhua98.workers.dev`，免费额度每天 1 万 Neurons，合成过的句子缓存一天）。8 秒没回音就改问备用：小橘视频流式服务 Space 上的 Kokoro（`langhua98/xiaoju-video` 的 `streamer/tts_proxy.py`，`https://langhua1998-douyin-proxy.hf.space/tts`，音色 `zf_088` 或 `melo`，闲 10 分钟会关）。
+   - 两个都连不上或没回音频时，那一句改用 iOS 自带中文语音读。设置页可以改语音服务地址和备用 Space 的音色（`zf_001`…`zf_099` 等 Kokoro 音色，或 `melo`），地址空着就一直用 iOS 自带语音。
 4. 大模型被要求在回答前写一个情绪标签（`[happy]` 等），脸按这个情绪变表情，标签不会被读出来。
 5. 她在想或在说的时候，点一下可以打断。最近 12 句对话会作为上下文。
 

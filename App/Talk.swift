@@ -281,7 +281,7 @@ final class Talk: NSObject, ObservableObject {
         guard text.rangeOfCharacter(from: .letters) != nil || text.rangeOfCharacter(from: .decimalDigits) != nil else { return }
         reply += text
         let base = store.ttsBase, voice = store.ttsVoice
-        let fetch = Task.detached { await Voice.fetch(base: base, voice: voice, text: text) }
+        let fetch = Task.detached { await Voice.fetchWithBackup(base: base, voice: voice, text: text) }
         queue.append((text, fetch))
         wakeQueue()
     }
@@ -420,8 +420,20 @@ extension Talk: AVSpeechSynthesizerDelegate, AVAudioPlayerDelegate {
 
 /// Kokoro 语音服务（默认是 xiaoju-video 的流式服务 Space 上的 /tts，见那个仓库的 streamer/tts_proxy.py）
 enum Voice {
-    static let defaultBase = "https://langhua1998-douyin-proxy.hf.space/tts"
+    /// 默认：Cloudflare Workers AI 上的 MeloTTS 女声（langhua98/xiaoju-music 的 yunlai-tts/），不会冷启动
+    static let defaultBase = "https://yunlai-tts.langhua98.workers.dev"
     static let defaultVoice = "zf_088"
+    /// 备用：小橘视频流式服务 Space 上的 Kokoro（langhua98/xiaoju-video 的 streamer/tts_proxy.py），闲了会关，叫醒要十几秒
+    static let backupBase = "https://langhua1998-douyin-proxy.hf.space/tts"
+
+    /// 先问设置里的语音服务（8 秒内没回音就算失败），不行再问备用的 Space；都不行返回 nil，调用方改用 iOS 自带语音。
+    /// 地址空着表示只用 iOS 自带语音，不去问备用的。
+    static func fetchWithBackup(base: String, voice: String, text: String) async -> Data? {
+        guard !base.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        if let data = await fetch(base: base, voice: voice, text: text, timeout: 8) { return data }
+        if Task.isCancelled || url(base: base, path: "") == url(base: backupBase, path: "") { return nil }
+        return await fetch(base: backupBase, voice: voice, text: text, timeout: 45)
+    }
 
     static func url(base: String, path: String, query: [URLQueryItem] = []) -> URL? {
         var b = base.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -433,14 +445,14 @@ enum Voice {
     }
 
     /// 合成一句，拿到 WAV；失败返回 nil（调用方改用 iOS 自带语音）
-    static func fetch(base: String, voice: String, text: String) async -> Data? {
+    static func fetch(base: String, voice: String, text: String, timeout: TimeInterval = 45) async -> Data? {
         guard let url = url(base: base, path: "tts", query: [
             URLQueryItem(name: "text", value: String(text.prefix(300))),
             URLQueryItem(name: "voice", value: voice.isEmpty ? defaultVoice : voice),
             URLQueryItem(name: "speed", value: "1.05"),
         ]) else { return nil }
         // 服务刚被叫醒时要等模型加载（服务端最多等 40 秒），再长就不等了
-        guard let result = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: 45)),
+        guard let result = try? await URLSession.shared.data(for: URLRequest(url: url, timeoutInterval: timeout)),
               let http = result.1 as? HTTPURLResponse, http.statusCode == 200,
               (http.value(forHTTPHeaderField: "Content-Type") ?? "").hasPrefix("audio"),
               result.0.count > 44 else { return nil }
