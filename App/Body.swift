@@ -9,11 +9,15 @@ enum Body {
     你能控制自己的身体：手机夹在大疆云台上，云台能左右转、上下抬头低头。主人让你转身、转头、看某个方向、抬头低头时，在回答里写动作标签，App 会照着转：
     [左转 30] [右转 30] [抬头 15] [低头 15] [回正]
     数字是度数，左右 5～90，上下 5～45。比如主人说「往左边看看」，你回答「好，我看看左边。[左转 45]」。不需要转的时候不要写标签，标签不会被念出来。
+    你还能换衣服：主人让你换衣服时写 [换装 衣服名]，衣服名只能是：\(outfitNames)。比如「好呀，换上啦。[换装 黑白经典]」。
     """
 
     static let personaForTool = """
     你能控制自己的身体：手机夹在大疆云台上，云台能左右转、上下抬头低头。主人让你转身、转头、看某个方向、抬头低头、回到正面时，调用 move_gimbal 工具真的去转，再告诉主人转好了。
+    你还能换衣服：主人让你换衣服时调用 change_outfit 工具，衣服名只能是：\(outfitNames)；主人没说换哪套就换一套和现在不一样的。
     """
+
+    static var outfitNames: String { Store.outfits.map { $0.name }.joined(separator: "、") }
 
     /// 给 Gemini Live 的工具声明
     static let toolDeclaration: [String: Any] = [
@@ -29,8 +33,27 @@ enum Body {
                 ],
                 "required": ["direction"],
             ],
+        ], [
+            "name": "change_outfit",
+            "description": "给机器人换衣服（Live2D 角色换装）。",
+            "parameters": [
+                "type": "OBJECT",
+                "properties": [
+                    "name": ["type": "STRING", "enum": Store.outfits.map { $0.name }, "description": "衣服名"],
+                ],
+                "required": ["name"],
+            ],
         ]],
     ]
+
+    private static let outfitPattern = #"\[\s*换装\s*[:：]?\s*([^\]]+?)\s*\]"#
+
+    /// 回答里的换装标签 → 衣服名
+    static func outfitTags(in text: String) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: outfitPattern) else { return [] }
+        let ns = text as NSString
+        return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range(at: 1)) }
+    }
 
     /// 语音指令转动的速度（度每秒）
     static let speed = 60.0
@@ -52,6 +75,7 @@ enum Body {
     /// 去掉动作标签（念出来之前）
     static func strip(_ text: String) -> String {
         text.replacingOccurrences(of: tagPattern, with: "", options: .regularExpression)
+            .replacingOccurrences(of: outfitPattern, with: "", options: .regularExpression)
     }
 
     /// 真的去转。返回一句给模型 / 记录看的结果
@@ -64,7 +88,8 @@ enum Body {
             // 说话时要快：按固定速度转算好的时间（30° 只要半秒），不用一帧帧等姿态确认（那样每次要多等 2 秒）
             let horizontal = direction == "left" || direction == "right"
             let d = horizontal ? min(max(degrees ?? 30, 5), 90) : min(max(degrees ?? 15, 5), 45)
-            let sign: Double = (direction == "left" || direction == "down") ? -1 : 1
+            // 上下在 OM6 真机上是反的（William 实测），所以「抬头」发负的俯仰速度
+            let sign: Double = (direction == "left" || direction == "up") ? -1 : 1
             let seconds = d / speed
             gimbal.move(yawSpeed: horizontal ? sign * speed : 0, pitchSpeed: horizontal ? 0 : sign * speed, seconds: seconds)
             try? await Task.sleep(nanoseconds: UInt64((seconds + 0.2) * 1e9))

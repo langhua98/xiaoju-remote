@@ -109,7 +109,7 @@ async function setOutfit(id) {
     send({ type: 'outfit_done', id, ok: true });
   } catch (e) {
     console.error('换装失败', id, e);
-    send({ type: 'outfit_done', id, ok: false });
+    send({ type: 'outfit_done', id, ok: false, error: String((e && e.message) || e) });
   }
 }
 
