@@ -44,6 +44,9 @@ final class RemoteEngine: ObservableObject {
         push("已停止")
     }
 
+    /// 别的地方（机器人的脸）往记录里写一行
+    func record(_ s: String) { push(s) }
+
     private func push(_ s: String) {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"
         log.append("\(f.string(from: Date()))  \(s)")

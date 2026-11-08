@@ -219,7 +219,7 @@ final class Talk: NSObject, ObservableObject {
         if Self.byeWords.contains(where: { text.contains($0) }) { conversing = false }
         phase = .thinking
         // 换装直接办，不问大模型
-        if let id = Store.outfitCommand(text) {
+        if let id = Store.outfitCommand(text, current: store.outfit) {
             store.outfit = id
             face.send(["type": "outfit", "id": id])
             log("换装：\(Store.outfitName(id))")
@@ -319,6 +319,14 @@ final class Talk: NSObject, ObservableObject {
         return nil
     }
 
+    /// 大模型说要换装：按名字换
+    private func applyOutfit(_ name: String) {
+        guard let id = Store.outfitID(named: name) else { return log("换装：没有叫「\(name)」的衣服") }
+        store.outfit = id
+        face.send(["type": "outfit", "id": id])
+        log("换装：\(Store.outfitName(id))")
+    }
+
     // MARK: 说（一句一句排队，下载下一句时播这一句）
 
     private func beginSpeaking() {
@@ -346,6 +354,7 @@ final class Talk: NSObject, ObservableObject {
                 self.log("云台（\(tag.direction) \(tag.degrees.map { String(Int($0)) } ?? "")）：\(r)")
             }
         }
+        for name in Body.outfitTags(in: raw) { applyOutfit(name) }
         let text = Chat.clean(Body.strip(raw))
         guard text.rangeOfCharacter(from: .letters) != nil || text.rangeOfCharacter(from: .decimalDigits) != nil else { return }
         reply += text

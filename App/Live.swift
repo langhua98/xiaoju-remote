@@ -45,6 +45,7 @@ final class LiveTalk: NSObject, ObservableObject {
     private var msgCount = 0          // 诊断：收到几条服务器消息
     private var audioIn = 0           // 诊断：收到几段她的声音
     private var statTicks = 0
+    private var usedOutfitTool = false  // 这一轮她已经用工具换过装，就不再按关键词换一次
     private var buffered = 0.0          // 这一轮攒了多少秒的声音
     private var playStarted = true
     private var voiceProcessing = true   // 回声消除；这台手机上开着收不到声音就自动关掉
@@ -228,7 +229,18 @@ final class LiveTalk: NSObject, ObservableObject {
         let args = call["args"] as? [String: Any] ?? [:]
         Task { @MainActor in
             var result = "不认识的工具：\(name)"
-            if name == "move_gimbal" {
+            if name == "change_outfit" {
+                let want = (args["name"] as? String) ?? ""
+                if let id = Store.outfitID(named: want) {
+                    self.store.outfit = id
+                    self.face.send(["type": "outfit", "id": id])
+                    self.usedOutfitTool = true
+                    result = "换好了：\(Store.outfitName(id))"
+                } else {
+                    result = "没有这套衣服，只有：\(Body.outfitNames)"
+                }
+                self.log("换装（工具）：\(result)")
+            } else if name == "move_gimbal" {
                 let dir = (args["direction"] as? String) ?? "center"
                 let deg = (args["degrees"] as? NSNumber)?.doubleValue
                 result = await Body.perform(self.gimbal, direction: dir, degrees: deg)
@@ -277,13 +289,14 @@ final class LiveTalk: NSObject, ObservableObject {
         let s = Self.tidy(said)
         if !h.isEmpty { log("听到：\(h)") }
         if !s.isEmpty { log("回答：\(s)") }
-        if let id = Store.outfitCommand(h) {
+        if !usedOutfitTool, let id = Store.outfitCommand(h, current: store.outfit) {
             store.outfit = id
             face.send(["type": "outfit", "id": id])
             log("换装：\(Store.outfitName(id))")
         }
         if Self.byeWords.contains(where: { h.contains($0) }) { ending = true }
         heard = ""; said = ""
+        usedOutfitTool = false
         turnFinished = true
         lastActivity = Date()
         if !playStarted { player?.play(); playStarted = true }

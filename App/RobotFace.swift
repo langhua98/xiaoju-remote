@@ -95,6 +95,12 @@ struct RobotModeView: View {
 
     /// 点一下：说话 / 打断；连点三下：退出。等 0.45 秒看还有没有下一下，避免两种操作打架。
     private func handle(_ msg: [String: Any]) {
+        if (msg["type"] as? String) == "outfit_done" {
+            let id = msg["id"] as? String ?? ""
+            if (msg["ok"] as? Bool) == true { engine.record("换上了：\(Store.outfitName(id))") }
+            else { engine.record("换装失败（\(id)）：\(msg["error"] as? String ?? "不知道为什么")") }
+            return
+        }
         guard (msg["type"] as? String) == "touch" else { return }
         let now = Date()
         taps = taps.filter { now.timeIntervalSince($0) < 1.2 } + [now]

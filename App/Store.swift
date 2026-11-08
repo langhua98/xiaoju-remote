@@ -27,10 +27,29 @@ final class Store: ObservableObject {
     ]
 
     /// 「换上黑白经典」「穿黑色的」「换回原来的」→ 衣服 id；不是换装的话返回 nil
-    static func outfitCommand(_ text: String) -> String? {
+    /// current：现在穿的；没说是哪套（「换件衣服」「换一套」）就换下一套
+    static func outfitCommand(_ raw: String, current: String = "default") -> String? {
+        let text = simplified(raw)
         guard ["换", "穿上", "穿回"].contains(where: { text.contains($0) }) else { return nil }
         if text.contains("换回") || text.contains("穿回") { return "default" }
+        if let id = outfitID(named: text) { return id }
+        if ["换件衣服", "换个衣服", "换衣服", "换一套", "换套衣服", "换身衣服", "换装", "换一身"].contains(where: { text.contains($0) }) {
+            let i = outfits.firstIndex { $0.id == current } ?? 0
+            return outfits[(i + 1) % outfits.count].id
+        }
+        return nil
+    }
+
+    /// 名字、叫法或 id → 衣服 id（大模型的换装标签、工具调用也用这个）
+    static func outfitID(named raw: String) -> String? {
+        let text = simplified(raw)
+        if let o = outfits.first(where: { $0.id == text.trimmingCharacters(in: .whitespaces) }) { return o.id }
         return outfits.first { o in o.words.contains { text.contains($0) } }?.id
+    }
+
+    /// 语音转写有时给繁体（換、經、黑白經典），先转简体再比
+    static func simplified(_ s: String) -> String {
+        (s.applyingTransform(StringTransform("Hant-Hans"), reverse: false) ?? s).replacingOccurrences(of: " ", with: "")
     }
 
     static func outfitName(_ id: String) -> String { outfits.first { $0.id == id }?.name ?? "原版" }
