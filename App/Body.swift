@@ -32,6 +32,9 @@ enum Body {
         ]],
     ]
 
+    /// 语音指令转动的速度（度每秒）
+    static let speed = 60.0
+
     private static let tagPattern = #"\[\s*(左转|右转|抬头|低头|回正)\s*(\d+(?:\.\d+)?)?\s*度?\s*\]"#
 
     /// 找出一段文字里的动作标签，按出现顺序
@@ -55,18 +58,21 @@ enum Body {
     @MainActor
     static func perform(_ gimbal: Gimbal, direction: String, degrees: Double?) async -> String {
         guard gimbal.connected else { return "云台没连上，转不了（请主人在设置页点「连接云台」）" }
-        var cmd: [String: Any]
+        if gimbal.busy { gimbal.stopNow() }
         switch direction {
-        case "left", "right":
-            let d = min(max(degrees ?? 30, 5), 90)
-            cmd = ["action": "turn", "yaw": direction == "left" ? -d : d]
-        case "up", "down":
-            let d = min(max(degrees ?? 15, 5), 45)
-            cmd = ["action": "turn", "pitch": direction == "up" ? d : -d]
+        case "left", "right", "up", "down":
+            // 说话时要快：按固定速度转算好的时间（30° 只要半秒），不用一帧帧等姿态确认（那样每次要多等 2 秒）
+            let horizontal = direction == "left" || direction == "right"
+            let d = horizontal ? min(max(degrees ?? 30, 5), 90) : min(max(degrees ?? 15, 5), 45)
+            let sign: Double = (direction == "left" || direction == "down") ? -1 : 1
+            let seconds = d / speed
+            gimbal.move(yawSpeed: horizontal ? sign * speed : 0, pitchSpeed: horizontal ? 0 : sign * speed, seconds: seconds)
+            try? await Task.sleep(nanoseconds: UInt64((seconds + 0.2) * 1e9))
+            return "转好了，大约\(["left": "左转", "right": "右转", "up": "抬头", "down": "低头"][direction]!) \(Int(d))°"
         default:
-            cmd = ["action": "center"]
+            // 回正要准：按姿态闭环转回归位点
+            let result = await gimbal.command(["action": "center"])
+            return result.components(separatedBy: "\n").first ?? result
         }
-        let result = await gimbal.command(cmd)
-        return result.components(separatedBy: "\n").first ?? result
     }
 }

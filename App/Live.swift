@@ -45,6 +45,8 @@ final class LiveTalk: NSObject, ObservableObject {
     private var msgCount = 0          // 诊断：收到几条服务器消息
     private var audioIn = 0           // 诊断：收到几段她的声音
     private var statTicks = 0
+    private var buffered = 0.0          // 这一轮攒了多少秒的声音
+    private var playStarted = true
     private var voiceProcessing = true   // 回声消除；这台手机上开着收不到声音就自动关掉
     private var configObserver: NSObjectProtocol?
     private var interruptObserver: NSObjectProtocol?
@@ -271,8 +273,8 @@ final class LiveTalk: NSObject, ObservableObject {
     }
 
     private func turnComplete() {
-        let h = heard.trimmingCharacters(in: .whitespacesAndNewlines)
-        let s = said.trimmingCharacters(in: .whitespacesAndNewlines)
+        let h = Self.tidy(heard)
+        let s = Self.tidy(said)
         if !h.isEmpty { log("听到：\(h)") }
         if !s.isEmpty { log("回答：\(s)") }
         if let id = Store.outfitCommand(h) {
@@ -284,6 +286,7 @@ final class LiveTalk: NSObject, ObservableObject {
         heard = ""; said = ""
         turnFinished = true
         lastActivity = Date()
+        if !playStarted { player?.play(); playStarted = true }
         if pending == 0 { doneSpeaking() }
     }
 
@@ -291,6 +294,7 @@ final class LiveTalk: NSObject, ObservableObject {
     private func interrupted() {
         player?.stop()
         player?.play()
+        playStarted = true
         pending = 0
         turnFinished = false
         if phase == .speaking { backToListening() }
@@ -305,6 +309,22 @@ final class LiveTalk: NSObject, ObservableObject {
     private func backToListening() {
         phase = .listening
         face.send(["type": "robot_state", "state": "listening", "mouth_level": 0])
+        // 她说完 0.4 秒后再让麦克风发声音（喇叭的余音不会被当成你在说话）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self = self, self.phase == .listening else { return }
+            self.gateMic(open: true)
+        }
+    }
+
+    /// 没有回声消除时用「对讲机模式」：她说话时麦克风的声音先不发，免得她把自己的声音当成你在插话、一句话被自己打断好几次
+    private func gateMic(open: Bool) {
+        mic?.muted = !voiceProcessing && !open
+    }
+
+    /// 文字稿里汉字之间多出来的空格去掉（「台 岛 啦」→「台岛啦」）
+    static func tidy(_ s: String) -> String {
+        s.replacingOccurrences(of: #"(?<=[\p{Han}，。！？、])\s+(?=[\p{Han}，。！？、])"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: 声音
@@ -409,6 +429,15 @@ final class LiveTalk: NSObject, ObservableObject {
         }
         pending += 1
         lastActivity = Date()
+        if phase != .speaking {
+            // 新的一轮：先暂停，攒够 0.3 秒再开播，网络偶尔慢一下也不会一卡一卡
+            p.pause()
+            buffered = 0
+            playStarted = false
+            gateMic(open: false)
+        }
+        buffered += Double(frames) / playFormat.sampleRate
+        if !playStarted && buffered >= 0.3 { p.play(); playStarted = true }
         p.scheduleBuffer(buf) { [weak self] in
             Task { @MainActor in
                 guard let self = self else { return }
@@ -429,6 +458,12 @@ final class MicPipe {
     private let target = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: true)!
     private var acc = Data()
     var send: ((Data) -> Void)?
+    /// 对讲机模式下她说话时为 true：照收照算音量，就是不发
+    var muted: Bool {
+        get { lock.lock(); defer { lock.unlock() }; return _muted }
+        set { lock.lock(); _muted = newValue; lock.unlock() }
+    }
+    private var _muted = false
 
     // 诊断用：收了多少段麦克风、发了多少段、转换失败几次、最近 5 秒最大音量
     private let lock = NSLock()
@@ -472,9 +507,11 @@ final class MicPipe {
         }
         acc.append(Data(bytes: ch[0], count: Int(out.frameLength) * 2))
         if acc.count >= 3200 {
-            send?(acc)
+            if !muted {
+                send?(acc)
+                lock.lock(); chunksSent += 1; lock.unlock()
+            }
             acc.removeAll(keepingCapacity: true)
-            lock.lock(); chunksSent += 1; lock.unlock()
         }
     }
 }
