@@ -45,6 +45,9 @@ final class LiveTalk: NSObject, ObservableObject {
     private var msgCount = 0          // 诊断：收到几条服务器消息
     private var audioIn = 0           // 诊断：收到几段她的声音
     private var statTicks = 0
+    private var voiceProcessing = true   // 回声消除；这台手机上开着收不到声音就自动关掉
+    private var configObserver: NSObjectProtocol?
+    private var interruptObserver: NSObjectProtocol?
 
     init(store: Store, face: FaceBridge, log: @escaping (String) -> Void) {
         self.store = store
@@ -224,9 +227,14 @@ final class LiveTalk: NSObject, ObservableObject {
             Task { @MainActor in
                 guard let self = self, self.phase != .off else { return }
                 // 前 30 秒每 5 秒记一次诊断：麦克风有没有声音、发出去没有、服务器回了什么
+                // 引擎被停了就拉起来
+                if let e = self.engine, !e.isRunning { self.restartEngine("发现引擎停了") }
                 if self.statTicks < 6, let s = self.mic?.takeStats() {
                     self.statTicks += 1
-                    self.log("实时诊断：麦克风 \(s.buffers) 段、音量 \(String(format: "%.3f", s.peak))、发出 \(s.sent) 段、转换失败 \(s.fails)；服务器消息 \(self.msgCount) 条、她的声音 \(self.audioIn) 段")
+                    let running = self.engine?.isRunning == true ? "在跑" : "停了"
+                    self.log("实时诊断：引擎\(running)、麦克风 \(s.buffers) 段、音量 \(String(format: "%.3f", s.peak))、发出 \(s.sent) 段、转换失败 \(s.fails)；服务器消息 \(self.msgCount) 条、她的声音 \(self.audioIn) 段")
+                    // 5 秒里麦克风一段都没收到：多半是这台手机的回声消除不干活，关掉重来
+                    if s.buffers == 0 && self.voiceProcessing { self.rebuildWithoutVoiceProcessing() }
                 }
                 guard self.phase == .listening else { return }
                 if Date().timeIntervalSince(self.lastActivity) > Self.idleLimit {
@@ -278,11 +286,14 @@ final class LiveTalk: NSObject, ObservableObject {
 
     private func startAudio() throws {
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+        try session.setCategory(.playAndRecord, mode: voiceProcessing ? .voiceChat : .default, options: [.defaultToSpeaker, .allowBluetooth])
         try session.setActive(true)
         let e = AVAudioEngine()
         let input = e.inputNode
-        try? input.setVoiceProcessingEnabled(true)   // 回声消除：她的声音不会被当成你在说话
+        if voiceProcessing {
+            // 回声消除：她的声音不会被当成你在说话
+            do { try input.setVoiceProcessingEnabled(true) } catch { log("回声消除打不开：\(error.localizedDescription)") }
+        }
         let p = AVAudioPlayerNode()
         e.attach(p)
         e.connect(p, to: e.mainMixerNode, format: playFormat)
@@ -309,9 +320,46 @@ final class LiveTalk: NSObject, ObservableObject {
         try e.start()
         p.play()
         engine = e; player = p; mic = pipe
+        // 系统改了音频配置（打开回声消除、插拔耳机、蓝牙等）会把引擎停掉：接着重启
+        configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.restartEngine("系统改了音频配置") }
+        }
+        interruptObserver = NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+            let ended = (note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt) == AVAudioSession.InterruptionType.ended.rawValue
+            Task { @MainActor in if ended { self?.restartEngine("被别的声音打断后恢复") } }
+        }
+        log("音频引擎：\(e.isRunning ? "在跑" : "没跑")，回声消除\(voiceProcessing ? "开" : "关")")
+    }
+
+    /// 引擎被系统停了：重新启动（排着的声音扔掉，回到听的状态）
+    private func restartEngine(_ why: String) {
+        guard phase != .off, let e = engine, !e.isRunning else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(true)
+            try e.start()
+            player?.play()
+            log("音频引擎重新启动（\(why)）")
+        } catch {
+            log("音频引擎重启失败：\(error.localizedDescription)")
+        }
+        pending = 0
+        if phase == .speaking { backToListening() }
+    }
+
+    /// 麦克风一直没声音：关掉回声消除，整个音频重建一遍
+    private func rebuildWithoutVoiceProcessing() {
+        guard voiceProcessing, phase != .off else { return }
+        voiceProcessing = false
+        log("开着回声消除时麦克风收不到声音，改成不用回声消除（插话可能没那么灵）")
+        stopAudio()
+        do { try startAudio() } catch { return fail("麦克风打不开：\(error.localizedDescription)") }
+        if phase == .speaking { backToListening() }
     }
 
     private func stopAudio() {
+        if let o = configObserver { NotificationCenter.default.removeObserver(o) }
+        if let o = interruptObserver { NotificationCenter.default.removeObserver(o) }
+        configObserver = nil; interruptObserver = nil
         guard let e = engine else { return }
         e.inputNode.removeTap(onBus: 0)
         e.mainMixerNode.removeTap(onBus: 0)

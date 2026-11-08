@@ -20,7 +20,8 @@ final class Talk: NSObject, ObservableObject {
 
     // 听
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
-    private let audio = AVAudioEngine()
+    /// 普通模式录音用的引擎：要听的时候才建，用完就扔（不然会和实时语音的引擎抢麦克风）
+    private var audio: AVAudioEngine?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recTask: SFSpeechRecognitionTask?
     private var silenceTimer: Timer?
@@ -139,13 +140,14 @@ final class Talk: NSObject, ObservableObject {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .duckOthers])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            let input = audio.inputNode
-            input.removeTap(onBus: 0)
+            let engine = AVAudioEngine()
+            audio = engine
+            let input = engine.inputNode
             input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
                 req.append(buffer)
             }
-            audio.prepare()
-            try audio.start()
+            engine.prepare()
+            try engine.start()
         } catch {
             stopAudio()
             conversing = false
@@ -184,8 +186,11 @@ final class Talk: NSObject, ObservableObject {
     private func stopAudio() {
         silenceTimer?.invalidate()
         silenceTimer = nil
-        if audio.isRunning { audio.stop() }
-        audio.inputNode.removeTap(onBus: 0)
+        if let engine = audio {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            audio = nil
+        }
         request?.endAudio()
         request = nil
         recTask?.cancel()
