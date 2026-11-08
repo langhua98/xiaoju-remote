@@ -8,7 +8,7 @@ final class RemoteEngine: ObservableObject {
     /// 机器人模式的脸，指令执行时跟着变表情（见 RobotFace.swift）
     let face = FaceBridge()
     /// 和机器人对话（见 Talk.swift）
-    private(set) lazy var talk = Talk(store: store, face: face, log: { [weak self] in self?.push($0) })
+    private(set) lazy var talk = Talk(store: store, face: face, gimbal: gimbal, log: { [weak self] in self?.push($0) })
     /// 大疆 OM 云台：机器人的身体（见 Gimbal.swift）
     let gimbal = Gimbal()
 

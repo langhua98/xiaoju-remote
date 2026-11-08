@@ -182,6 +182,10 @@
 
 声音不受静音键影响（`.playback` 模式），跟系统媒体音量走，播放时把别的 App 的声音暂时调小。
 
+### 5.3b 实时语音（Gemini Live，可选）
+
+填了 Gemini API 密钥就用一个模型直接「听声音、出声音」：随时插话、开口更快，声音是 Gemini 的 `Leda`。连不上自动退回 5.3 的普通模式。细节见 `Robot/README.md`「实时语音」。
+
 ### 5.4 语音服务（`xiaoju-video/streamer/`）
 
 - 地址：`https://langhua1998-douyin-proxy.hf.space/tts`

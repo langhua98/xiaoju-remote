@@ -56,6 +56,14 @@ struct ContentView: View {
                     Text("默认用 DeepSeek（\(Store.defaultLLMBase)），填 DeepSeek 的 API 密钥就能用。模型二选一：deepseek-chat 回答快；deepseek-reasoner 先想再答，慢一些。填完自动保存，更新 App 不用重填（钥匙串里另存了一份）。")
                 }
 
+                Section {
+                    SecureField("Gemini API 密钥（aistudio.google.com 免费申请）", text: $store.geminiKey)
+                } header: {
+                    Text("实时语音（Gemini Live）")
+                } footer: {
+                    Text("填了就用实时语音聊天：像打电话一样，随时插话打断她，开口更快；声音是 Gemini 自带的女声。免费档有用量上限，数据谷歌可能用来改进产品。连不上时自动改用上面的 DeepSeek。空着就一直用 DeepSeek。")
+                }
+
                 GimbalSection(gimbal: engine.gimbal, auto: $store.gimbalAuto)
 
                 Section {
@@ -68,7 +76,7 @@ struct ContentView: View {
                 } header: {
                     Text("机器人模式")
                 } footer: {
-                    Text("整个屏幕变成 Live2D 角色的脸，待命照常进行。点一下屏幕和她说话，她用大模型回答并读出来；收到遥控指令时表情会跟着变；拍照、录音、听你说话时屏幕上方会提示。也可以对她说「换上黑白经典」「换回原版」来换衣服。连点三下退出。")
+                    Text("整个屏幕变成 Live2D 角色的脸，待命照常进行。点一下屏幕开始聊天，之后像打电话一样轮流说，不用每句都点，说「再见」结束；收到遥控指令时表情会跟着变；拍照、录音、听你说话时屏幕上方会提示。也可以对她说「换上黑白经典」「换回原版」来换衣服。连点三下退出。")
                 }
 
                 Section("记录") {

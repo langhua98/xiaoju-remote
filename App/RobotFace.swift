@@ -75,7 +75,7 @@ struct RobotModeView: View {
         ZStack(alignment: .bottom) {
             Color.black.ignoresSafeArea()
             FaceWebView(face: engine.face, onMessage: handle).ignoresSafeArea()
-            StatusLine(talk: engine.talk, prefix: engine.running ? "● 待命中 · \(store.device)" : "○ 未待命")
+            StatusLine(talk: engine.talk, live: engine.talk.live, prefix: engine.running ? "● 待命中 · \(store.device)" : "○ 未待命")
                 .font(.caption2)
                 .foregroundColor(.white.opacity(0.35))
                 .padding(.bottom, 6)
@@ -118,6 +118,7 @@ struct RobotModeView: View {
 /// 底部那行淡淡的状态：待命情况 + 对话进行到哪一步
 private struct StatusLine: View {
     @ObservedObject var talk: Talk
+    @ObservedObject var live: LiveTalk
     let prefix: String
 
     var body: some View {
@@ -125,9 +126,15 @@ private struct StatusLine: View {
     }
 
     private var hint: String {
+        switch live.phase {
+        case .connecting: return "正在连实时语音"
+        case .listening: return "实时对话中，直接说话，点一下结束"
+        case .speaking: return "直接说话就能打断她"
+        case .off: break
+        }
         switch talk.phase {
-        case .idle: return "点一下说话"
-        case .listening: return "正在听"
+        case .idle: return "点一下开始聊天"
+        case .listening: return talk.conversing ? "在听，说「再见」结束" : "正在听"
         case .thinking: return "在想"
         case .speaking: return "点一下打断"
         }

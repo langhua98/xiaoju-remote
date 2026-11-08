@@ -9,6 +9,9 @@ import Speech
 final class Talk: NSObject, ObservableObject {
     enum Phase { case idle, listening, thinking, speaking }
     @Published private(set) var phase: Phase = .idle
+    /// 连续对话：点一下开始，之后她说完自动接着听；说「再见」或者 8 秒不说话就结束
+    @Published private(set) var conversing = false
+    private static let byeWords = ["再见", "拜拜", "不聊了", "晚安", "先这样", "退下"]
 
     private let store: Store
     private let face: FaceBridge
@@ -17,7 +20,8 @@ final class Talk: NSObject, ObservableObject {
 
     // 听
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
-    private let audio = AVAudioEngine()
+    /// 普通模式录音用的引擎：要听的时候才建，用完就扔（不然会和实时语音的引擎抢麦克风）
+    private var audio: AVAudioEngine?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recTask: SFSpeechRecognitionTask?
     private var silenceTimer: Timer?
@@ -42,12 +46,27 @@ final class Talk: NSObject, ObservableObject {
     private var synthDone: CheckedContinuation<Void, Never>?
     private var startedSpeaking = false
 
-    init(store: Store, face: FaceBridge, log: @escaping (String) -> Void) {
+    /// 实时语音（Gemini Live）：填了 Gemini 密钥就优先用它，连不上退回下面的普通模式
+    let live: LiveTalk
+
+    /// 机器人的身体（大疆云台）：大模型回答里的动作标签会让它转
+    private let gimbal: Gimbal
+    private var gimbalChain: Task<Void, Never>?
+
+    init(store: Store, face: FaceBridge, gimbal: Gimbal, log: @escaping (String) -> Void) {
         self.store = store
         self.face = face
         self.log = log
+        self.gimbal = gimbal
+        self.live = LiveTalk(store: store, face: face, gimbal: gimbal, log: log)
         super.init()
         synth.delegate = self
+        live.onFail = { [weak self] _ in
+            guard let self = self else { return }
+            self.log("改用普通对话模式")
+            self.conversing = true
+            self.startListening()
+        }
     }
 
     /// 进机器人模式时叫醒语音服务（Space 上的 Kokoro 闲了会关掉，第一次加载要十几秒）
@@ -57,15 +76,33 @@ final class Talk: NSObject, ObservableObject {
     }
 
     /// 点了一下屏幕：没事时开始听；正在听就结束；正在想或正在说就打断。
+    /// 点了一下屏幕：没事时开始连续对话；正在听就当说完了；正在想或正在说就打断她，接着听你说。
     func tap() {
+        // 实时语音：点一下开始，再点一下结束（中间直接说话就行，能随时插话）
+        if live.phase != .off { live.stop(); return }
+        if phase == .idle && live.available { live.start(); return }
         switch phase {
-        case .idle: startListening()
+        case .idle:
+            conversing = true
+            startListening()
         case .listening: finishListening()
-        case .thinking, .speaking: cancel()
+        case .thinking, .speaking:
+            if conversing { interrupt() } else { cancel() }
         }
     }
 
+    /// 打断：她马上停下，转去听你说（连续对话里）
+    private func interrupt() {
+        llmTask?.cancel()
+        llmTask = nil
+        stopSpeaking()
+        phase = .idle
+        beginRecording()
+    }
+
     func cancel() {
+        live.stop()
+        conversing = false
         llmTask?.cancel()
         llmTask = nil
         stopAudio()
@@ -78,6 +115,7 @@ final class Talk: NSObject, ObservableObject {
 
     private func startListening() {
         guard !store.llmBase.isEmpty, !store.llmModel.isEmpty, !store.llmKey.isEmpty else {
+            conversing = false
             say("请先在设置里填好大模型的接口地址、模型名和密钥。", emotion: "confused")
             return
         }
@@ -85,6 +123,7 @@ final class Talk: NSObject, ObservableObject {
         SFSpeechRecognizer.requestAuthorization { status in
             Task { @MainActor in
                 guard status == .authorized else {
+                    self.conversing = false
                     self.say("请先在设置里允许语音识别。", emotion: "confused")
                     return
                 }
@@ -96,6 +135,7 @@ final class Talk: NSObject, ObservableObject {
     private func beginRecording() {
         guard phase == .idle else { return }
         guard let recognizer = recognizer, recognizer.isAvailable else {
+            conversing = false
             say("语音识别现在用不了。", emotion: "confused")
             return
         }
@@ -105,15 +145,17 @@ final class Talk: NSObject, ObservableObject {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .duckOthers])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            let input = audio.inputNode
-            input.removeTap(onBus: 0)
+            let engine = AVAudioEngine()
+            audio = engine
+            let input = engine.inputNode
             input.installTap(onBus: 0, bufferSize: 1024, format: input.outputFormat(forBus: 0)) { buffer, _ in
                 req.append(buffer)
             }
-            audio.prepare()
-            try audio.start()
+            engine.prepare()
+            try engine.start()
         } catch {
             stopAudio()
+            conversing = false
             say("麦克风打不开。", emotion: "confused")
             return
         }
@@ -127,7 +169,7 @@ final class Talk: NSObject, ObservableObject {
             let done = (result?.isFinal ?? false) || error != nil
             Task { @MainActor in self?.onRecognized(text, done: done) }
         }
-        armSilence(5)   // 5 秒内一句话都没说，就不听了
+        armSilence(conversing ? 8 : 5)   // 这么久一句话都没说，就不听了（连续对话也就此结束）
     }
 
     private func onRecognized(_ text: String?, done: Bool) {
@@ -149,8 +191,11 @@ final class Talk: NSObject, ObservableObject {
     private func stopAudio() {
         silenceTimer?.invalidate()
         silenceTimer = nil
-        if audio.isRunning { audio.stop() }
-        audio.inputNode.removeTap(onBus: 0)
+        if let engine = audio {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            audio = nil
+        }
         request?.endAudio()
         request = nil
         recTask?.cancel()
@@ -163,11 +208,15 @@ final class Talk: NSObject, ObservableObject {
         stopAudio()
         let text = heard.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
+            if conversing { log("一直没说话，对话结束") }
+            conversing = false
             phase = .idle
             face.send(["type": "robot_state", "state": "idle", "emotion": "neutral"])
             return
         }
         log("听到：\(text)")
+        // 说「再见」：这一句还是让她回答（道个别），回答完不再接着听
+        if Self.byeWords.contains(where: { text.contains($0) }) { conversing = false }
         phase = .thinking
         // 换装直接办，不问大模型
         if let id = Store.outfitCommand(text) {
@@ -186,7 +235,7 @@ final class Talk: NSObject, ObservableObject {
     private func ask(_ text: String) async {
         history.append(["role": "user", "content": text])
         if history.count > 12 { history.removeFirst(history.count - 12) }
-        let messages = [["role": "system", "content": Chat.persona]] + history
+        let messages = [["role": "system", "content": Chat.persona + "\n" + Body.personaForTags]] + history
         beginSpeaking()
         buffer = ""; reply = ""; emotion = "neutral"; emotionKnown = false
         do {
@@ -230,8 +279,11 @@ final class Talk: NSObject, ObservableObject {
                     return flush(final: final)
                 }
                 let tag = String(head[head.index(after: head.startIndex)..<close]).lowercased()
-                if Chat.emotions.contains(tag) { emotion = tag }
-                buffer = String(head[head.index(after: close)...])
+                // 只拿走情绪标签；开头要是动作标签（[左转 30]）就留着，后面照样执行
+                if Chat.emotions.contains(tag) {
+                    emotion = tag
+                    buffer = String(head[head.index(after: close)...])
+                }
                 emotionKnown = true
             } else if !head.isEmpty || final {
                 emotionKnown = true
@@ -285,7 +337,16 @@ final class Talk: NSObject, ObservableObject {
     }
 
     private func enqueue(_ raw: String) {
-        let text = Chat.clean(raw)
+        // 动作标签：一个接一个转（上一个转完再转下一个），不耽误说话
+        for tag in Body.tags(in: raw) {
+            let previous = gimbalChain
+            gimbalChain = Task { @MainActor in
+                await previous?.value
+                let r = await Body.perform(self.gimbal, direction: tag.direction, degrees: tag.degrees)
+                self.log("云台（\(tag.direction) \(tag.degrees.map { String(Int($0)) } ?? "")）：\(r)")
+            }
+        }
+        let text = Chat.clean(Body.strip(raw))
         guard text.rangeOfCharacter(from: .letters) != nil || text.rangeOfCharacter(from: .decimalDigits) != nil else { return }
         reply += text
         let fetch = Task.detached { await Voice.fetchWithBackup(text: text) }
@@ -398,6 +459,14 @@ final class Talk: NSObject, ObservableObject {
         playLoop = nil
         guard phase == .speaking || phase == .thinking else { return }
         phase = .idle
+        if conversing {
+            // 连续对话：说完马上接着听（留一点点时间让声音彻底停下，免得把自己的声音录进去）
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                guard let self = self, self.conversing, self.phase == .idle else { return }
+                self.beginRecording()
+            }
+            return
+        }
         face.send(["type": "robot_state", "state": "idle"])
         // 说完保持一会儿情绪，再回到平静
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in

@@ -25,7 +25,24 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
    - 声音：默认是 Cloudflare Workers AI 上的 MeloTTS 中文女声（`langhua98/xiaoju-music` 的 `yunlai-tts/`，地址 `https://yunlai-tts.langhua98.workers.dev`，免费额度每天 1 万 Neurons，合成过的句子缓存一天）。8 秒没回音就改问备用：小橘视频流式服务 Space 上的 Kokoro（`langhua98/xiaoju-video` 的 `streamer/tts_proxy.py`，`https://langhua1998-douyin-proxy.hf.space/tts`，音色 `zf_088` 或 `melo`，闲 10 分钟会关）。
    - 两个都连不上或没回音频时，那一句改用 iOS 自带中文语音读。两个地址都固定写在 `App/Talk.swift` 的 `Voice` 里，设置页不让改。
 4. 大模型被要求在回答前写一个情绪标签（`[happy]` 等），脸按这个情绪变表情，标签不会被读出来。
-5. 她在想或在说的时候，点一下可以打断。最近 12 句对话会作为上下文。
+5. **连续对话**：点一下开始，之后她说完自动接着听，不用每句都点；说「再见」「拜拜」「不聊了」（她会道个别）或者 8 秒不说话就结束。她在想或在说的时候点一下可以打断，她马上停下来听你说。最近 12 句对话会作为上下文。
+
+### 实时语音（`App/Live.swift`，Gemini Live）
+
+- 设置页「实时语音」填了 Gemini API 密钥（aistudio.google.com 免费申请）就优先用它：点一下开始，像打电话一样聊，再点一下结束；说「再见」或 30 秒没人说话也结束。
+- 麦克风一直开着，iOS 回声消除（`.voiceChat` + `setVoiceProcessingEnabled`）让她说话时不会把自己的声音当成你说的，所以能直接开口打断她（服务器发 `interrupted`，排着的声音全扔掉）。
+- 协议和官方 `@google/genai` SDK 一样：`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=…`，先发 `setup`（模型、`responseModalities: AUDIO`、声音 `Leda`、系统提示、要两边的文字稿），再不断发 `realtimeInput.audio`（16 kHz 16 位 PCM，每 100 毫秒一段），收 `serverContent.modelTurn` 里 24 kHz PCM。
+- 模型名不写死：每次连接前 `GET /v1beta/models`，挑支持 `bidiGenerateContent`、名字里有 live / native-audio、版本最新的（谷歌经常换预览模型名）。
+- 嘴型跟正在播放的声音音量动；文字稿记在 App 的「记录」里；说「换上…」照样换装。
+- 连不上（密钥不对、免费额度用完、10 秒没 setupComplete）就自动改用 DeepSeek + 语音合成的普通连续对话。
+- 免费档有用量上限；免费档的数据谷歌可能用来改进产品。
+
+### 让她自己转云台（`App/Body.swift`）
+
+- 普通模式（DeepSeek）：系统提示让她在回答里写动作标签 `[左转 30]` `[右转 30]` `[抬头 15]` `[低头 15]` `[回正]`。App 边念边转（一个转完再转下一个），标签不念出来。
+- 实时模式（Gemini Live）：`setup.tools` 里声明 `move_gimbal(direction, degrees)`；服务器发 `toolCall.functionCalls`，App 转完回 `toolResponse.functionResponses`（带同一个 `id`），她再告诉你转好了。
+- 左右 5～90°，上下 5～45°，`center` 回到归位点。云台没连上就告诉她「转不了」，不会装作转了。
+- 每次转动都记在「记录」里（`云台（left 30）：…`）。真机上左右反了就改 `Body.perform` 里的正负号。
 
 ### 换装（`Robot/live2d/outfits/`）
 

@@ -12,6 +12,8 @@ final class Store: ObservableObject {
     @Published var llmBase: String { didSet { save("llmBase", llmBase) } }
     @Published var llmModel: String { didSet { save("llmModel", llmModel) } }
     @Published var llmKey: String { didSet { Keychain.set("llmKey", llmKey) } }
+    /// Gemini API 密钥：填了就用实时语音对话（Live.swift），只存钥匙串
+    @Published var geminiKey: String { didSet { Keychain.set("geminiKey", geminiKey) } }
     /// 打开 App 时自动连大疆云台
     @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
     /// 机器人穿哪套衣服（Robot/live2d/outfits/<id>/clothes.png；default 是原版）
@@ -63,6 +65,7 @@ final class Store: ObservableObject {
         llmBase = load("llmBase") ?? Store.defaultLLMBase
         llmModel = load("llmModel").flatMap { m in Store.llmModels.contains { $0.id == m } ? m : nil } ?? Store.llmModels[0].id
         llmKey = Keychain.get("llmKey") ?? ""
+        geminiKey = Keychain.get("geminiKey") ?? ""
         gimbalAuto = d.object(forKey: "gimbalAuto") is Bool ? d.bool(forKey: "gimbalAuto") : (load("gimbalAuto") == "1")
         outfit = load("outfit").flatMap { id in Store.outfits.contains { $0.id == id } ? id : nil } ?? "default"
     }
