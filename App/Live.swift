@@ -42,6 +42,9 @@ final class LiveTalk: NSObject, ObservableObject {
     private var said = ""
     private var ending = false           // 说了再见：这一轮说完就挂
     private var modelName = ""
+    private var msgCount = 0          // 诊断：收到几条服务器消息
+    private var audioIn = 0           // 诊断：收到几段她的声音
+    private var statTicks = 0
 
     init(store: Store, face: FaceBridge, log: @escaping (String) -> Void) {
         self.store = store
@@ -158,8 +161,11 @@ final class LiveTalk: NSObject, ObservableObject {
                 guard let self = self, self.socket != nil else { return }
                 switch result {
                 case .failure(let e):
-                    if self.phase == .connecting { self.fail(e.localizedDescription) }
-                    else if self.phase != .off { self.log("实时语音断开：\(e.localizedDescription)"); self.stop() }
+                    let code = self.socket?.closeCode.rawValue ?? 0
+                    let why = self.socket?.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                    let detail = "\(e.localizedDescription)（关闭码 \(code)\(why.isEmpty ? "" : "：" + why)）"
+                    if self.phase == .connecting { self.fail(detail) }
+                    else if self.phase != .off { self.log("实时语音断开：\(detail)"); self.stop() }
                 case .success(let msg):
                     switch msg {
                     case .data(let d): self.handle(d)
@@ -175,7 +181,10 @@ final class LiveTalk: NSObject, ObservableObject {
     // MARK: 服务器发来的
 
     private func handle(_ data: Data) {
-        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        msgCount += 1
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return log("实时语音：收到看不懂的消息（\(data.count) 字节）")
+        }
         if obj["setupComplete"] != nil { ready() }
         if let err = obj["error"] as? [String: Any] {
             let m = (err["message"] as? String) ?? "出错"
@@ -193,6 +202,7 @@ final class LiveTalk: NSObject, ObservableObject {
             for p in parts {
                 guard let inline = p["inlineData"] as? [String: Any], let b64 = inline["data"] as? String,
                       let pcm = Data(base64Encoded: b64) else { continue }
+                audioIn += 1
                 play(pcm)
             }
         }
@@ -207,9 +217,18 @@ final class LiveTalk: NSObject, ObservableObject {
         log("实时语音已连上（\(modelName.replacingOccurrences(of: "models/", with: ""))，声音 \(Self.voice)）")
         face.send(["type": "sensing", "mic": true])
         face.send(["type": "robot_state", "state": "listening", "emotion": "neutral"])
+        // 先让她打个招呼：能听到就说明「她的声音 → 扬声器」这条路是通的
+        send(["clientContent": ["turns": [["role": "user", "parts": [["text": "（主人刚打开你，用一句很短的话跟主人打个招呼。）"]]]], "turnComplete": true]])
+        msgCount = 0; audioIn = 0; statTicks = 0
         idleTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self = self, self.phase == .listening else { return }
+                guard let self = self, self.phase != .off else { return }
+                // 前 30 秒每 5 秒记一次诊断：麦克风有没有声音、发出去没有、服务器回了什么
+                if self.statTicks < 6, let s = self.mic?.takeStats() {
+                    self.statTicks += 1
+                    self.log("实时诊断：麦克风 \(s.buffers) 段、音量 \(String(format: "%.3f", s.peak))、发出 \(s.sent) 段、转换失败 \(s.fails)；服务器消息 \(self.msgCount) 条、她的声音 \(self.audioIn) 段")
+                }
+                guard self.phase == .listening else { return }
                 if Date().timeIntervalSince(self.lastActivity) > Self.idleLimit {
                     self.log("\(Int(Self.idleLimit)) 秒没说话，实时对话结束")
                     self.stop()
@@ -268,6 +287,7 @@ final class LiveTalk: NSObject, ObservableObject {
         e.attach(p)
         e.connect(p, to: e.mainMixerNode, format: playFormat)
         let inFormat = input.outputFormat(forBus: 0)
+        log("麦克风格式：\(Int(inFormat.sampleRate)) Hz，\(inFormat.channelCount) 声道")
         guard let pipe = MicPipe(from: inFormat) else { throw Chat.Failure(message: "麦克风格式转不了") }
         let ws = socket
         pipe.send = { pcm in
@@ -337,12 +357,32 @@ final class MicPipe {
     private var acc = Data()
     var send: ((Data) -> Void)?
 
+    // 诊断用：收了多少段麦克风、发了多少段、转换失败几次、最近 5 秒最大音量
+    private let lock = NSLock()
+    private var buffersIn = 0, chunksSent = 0, convertFails = 0
+    private var peak: Float = 0
+
+    /// 取出并清零（主线程每 5 秒取一次写进记录）
+    func takeStats() -> (buffers: Int, sent: Int, fails: Int, peak: Float) {
+        lock.lock(); defer { lock.unlock() }
+        let s = (buffersIn, chunksSent, convertFails, peak)
+        buffersIn = 0; chunksSent = 0; convertFails = 0; peak = 0
+        return s
+    }
+
     init?(from: AVAudioFormat) {
         guard let c = AVAudioConverter(from: from, to: target) else { return nil }
         converter = c
     }
 
     func push(_ buf: AVAudioPCMBuffer) {
+        var level: Float = 0
+        if let ch = buf.floatChannelData?[0], buf.frameLength > 0 {
+            var sum: Float = 0
+            for i in 0..<Int(buf.frameLength) { sum += ch[i] * ch[i] }
+            level = (sum / Float(buf.frameLength)).squareRoot()
+        }
+        lock.lock(); buffersIn += 1; peak = max(peak, level); lock.unlock()
         let cap = AVAudioFrameCount(Double(buf.frameLength) * target.sampleRate / buf.format.sampleRate + 64)
         guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: cap) else { return }
         var fed = false
@@ -353,11 +393,15 @@ final class MicPipe {
             status.pointee = .haveData
             return buf
         }
-        guard err == nil, out.frameLength > 0, let ch = out.int16ChannelData else { return }
+        guard err == nil, out.frameLength > 0, let ch = out.int16ChannelData else {
+            if err != nil { lock.lock(); convertFails += 1; lock.unlock() }
+            return
+        }
         acc.append(Data(bytes: ch[0], count: Int(out.frameLength) * 2))
         if acc.count >= 3200 {
             send?(acc)
             acc.removeAll(keepingCapacity: true)
+            lock.lock(); chunksSent += 1; lock.unlock()
         }
     }
 }
