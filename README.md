@@ -1,4 +1,4 @@
-# 小橘遥控（iPhone 被控端）
+# Vania（iPhone 被控端，原名「小橘遥控」）
 
 装在一台 iPhone 上，开「待命」后，另一台设备可以通过小橘云盘发指令，调用这台的硬件：拍照、录音、定位、手电筒、震动、响铃。两台设备不需要在同一个网络里。
 
@@ -8,7 +8,7 @@
 
 ## 安装
 
-1. 打开本仓库 Release「latest」，下载 `XiaojuRemote-latest.ipa`。每次往 `App/`、`project.yml` 推送代码，GitHub 会自动重新编译。
+1. 打开本仓库 Release「latest」，下载 `Vania-latest.ipa`。每次往 `App/`、`project.yml` 推送代码，GitHub 会自动重新编译。
 2. 用 SideStore（自己的 Apple ID）或自己的证书签名后安装。用免费 Apple ID 签的话，每 7 天要重签一次。
 
 ## 使用
