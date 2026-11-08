@@ -177,6 +177,7 @@ window.YunlaiFace = {
 
 Live2DModel.from(CFG.model, { autoInteract: false }).then((m) => {
   model = m;
+  if (Q.get('debug') === '1') window.__live2dModel = m;   // 调试用（比如找贴图上每块衣服的位置）
   app.stage.addChild(model);
   model.internalModel.on('beforeModelUpdate', beforeModelUpdate);
   layout();
