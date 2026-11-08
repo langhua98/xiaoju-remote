@@ -27,11 +27,19 @@ class MonitorConfig(
      * 有动静才开始录（动静前只有守望时留的几帧，最多 3 秒）。关掉 = 编码器一直开着，能录到动静前 preSec 秒，费电得多。
      */
     val eco: Boolean = true,
+    /**
+     * 间歇守望（省电侦测里再省一档，默认开，0.18）：守望时相机开 dutyOn 秒看一看，没动静就关掉相机、放掉 CPU 锁，
+     * 歇 dutyOff 秒再由闹钟叫醒开相机。歇着的时候发生又结束的动静会漏掉；有动静、有人看直播、要拍照时马上不歇。
+     */
+    val duty: Boolean = true,
+    val dutyOn: Int = 2,
+    val dutyOff: Int = 4,
 ) {
     fun toJson(): JSONObject = JSONObject().put("on", on).put("sensitivity", sensitivity)
         .put("regions", JSONArray().apply { regions.forEach { r -> put(JSONArray().apply { r.forEach { put(it.toDouble()) } }) } })
         .put("pre", preSec).put("post", postSec).put("notify", notify).put("people", personOnly).put("cooldown", cooldownMin)
         .put("audio", audio).put("upload", upload).put("lens", lens).put("width", width).put("fps", fps).put("quality", quality).put("eco", eco)
+        .put("duty", duty).put("duty_on", dutyOn).put("duty_off", dutyOff)
 
     /** 省电侦测时动静前留几秒画面（守望时每秒 4 帧，最多 3 秒，内存另外有上限） */
     val ecoPreMs: Long get() = minOf(preSec, 3) * 1000L
@@ -57,7 +65,13 @@ class MonitorConfig(
         fps = if (c.has("fps")) c.optInt("fps", fps).coerceIn(1, 15) else fps,
         quality = if (c.has("quality")) c.optInt("quality", quality).coerceIn(20, 90) else quality,
         eco = if (c.has("eco")) c.optBoolean("eco") else eco,
+        duty = if (c.has("duty")) c.optBoolean("duty") else duty,
+        dutyOn = if (c.has("duty_on")) c.optInt("duty_on", dutyOn).coerceIn(1, 10) else dutyOn,
+        dutyOff = if (c.has("duty_off")) c.optInt("duty_off", dutyOff).coerceIn(1, 60) else dutyOff,
     )
+
+    /** 现在要不要间歇守望（只在省电侦测里才有） */
+    val dutyActive: Boolean get() = on && eco && duty
 
     companion object {
         fun fromJson(s: String?): MonitorConfig = try {

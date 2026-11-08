@@ -53,7 +53,7 @@ python3 scripts/遥控.py 测试机B shell --cmd "ls /sdcard"
 | `shell` | `cmd` | 在 App 沙盒里跑一条 shell（非 root，只有 App 自己的权限） |
 | `video` | `transport`=ws、`room`、`codec`=h264/jpeg、`lens`、`width`、`fps`、`quality`、`audio` | 实时画面（走云盘的直播通道） |
 | `video_set` | 同上加 `exposure`、`zoom`、`torch`、`flip`、`stamp` | 直播 / 侦测中调相机；`flip` 上下翻转（转 180°，手机倒装时用）、`stamp` 印日期时间（默认开），这两个记在手机上（0.17） |
-| `monitor` | `on`、`sensitivity` 1–100、`regions` [[x,y,w,h]…]、`pre`、`post`、`notify`、`people`（只在认出人时提醒，0.12）、`eco`（省电侦测，0.14，默认开）、`cooldown`、`audio`、`upload`、`lens`、`width`、`fps`、`quality` | 移动侦测设置（只改给了的字段），回执带状态 |
+| `monitor` | `on`、`sensitivity` 1–100、`regions` [[x,y,w,h]…]、`pre`、`post`、`notify`、`people`（只在认出人时提醒，0.12）、`eco`（省电侦测，0.14，默认开）、`duty`、`duty_on`、`duty_off`（间歇守望，0.18，默认开，看 2 秒歇 4 秒）、`cooldown`、`audio`、`upload`、`lens`、`width`、`fps`、`quality` | 移动侦测设置（只改给了的字段），回执带状态 |
 | `monitor_status` | — | 侦测状态：今天几段、占多少空间、待备份、Telegram；`objects` 是能认东西时用的模型（空 = 认不了） |
 | `events` | `limit`、`before` | 录好的事件（新的在前，带小图）；`labels` 是认出来在动的东西（「人×2、猫」） |
 | `event_get` | `name` | 取一段录像：备份过的给云盘路径，5 MB 以内直接放回执，大的先传到云盘 |
@@ -97,6 +97,23 @@ python3 scripts/遥控.py 测试机B shell --cmd "ls /sdcard"
 - 录像（有动静 → 最后一次动静后 `post` 秒）：传感器回到正常档，编码器打开，先喂守望时留的几帧（录像从动静前一两秒开始，那一段每秒 4 帧），
   再接着录，麦克风也打开。录完回守望，内存里的旧录像清掉。
 - 关掉 `eco` 就和以前一样：编码器一直开着，能录到动静前 `pre` 秒，最费电。
+
+**装傻省电（0.18）：没动静时能关的都关，真有变化才干活**
+- 间歇守望（`monitor` 的 `duty`，默认开，只在 `eco` 里有）：相机开 `duty_on` 秒（1～10，默认 2）看一看，没动静就关掉相机、
+  放掉 CPU 锁，定一个闹钟，歇 `duty_off` 秒（1～60，默认 4）再开。歇着的时候 CPU 能睡、相机传感器断电。
+  - 歇着的时候发生又结束的动静会漏掉，要一点不漏就 `{"do":"monitor","duty":false}`（回到相机一直开着的省电守望）。
+  - 侦测的背景跨轮留着（`MotionDetector.pause`），一开相机两帧就能报，不用每轮重新学 2.5 秒；刚开相机 0.5 秒内曝光还在变，不看。
+  - 背景还没学好、或者正看到一半的动静（连着两次才算），不歇。有动静、开始直播、要拍照、开手电、改设置时马上叫醒。
+  - 老系统（Android 6 以下）用 `ELAPSED_REALTIME_WAKEUP` 闹钟叫醒（4.4 起用 `setExact`）；6 以上有 Doze，只关相机、不放 CPU 锁。
+- 守望时不印时间戳：留下的几帧开始录时按拍下的钟点补印，录像、截图、直播照样带时间。
+- 守望时对焦定在无限远（没有就固定焦），对焦马达不来回找；开始录、直播时换回连续对焦。
+- 麦克风、编码器守望时本来就关着（0.14）。
+
+**耗电诊断（0.18）**：`monitor_status` 回执的 `status.power`，`info` 里也有一行。S4 读不到实时电流，就比这几个数：
+- `cpu_awake_pct`（启动以来拿着 CPU 锁的比例）、`camera_on_pct`、`rest_pct`（间歇守望歇着的比例）、`camera_opens`、`camera_open_ms`（开一次相机多久）
+- `fps_ranges`（这台手机支持的帧率档）、`fps_now`（实际设上的档）、`preview`、`focus`、`callbacks`（预览回调次数）、`looks`（侦测看了几次）
+- `motion_to_rec_ms`（发现动静到开始录用了多久）、`battery_pct`、`battery_mv`、`battery_c`、`plugged`
+- 电脑上看：`python3 scripts/遥控.py 设备名 monitor_status`；改设置：`python3 scripts/遥控.py 设备名 monitor --set '{"duty": false}'`
 
 **CPU 和网络（Power、RemoteService）**
 - `Power` 是计数的 WakeLock：相机开着、执行指令、备份录像、发提醒、认东西时才拿着；收指令的长轮询在等服务器回话时放掉，

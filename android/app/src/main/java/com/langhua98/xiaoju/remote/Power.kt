@@ -29,14 +29,28 @@ object Power {
 
     @Synchronized fun acquire() {
         holds++
-        if (holds == 1) runCatching { wl?.acquire() }
+        if (holds == 1) { heldSince = System.currentTimeMillis(); runCatching { wl?.acquire() } }
     }
 
     @Synchronized fun release() {
         if (holds <= 0) return
         holds--
-        if (holds == 0) runCatching { if (wl?.isHeld == true) wl?.release() }
+        if (holds == 0) {
+            heldTotal += System.currentTimeMillis() - heldSince; heldSince = 0L
+            runCatching { if (wl?.isHeld == true) wl?.release() }
+        }
     }
+
+    // 拿着 CPU 锁的累计时长（看 CPU 到底睡了多少）
+    private var heldSince = 0L
+    private var heldTotal = 0L
+    private val startedAt = System.currentTimeMillis()
+
+    /** 从 App 启动到现在，CPU 锁一共拿了多少毫秒 */
+    val heldMs: Long @Synchronized get() = heldTotal + (if (heldSince > 0) System.currentTimeMillis() - heldSince else 0L)
+
+    /** App 启动了多少毫秒（和 heldMs 一起算比例） */
+    val upMs: Long get() = System.currentTimeMillis() - startedAt
 
     /** 现在有几个在要 CPU 醒着（给 info 看） */
     val holders: Int @Synchronized get() = holds

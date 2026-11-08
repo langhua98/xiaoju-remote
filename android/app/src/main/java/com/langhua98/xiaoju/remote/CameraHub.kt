@@ -1,6 +1,12 @@
 package com.langhua98.xiaoju.remote
 
+import android.annotation.TargetApi
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -8,7 +14,11 @@ import android.graphics.ImageFormat
 import android.graphics.Matrix
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
@@ -32,7 +42,7 @@ import java.util.concurrent.TimeUnit
  * 实时画面卡顿的处理：网络跟不上丢了帧，马上要一个关键帧（4.2 不支持「要关键帧」，就重开编码器，
  * 重开后第一帧就是关键帧，卡大约 0.1 秒，不用等满 1 秒）；老是丢就把码率降下来，好了再慢慢升回去。
  *
- * 侦测开着时相机一直开着；只看实时画面时，看的人走了相机就关。
+ * 侦测开着时相机一直开着（间歇守望时没动静就关一会儿，见 rest）；只看实时画面时，看的人走了相机就关。
  * 直播中看的一端可以换镜头、调参数，直播完恢复侦测自己的设置。
  */
 class CameraHub(
@@ -145,6 +155,7 @@ class CameraHub(
         applyMonitor()
         // 直播中先不动相机（看的人在调），直播完再换成侦测的设置
         if (m.on && !liveActive()) settings.apply(m.cameraJson())
+        kick()
         if (m.on) {
             ensure()
             if (!old.on && m.notify) notifier.text("移动侦测已打开，有动静会发到这里。")
@@ -167,6 +178,7 @@ class CameraHub(
         val l = Live(cmd.optString("room"), av, audio, System.currentTimeMillis() + RemoteService.LIVE_MAX_MS)
         l.cloud = c
         live = l
+        kick()   // 间歇守望正歇着：马上开相机
         rateScale = 1.0
         if (!lanServer.start()) Bus.push("局域网直连开不了（端口被占用），只能经云盘看")
         forceKey()
@@ -186,7 +198,7 @@ class CameraHub(
     }
 
     /** 直播中 / 侦测中调相机（video_set、手电）。 */
-    fun adjust(cmd: JSONObject): List<String> = settings.apply(cmd).also { saveView() }
+    fun adjust(cmd: JSONObject): List<String> = settings.apply(cmd).also { saveView(); kick() }
 
     /** 翻转、时间戳记在手机上（侦测、下次直播都照这个来） */
     private fun saveView() { prefs.flip = settings.flip; prefs.stamp = settings.stamp }
@@ -197,7 +209,10 @@ class CameraHub(
         grabbed = null
         val l = CountDownLatch(1)
         grabLatch = l
-        if (!l.await(timeoutMs, TimeUnit.MILLISECONDS)) { grabLatch = null; return null }
+        // 间歇守望正歇着：叫醒，相机重开要一两秒
+        val wait = if (resting) timeoutMs + 3_000 else timeoutMs
+        kick()
+        if (!l.await(wait, TimeUnit.MILLISECONDS)) { grabLatch = null; return null }
         grabLatch = null
         val d = grabbed ?: return null
         return Snapshot.jpeg(d, grabW, grabH, grabRot, 92, 0)
@@ -214,8 +229,39 @@ class CameraHub(
             .put("storage_mb", store.usedBytes() / (1 shl 20)).put("free_mb", store.dir.usableSpace / (1 shl 20))
             .put("telegram", notifier.status).put("backup", uploader.status).put("codec_note", settings.codecNote)
             .put("objects", if (objectsOn()) "FastestDet" else "")
-            .put("eco", monitor.eco).put("stage", stage())
+            .put("eco", monitor.eco).put("stage", stage()).put("resting", resting)
             .put("current_ma", PowerMeter.currentMa(3, 100) ?: -1)
+            .put("power", powerJson())
+    }
+
+    /**
+     * 耗电诊断：CPU 醒着、相机开着各占多少时间，相机实际的帧率档 / 尺寸 / 对焦，间歇守望歇了多少，电池电压和温度。
+     * S4 读不到实时电流，换手机、改设置以后比这几个数。
+     */
+    fun powerJson(): JSONObject {
+        val up = Power.upMs.coerceAtLeast(1)
+        val o = JSONObject()
+            .put("up_min", up / 60_000)
+            .put("cpu_awake_pct", Power.heldMs * 100 / up)
+            .put("camera_on_pct", CamStats.onMs * 100 / up)
+            .put("camera_opens", CamStats.opens).put("camera_open_ms", CamStats.lastOpenMs)
+            .put("fps_ranges", CamStats.fpsRanges).put("fps_now", CamStats.fpsNow)
+            .put("preview", CamStats.size).put("focus", CamStats.focus)
+            .put("callbacks", CamStats.callbacks).put("looks", looks)
+            .put("rests", rests).put("rest_pct", restTotal * 100 / up)
+            .put("motion_to_rec_ms", lastMotionToRecMs)
+        runCatching {
+            val b = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            if (b != null) {
+                val level = b.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+                val scale = b.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
+                o.put("battery_pct", level * 100 / scale)
+                    .put("battery_mv", b.getIntExtra(android.os.BatteryManager.EXTRA_VOLTAGE, -1))
+                    .put("battery_c", b.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -10) / 10.0)
+                    .put("plugged", b.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0)
+            }
+        }
+        return o
     }
 
     /** 事件列表（events 指令）：新的在前，带小图（base64）。 */
@@ -232,6 +278,8 @@ class CameraHub(
     }
 
     fun shutdown() {
+        kick()
+        if (receiverOn) runCatching { ctx.unregisterReceiver(dutyWake) }
         live?.sinks()?.forEach { it.close() }
         lanServer.close()
         thread?.let { runCatching { it.join(5_000) } }
@@ -253,10 +301,16 @@ class CameraHub(
         try {
             while (wanted()) {
                 try {
+                    sessionAt = 0L
+                    restWanted = false
                     Camera.live(settings, running = {
                         if (Thread.currentThread() === thread) housekeep()
-                        wanted()
+                        val rest = restDue()
+                        if (rest) restWanted = true
+                        wanted() && !rest
                     }) { nv21, w, h, r, ts -> frame(nv21, w, h, r, ts) }
+                    // 间歇守望：看完这一轮没动静，相机已经关了，歇一会儿
+                    if (restWanted && wanted()) { restWanted = false; rest(monitor.dutyOff * 1000L) }
                 } catch (e: Exception) {
                     Bus.push("相机打不开：${e.message}，5 秒后再试")
                     live?.let { endLive() }
@@ -324,15 +378,25 @@ class CameraHub(
         val l = live
         val sinks = l?.watched().orEmpty()
         val m = monitor
+        val now = System.currentTimeMillis()
+        // 刚开相机的第一帧：这一轮从这里算；头几帧曝光还在变，不看（间歇守望每轮都重开相机）
+        if (sessionAt == 0L) {
+            sessionAt = now; settleUntil = now + SETTLE_MS
+            detector.pause()
+            preroll.clear()   // 上一轮留的帧隔着一段空白，不要了
+        }
         // 先看有没有动静（在印时间之前看：跳动的秒数不能算动静）；省电侦测时，发现动静的这一帧就开始录
-        if (m.on) look(nv21, w, h, r, ts)
-        // 印日期时间：之后的直播、录像、截图都带上
-        if (settings.stamp) stamper.draw(nv21, w, h, r)
+        val wasRec = recorder.recording
+        if (m.on && now >= settleUntil) look(nv21, w, h, r, ts)
+        if (!wasRec && recorder.recording) motionAt = now
+        val eco = m.on && m.eco
+        val rec = m.on && (!eco || recorder.recording)
+        // 印日期时间：之后的直播、录像、截图都带上。守望时（不录、没直播、不截图）不印，
+        // 留下的几帧开始录时按拍下的钟点补印（见 h264 里喂 preroll）
+        if (settings.stamp && (rec || l != null || grabLatch != null)) stamper.draw(nv21, w, h, r, now)
         grabLatch?.let { gl ->
             if (grabbed == null) { grabbed = nv21.copyOf(); grabW = w; grabH = h; grabRot = r; gl.countDown() }
         }
-        val eco = m.on && m.eco
-        val rec = m.on && (!eco || recorder.recording)
         val liveH264 = sinks.isNotEmpty() && settings.codec == LiveSettings.H264
         settings.setWatch(eco && !rec && l == null)
         val wantH264 = !h264Broken && (rec || liveH264)
@@ -343,7 +407,7 @@ class CameraHub(
             closeEncoder()
             if (eco) recorder.dropBuffered()   // 回到守望：内存里的旧录像不要了（下次从新留的几帧开始）
         }
-        if (eco && !rec && enc == null) preroll.add(nv21, w, h, ts)
+        if (eco && !rec && enc == null) preroll.add(nv21, w, h, ts, now)
         else if (preroll.size > 0) preroll.clear()
         if (l != null && sinks.isNotEmpty() && (settings.codec == LiveSettings.JPEG || h264Broken)) jpegLive(l, sinks, nv21, w, h, r, ts)
     }
@@ -363,11 +427,18 @@ class CameraHub(
                 // 省电侦测刚开始录：先喂守望时留的几帧（动静前一两秒），录像从那里开始
                 if (prerollPending) {
                     prerollPending = false
-                    preroll.drain(w, h) { f -> if (f.ts < ts && e.feed(f.data, f.ts, 30_000)) fed++ }
+                    val stamp = settings.stamp
+                    preroll.drain(w, h) { f ->
+                        if (f.ts < ts) {
+                            if (stamp) stamper.draw(f.data, f.w, f.h, rot, f.wall)
+                            if (e.feed(f.data, f.ts, 30_000)) fed++
+                        }
+                    }
                 }
             }
             val e = enc ?: return
             if (e.feed(nv21, ts)) fed++
+            if (motionAt > 0) { lastMotionToRecMs = System.currentTimeMillis() - motionAt; motionAt = 0L }
             if (e.produced == 0 && fed > 5 && System.currentTimeMillis() - encSince > 3000) giveUp("硬件编码器不出画面")
         } catch (t: Throwable) {
             giveUp("硬件编码出错：${t.message ?: t.javaClass.simpleName}")
@@ -450,6 +521,7 @@ class CameraHub(
         val now = System.currentTimeMillis()
         if (now - lastLook < 200) return
         lastLook = now
+        looks++
         if (settings.version != detVersion || settings.tweak != detTweak) {
             detVersion = settings.version; detTweak = settings.tweak
             detector.reset()   // 换了镜头、调了亮度：重新学背景
@@ -577,6 +649,7 @@ class CameraHub(
 
     private fun stateText(): String = when {
         monitor.on && liveActive() -> "正在被远程使用：移动侦测 + 实时画面"
+        monitor.on && monitor.dutyActive -> "正在被远程使用：移动侦测中（间歇守望）"
         monitor.on && monitor.eco -> "正在被远程使用：移动侦测中（省电）"
         monitor.on -> "正在被远程使用：移动侦测中"
         liveActive() -> "正在被远程使用：实时画面"
@@ -589,10 +662,103 @@ class CameraHub(
         if (!m.on) return "移动侦测已关闭（录好的 ${store.list().size} 段还在手机上）"
         val area = if (m.regions.isEmpty()) "整个画面" else "${m.regions.size} 个区域"
         val pre = if (m.eco) "省电（动静前留 ${m.ecoPreMs / 1000} 秒画面）" else "动静前 ${m.preSec} 秒"
-        return "移动侦测已打开：$area，灵敏度 ${m.sensitivity}，$pre、后 ${m.postSec} 秒" +
+        val duty = if (m.dutyActive) "，间歇守望（看 ${m.dutyOn} 秒、歇 ${m.dutyOff} 秒，歇着时的动静会漏）" else ""
+        return "移动侦测已打开：$area，灵敏度 ${m.sensitivity}，$pre、后 ${m.postSec} 秒$duty" +
             (if (m.notify) "，Telegram 提醒（隔 ${m.cooldownMin} 分钟）" else "，不提醒") +
             (if (m.upload) "，慢慢备份到云盘" else "，只存手机") +
             (if (h264Broken) "（${settings.codecNote}）" else "")
+    }
+
+    // ---- 间歇守望：没动静时相机看 dutyOn 秒、关掉歇 dutyOff 秒（相机关、CPU 锁放掉，闹钟叫醒）----
+
+    @Volatile var resting = false
+        private set
+    @Volatile private var restWanted = false
+    @Volatile private var kicked = false
+    private val restLock = Object()
+    @Volatile private var sessionAt = 0L      // 这次开相机后第一帧的时间（0 = 还没来）
+    private var settleUntil = 0L              // 这之前的帧不看（刚开相机曝光还在变）
+    @Volatile private var looks = 0L
+    @Volatile private var rests = 0
+    @Volatile private var restTotal = 0L
+    private var motionAt = 0L                 // 发现动静的时间（算到开始录用了多久）
+    @Volatile private var lastMotionToRecMs = -1L
+
+    /** 这一轮看够了、可以歇了吗：开着间歇守望、在守望（不录、没直播、不截图、没开手电）、背景学好了、没有看到一半的动静。 */
+    private fun restDue(): Boolean {
+        val m = monitor
+        if (!m.dutyActive || live != null || recorder.recording || grabLatch != null || settings.torch) return false
+        val at = sessionAt
+        if (at == 0L || System.currentTimeMillis() - at < m.dutyOn * 1000L) return false
+        return detector.ready && !detector.pending
+    }
+
+    /** 有事（直播、拍照、改设置、停止）：不歇了，马上开相机。 */
+    private fun kick() {
+        kicked = true
+        synchronized(restLock) { restLock.notifyAll() }
+    }
+
+    /** 相机线程上：歇 ms 毫秒。老系统（没有 Doze）上放掉 CPU 锁、定一个闹钟叫醒；有事被 kick 就马上回去。 */
+    private fun rest(ms: Long) {
+        val start = SystemClock.elapsedRealtime()
+        // 闹钟没定上就别放锁（不然 CPU 睡着了没人叫醒，要等到别的事把它叫醒）
+        val sleepCpu = Power.canSleep && setAlarm(start + ms)
+        resting = true
+        if (sleepCpu) Power.release()
+        try {
+            synchronized(restLock) {
+                while (!kicked && wanted() && restStillOk()) {
+                    val left = start + ms - SystemClock.elapsedRealtime()
+                    if (left <= 0) break
+                    restLock.wait(left)
+                }
+            }
+        } catch (e: InterruptedException) {
+        } finally {
+            if (sleepCpu) { Power.acquire(); cancelAlarm() }
+            kicked = false
+            resting = false
+            rests++
+            restTotal += SystemClock.elapsedRealtime() - start
+        }
+    }
+
+    private fun restStillOk(): Boolean = monitor.dutyActive && live == null && grabLatch == null && !settings.torch
+
+    /** 闹钟叫醒：先拿一下 CPU 锁（相机线程醒来自己再拿），叫醒歇着的相机线程。 */
+    private val dutyWake = object : BroadcastReceiver() {
+        override fun onReceive(c: Context, i: Intent) {
+            Power.acquire()
+            Handler(Looper.getMainLooper()).postDelayed({ Power.release() }, 2_000)
+            kick()
+        }
+    }
+
+    private fun dutyIntent(): PendingIntent = PendingIntent.getBroadcast(ctx, 3,
+        Intent(ACTION_DUTY_WAKE).setPackage(ctx.packageName),
+        PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0))
+
+    @Volatile private var receiverOn = false
+
+    private fun setAlarm(atElapsed: Long): Boolean =
+        runCatching {
+            if (!receiverOn) { ctx.registerReceiver(dutyWake, IntentFilter(ACTION_DUTY_WAKE)); receiverOn = true }
+            val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            // 4.4 起 set() 不准时（会被系统攒到一起），要用 setExact；4.2、4.3 的 set() 本来就准
+            if (Build.VERSION.SDK_INT >= 19) ExactAlarm.set(am, atElapsed, dutyIntent())
+            else am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, atElapsed, dutyIntent())
+            true
+        }.getOrElse { Bus.push("间歇守望的闹钟没定上：${it.message}"); false }
+
+    private fun cancelAlarm() {
+        runCatching { (ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(dutyIntent()) }
+    }
+
+    companion object {
+        const val ACTION_DUTY_WAKE = "com.langhua98.xiaoju.remote.DUTY_WAKE"
+        /** 开相机以后这么多毫秒内的帧不看（自动曝光还在调） */
+        const val SETTLE_MS = 500L
     }
 
     private fun eventsDir(): File {
@@ -600,6 +766,12 @@ class CameraHub(
         if (ext != null && (ext.isDirectory || ext.mkdirs()) && ext.canWrite()) return ext
         return File(ctx.filesDir, "events")
     }
+}
+
+@TargetApi(19)
+private object ExactAlarm {
+    fun set(am: AlarmManager, atElapsed: Long, pi: PendingIntent) =
+        am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, atElapsed, pi)
 }
 
 /** NV21 → 转正的 JPEG（maxW > 0 时缩小到这么宽，做小图）。 */
