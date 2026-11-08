@@ -35,6 +35,10 @@ final class Gimbal: NSObject, ObservableObject {
     static let service = CBUUID(string: "FFF0")
     static let notifyChar = CBUUID(string: "FFF4")
     static let writeChar = CBUUID(string: "FFF5")
+    /// 问 iOS「系统里已经连着哪些设备」时要给服务号，只给 FFF0 常常拿不到：
+    /// 在系统设置里连上的云台，iOS 记的多半是它的蓝牙快门（HID 1812）、电池（180F）、设备信息（180A）这些服务
+    static let systemServices = [service, CBUUID(string: "1812"), CBUUID(string: "180F"), CBUUID(string: "180A")]
+    static let namePrefixes = ["OM", "Osmo", "DJI"]
 
     // 闭环参数（和 ble.html 的 gotoRelative 一样）
     /// 速度标度：1 单位 ≈ 0.11 °/s（OM6 实测：100 单位连发量到 10.9°/s）
@@ -114,9 +118,8 @@ final class Gimbal: NSObject, ObservableObject {
         case .unsupported: phase = .unsupported; return
         default: return   // 蓝牙还在启动，centralManagerDidUpdateState 会再叫 start
         }
-        // 1. 云台已经和这台手机连着（比如刚用过 Mimo）：这时它不广播，扫描找不到，要直接拿
-        if let p = c.retrieveConnectedPeripherals(withServices: [Self.service])
-            .first(where: { !notGimbal.contains($0.identifier) }) {
+        // 1. 云台已经和这台手机连着（在系统设置里连的，或者刚用过 Mimo）：这时它不广播，扫描找不到，要直接拿
+        if let p = systemConnected(logAll: true) {
             log("云台已经和手机连着：\(p.name ?? "云台")")
             attach(p, fallbackToScan: true)
             return
@@ -131,6 +134,21 @@ final class Gimbal: NSObject, ObservableObject {
         scan()
     }
 
+    /// 系统里已经连着的云台（名字是 OM / Osmo / DJI 开头，或者 iOS 知道它有 FFF0）
+    private func systemConnected(logAll: Bool = false) -> CBPeripheral? {
+        guard let c = central, c.state == .poweredOn else { return nil }
+        let all = c.retrieveConnectedPeripherals(withServices: Self.systemServices)
+        if logAll {
+            let names = all.map { $0.name ?? "（没名字）" }
+            log(names.isEmpty ? "系统里没有连着的蓝牙设备（按 FFF0/1812/180F/180A 问）" : "系统里连着：\(names.joined(separator: "、"))")
+        }
+        let fff0 = Set(c.retrieveConnectedPeripherals(withServices: [Self.service]).map(\.identifier))
+        return all.first { p in
+            !notGimbal.contains(p.identifier)
+                && (fff0.contains(p.identifier) || Self.namePrefixes.contains { (p.name ?? "").hasPrefix($0) })
+        }
+    }
+
     private func scan() {
         guard let c = central, c.state == .poweredOn else { return }
         peripheral = nil; writer = nil
@@ -138,12 +156,25 @@ final class Gimbal: NSObject, ObservableObject {
         note = "把云台打开、放在手机旁边"
         // OM 系列不一定在广播包里放 FFF0，所以不按服务过滤，按名字认（ble.html 也是这么找的）
         c.scanForPeripherals(withServices: nil, options: nil)
+        log("开始扫描云台")
+        // 扫描时每 2 秒再看一眼系统连接：在系统设置里连上云台后它就不广播了，只能这样拿到
+        let t0 = Date()
         connectTimer?.invalidate()
-        connectTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
-            guard let self = self, self.phase == .scanning else { return }
+        connectTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] t in
+            guard let self = self, self.phase == .scanning else { t.invalidate(); return }
+            if let p = self.systemConnected() {
+                t.invalidate()
+                self.central?.stopScan()
+                self.log("在系统连接里找到云台：\(p.name ?? "云台")")
+                self.attach(p)
+                return
+            }
+            guard Date().timeIntervalSince(t0) >= 30 else { return }
+            t.invalidate()
             self.central?.stopScan()
             self.phase = .off
-            self.note = "30 秒没找到云台：确认云台开着、没被别的手机（Mimo）连着"
+            self.note = "30 秒没找到云台：确认云台开着、没被别的手机（Mimo）连着。运行记录里有找到了哪些设备"
+            _ = self.systemConnected(logAll: true)
         }
     }
 
@@ -478,7 +509,7 @@ extension Gimbal: CBCentralManagerDelegate, CBPeripheralDelegate {
         let n = p.name ?? (ad[CBAdvertisementDataLocalNameKey] as? String) ?? ""
         let svcs = (ad[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID]) ?? []
         guard !notGimbal.contains(p.identifier), phase == .scanning,
-              ["OM", "Osmo", "DJI"].contains(where: { n.hasPrefix($0) }) || svcs.contains(Self.service) else { return }
+              Self.namePrefixes.contains(where: { n.hasPrefix($0) }) || svcs.contains(Self.service) else { return }
         c.stopScan()
         connectTimer?.invalidate(); connectTimer = nil
         log("找到云台：\(n)")
