@@ -12,9 +12,6 @@ final class Store: ObservableObject {
     @Published var llmBase: String { didSet { save("llmBase", llmBase) } }
     @Published var llmModel: String { didSet { save("llmModel", llmModel) } }
     @Published var llmKey: String { didSet { Keychain.set("llmKey", llmKey) } }
-    // 机器人的声音：Kokoro 语音服务地址（空着就用 iOS 自带语音）和音色
-    @Published var ttsBase: String { didSet { d.set(ttsBase, forKey: "ttsBase") } }
-    @Published var ttsVoice: String { didSet { d.set(ttsVoice, forKey: "ttsVoice") } }
     /// 打开 App 时自动连大疆云台
     @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
 
@@ -48,8 +45,6 @@ final class Store: ObservableObject {
         llmBase = load("llmBase") ?? Store.defaultLLMBase
         llmModel = load("llmModel").flatMap { m in Store.llmModels.contains { $0.id == m } ? m : nil } ?? Store.llmModels[0].id
         llmKey = Keychain.get("llmKey") ?? ""
-        ttsBase = d.string(forKey: "ttsBase") ?? Voice.defaultBase
-        ttsVoice = d.string(forKey: "ttsVoice")?.nonEmpty ?? Voice.defaultVoice
         gimbalAuto = d.object(forKey: "gimbalAuto") is Bool ? d.bool(forKey: "gimbalAuto") : (load("gimbalAuto") == "1")
     }
 
