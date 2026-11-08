@@ -4,6 +4,8 @@
 
 支持 iOS 15 及以上（含 iPhone 7 / 7 Plus / 6s / SE 一代）。这个 App 只能被控；要发指令，用 iOS 17 上「小橘推送」的「设置 → 遥控 → 控制端」，或者用电脑跑 `scripts/遥控.py`。
 
+> 安卓被控端在 [`android/`](android/README.md)，APK 在 Release「xiaoju-remote-android」。
+>
 > 给接手的 AI：先看 [AGENTS.md](AGENTS.md)。
 
 ## 安装
