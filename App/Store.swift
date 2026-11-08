@@ -21,6 +21,7 @@ final class Store: ObservableObject {
     static let outfits: [(id: String, name: String, words: [String])] = [
         ("default", "原版", ["原版", "原来", "校服"]),
         ("heibai", "黑白经典", ["黑白经典", "黑白", "黑色"]),
+        ("yeye", "暗夜洋装", ["暗夜洋装", "暗夜", "洋装", "哥特"]),
     ]
 
     /// 「换上黑白经典」「穿黑色的」「换回原来的」→ 衣服 id；不是换装的话返回 nil

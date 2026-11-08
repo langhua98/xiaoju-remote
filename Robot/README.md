@@ -33,7 +33,8 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
 - 页面收到 `{"type":"outfit","id":"heibai"}` 时，用 `source-atop` 把衣服层盖到原贴图上再换上去：颜色换成新衣服，透明度沿用原贴图，所以轮廓、动作、物理都不变。`"default"` 换回原版。
 - App：设置页「机器人模式」里选衣服；或者对她说「换上黑白经典」「换回原版」（`Store.outfitCommand`，不经过大模型）。
 - 新加一套：把生图 AI 画好的整张贴图交给 Claude，按衣服遮罩只取衣服部分存成 `clothes.png`；再在 `outfits/index.json` 和 `App/Store.swift` 的 `Store.outfits` 里各加一行。
-- 现在有：`default` 原版、`heibai` 黑白经典。
+- 现在有：`default` 原版、`heibai` 黑白经典、`yeye` 暗夜洋装。
+- 生图 AI 没画满、或者在衣服里画了皮肤的地方，用 OpenCV 按周围布料的颜色补上（暗夜洋装就是这样处理的）。
 
 ## 在电脑上调试网页
 
