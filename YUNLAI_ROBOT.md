@@ -267,7 +267,7 @@ App 调 `window.YunlaiFace.apply({...})`；网页调试时也可以走 WebSocket
 - 这里没有 Mac：推送到 GitHub 后由 Actions 编译（`.github/workflows/build.yml`）。
 - 编译前：跑云台协议自测 → 运行 `Robot/live2d/fetch-assets.sh` 下载 Hiyori 和 Live2D 运行库 → `xcodegen` → `xcodebuild`。
 - 产物：没签名的 ipa，发到 Release「latest」：
-  `https://github.com/langhua98/xiaoju-remote/releases/download/latest/XiaojuRemote-latest.ipa`
+  `https://github.com/langhua98/xiaoju-remote/releases/download/latest/Vania-latest.ipa`
 - 安装：SideStore 或自己的证书签名；免费 Apple ID 每 7 天重签一次。
 - ⚠️ **所有分支编出来的包都会覆盖 Release「latest」**。只从 main 出包；在分支上开发完尽快合进 main，别的会话也要基于最新 main 改。
 
@@ -366,7 +366,7 @@ Live2D：默认 30 FPS。
 
 | 东西 | 地址 |
 |---|---|
-| 最新 ipa | https://github.com/langhua98/xiaoju-remote/releases/download/latest/XiaojuRemote-latest.ipa |
+| 最新 ipa | https://github.com/langhua98/xiaoju-remote/releases/download/latest/Vania-latest.ipa |
 | 小橘遥控仓库 | https://github.com/langhua98/xiaoju-remote |
 | 语音服务 | https://langhua1998-douyin-proxy.hf.space/tts/tts?text=你好 |
 | 语音服务源码 | https://github.com/langhua98/xiaoju-video/tree/main/streamer （私有） |

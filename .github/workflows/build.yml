@@ -1,4 +1,4 @@
-name: Build 小橘遥控 ipa
+name: Build Vania ipa
 
 # 本仓库：GitHub 的 Mac 机器上 xcodegen 生成工程再编译，
 # 没签名的 .ipa 发布到 Release「latest」（每次覆盖），用 SideStore / 自己的证书签名后安装。
@@ -61,7 +61,7 @@ jobs:
           [ -d "$app" ] || { echo "::error::没编出 $app"; exit 1; }
           mkdir Payload && cp -R "$app" Payload/
           version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
-          ipa="XiaojuRemote-$version-build$GITHUB_RUN_NUMBER.ipa"
+          ipa="Vania-$version-build$GITHUB_RUN_NUMBER.ipa"
           zip -qry "$GITHUB_WORKSPACE/$ipa" Payload
           echo "VERSION=$version" >> "$GITHUB_ENV"
           echo "IPA=$ipa" >> "$GITHUB_ENV"
@@ -76,7 +76,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          cp "$IPA" XiaojuRemote-latest.ipa
-          gh release create latest "$IPA" XiaojuRemote-latest.ipa --prerelease \
-            --title "小橘遥控 ${VERSION}（构建 ${GITHUB_RUN_NUMBER}）" \
+          cp "$IPA" Vania-latest.ipa
+          gh release create latest "$IPA" Vania-latest.ipa --prerelease \
+            --title "Vania ${VERSION}（构建 ${GITHUB_RUN_NUMBER}）" \
             --notes "没签名的测试版，需要用 SideStore 或自己的证书签名后安装。见仓库 README.md。"

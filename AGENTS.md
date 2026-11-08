@@ -150,5 +150,5 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 ## 安装包
 
 - William 的要求：**每次有新的 ipa，都在回复里把直接下载链接发给他**：
-  https://github.com/langhua98/xiaoju-remote/releases/download/latest/XiaojuRemote-latest.ipa
+  https://github.com/langhua98/xiaoju-remote/releases/download/latest/Vania-latest.ipa
 - 安卓 APK 在 langhua98/meta-work 编，每次编出新的都要传到小橘云盘「软件包」（见那边的 AGENTS.md）。
