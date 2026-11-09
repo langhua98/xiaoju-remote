@@ -27,8 +27,6 @@ object Camera {
     private const val BUFFERS = 2
     /** 相机这么久没交一帧：补缓冲区 */
     private const val STALL_REFILL_MS = 4_000L
-    /** 补了还是没有：关掉相机重开 */
-    private const val STALL_REOPEN_MS = 10_000L
 
     private fun findCamera(front: Boolean): Int {
         val want = if (front) LegacyCamera.CameraInfo.CAMERA_FACING_FRONT else LegacyCamera.CameraInfo.CAMERA_FACING_BACK
@@ -92,8 +90,8 @@ object Camera {
                         // 传感器帧率：够用的最低一档（跑得越快越费电）
                         p.supportedPreviewFpsRange?.let { LiveSettings.pickFpsRange(it, s.fps, s.watch) }
                             ?.let { p.setPreviewFpsRange(it[0], it[1]) }
-                        // 对焦：守望时定住（对焦马达不来回找），录像、直播时连续对焦
-                        LiveSettings.pickFocus(p.supportedFocusModes ?: emptyList(), s.watch)?.let { p.focusMode = it }
+                        // 对焦：一直连续对焦（0.18 守望时定焦、直播时再换回来，S4 一换对焦预览就不出画面了，0.21 去掉）
+                        LiveSettings.pickFocus(p.supportedFocusModes ?: emptyList(), false)?.let { p.focusMode = it }
                         try { c.parameters = p } catch (e: RuntimeException) {
                             // 有的手机不接受这个帧率范围：去掉再试
                             val q = c.parameters
@@ -160,10 +158,8 @@ object Camera {
                         refilled = true
                         Bus.push("相机 ${quiet / 1000} 秒没出画面，重新给缓冲区")
                         h.post { f?.refill() }
-                    } else if (quiet > STALL_REOPEN_MS) {
-                        Bus.push("相机还是没出画面，关掉重开")
-                        break
                     } else if (quiet < STALL_REFILL_MS) refilled = false
+                    // 0.20 在这里 10 秒没画面就关掉相机重开，S4 上一直循环，手机很卡、手电录音都用不了，0.21 去掉
                     try { Thread.sleep(100) } catch (e: InterruptedException) { break }
                 }
                 // 关掉这台相机（换镜头/清晰度时接着开新的）
@@ -214,23 +210,15 @@ object Camera {
         val r = p.supportedPreviewFpsRange?.let { LiveSettings.pickFpsRange(it, s.fps, s.watch) }
         val cur = IntArray(2).also { p.getPreviewFpsRange(it) }
         if (r != null && (cur[0] != r[0] || cur[1] != r[1])) { p.setPreviewFpsRange(r[0], r[1]); changed = true }
-        // 守望时对焦定住，录像、直播时连续对焦
-        val focus = LiveSettings.pickFocus(p.supportedFocusModes ?: emptyList(), s.watch)
-        if (focus != null && focus != p.focusMode) { p.focusMode = focus; changed = true }
+        // 对焦方式不在开着的相机上换（0.18 这么做，S4 一换预览就停了：直播没画面）
         if (!changed) return
         try {
             c.parameters = p
         } catch (e: RuntimeException) {
-            // 先只换帧率档（对焦方式有的手机预览中不让改），还不行才停一下预览
-            val q = c.parameters
-            r?.let { q.setPreviewFpsRange(it[0], it[1]) }
-            val ok = runCatching { c.parameters = q }.isSuccess
-            if (!ok) {
-                runCatching { c.stopPreview() }
-                runCatching { c.parameters = p }
-                c.startPreview()
-                feed?.refill()   // 停预览时相机手里的缓冲区收不回来了，补上
-            }
+            runCatching { c.stopPreview() }
+            runCatching { c.parameters = p }
+            c.startPreview()
+            feed?.refill()   // 停预览时相机手里的缓冲区收不回来了，补上
         }
         CamStats.update(c.parameters)
     }
