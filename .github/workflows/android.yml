@@ -72,7 +72,14 @@ jobs:
 
       - name: Build debug APK
         working-directory: android
+        env:
+          # 云盘令牌编译时打进 App（BuildConfig.CLOUD_TOKEN），手机上不用填（William 的要求，0.20）
+          XIAOJU_TOKEN: ${{ secrets.XIAOJU_TOKEN }}
         run: |
+          if [ -z "$XIAOJU_TOKEN" ]; then
+            echo "::error::没有 secret XIAOJU_TOKEN：法莉娅 0.20 起令牌要编进 App"
+            exit 1
+          fi
           chmod +x gradlew
           # 构建号写进 App（BuildConfig.BUILD_NUMBER），要和下面传到云盘的文件名里的 build<号> 一样，自动更新靠它比新旧
           NCNN_DIR=$HOME/ncnn/armv7 ./gradlew assembleDebug --no-daemon --stacktrace -PbuildNumber=${{ github.run_number }}

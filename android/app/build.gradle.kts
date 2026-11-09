@@ -7,6 +7,8 @@ plugins {
 val ncnnDir = (findProperty("ncnn.dir") as String?) ?: System.getenv("NCNN_DIR") ?: "/opt/ncnn/armv7"
 val withNcnn = file("$ncnnDir/lib/cmake/ncnn/ncnnConfig.cmake").exists()
 // 构建号：GitHub 上是 run_number（和传到云盘的 xiaoju-remote-android-<版本>-build<构建号>.apk 一致），自动更新靠它比新旧。本地编是 0。
+// 云盘令牌编译时打进 App（William 的要求：界面上不用填）。GitHub 上来自 secret XIAOJU_TOKEN；本地编没有就是空，界面上会出现令牌框。
+val cloudToken = (System.getenv("XIAOJU_TOKEN") ?: "").trim().replace("\\", "").replace("\"", "")
 val buildNumber = ((findProperty("buildNumber") as String?) ?: System.getenv("GITHUB_RUN_NUMBER"))?.toIntOrNull() ?: 0
 
 android {
@@ -20,9 +22,10 @@ android {
         // 最低 Android 4.2（API 17）
         minSdk = 17
         targetSdk = 35
-        versionCode = 19
-        versionName = "0.19"
+        versionCode = 20
+        versionName = "0.20"
         buildConfigField("int", "BUILD_NUMBER", "$buildNumber")
+        buildConfigField("String", "CLOUD_TOKEN", "\"$cloudToken\"")
         multiDexEnabled = true
         if (withNcnn) {
             // S4 是 32 位 ARM；只编这一种，安装包小一点

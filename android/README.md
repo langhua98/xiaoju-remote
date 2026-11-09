@@ -18,10 +18,10 @@
 
 ## 用
 
-B 手机，打开 App：
-- 填**云盘地址**、**云盘令牌**（`xa_`，要有写权限，才能把回执和照片传回去）。
-- 给这台手机起个**设备名**，比如 `测试机B`。
-- 定一个**配对口令**，A 发指令时要带同一个口令，不对的指令会被拒绝。
+B 手机，打开 App（0.20 起界面简化了）：
+- **云盘地址、令牌不用填**：地址固定，令牌编译时打进 App（GitHub secret `XIAOJU_TOKEN`）。本地编、没带令牌的包才会显示令牌框。
+- **设备名**只能选 A、B、C、D，默认 A。控制端发指令时设备名写 `A`～`D`。
+- **配对口令**默认 `0`，A 发指令时要带同一个口令，不对的指令会被拒绝。清空了也会回到 `0`。
 - 点**授权硬件**，把相机 / 麦克风 / 定位 / 通知的权限都允许（想用哪个就给哪个）。
 - 点**开始待命**。通知栏出现「小橘遥控 · 待命中」就对了。建议插着电、屏幕可以息屏，但别在系统里把 App 强制「省电 / 休眠」。
 
@@ -29,16 +29,16 @@ A 设备发指令，用 `scripts/遥控.py`：
 
 ```bash
 export XIAOJU_TOKEN=xa_你的令牌
-export XIAOJU_PAIR=你定的口令
-python3 scripts/遥控.py 测试机B info
-python3 scripts/遥控.py 测试机B photo --lens front   # 拍完照片下载到当前目录
-python3 scripts/遥控.py 测试机B audio --seconds 8
-python3 scripts/遥控.py 测试机B location
-python3 scripts/遥控.py 测试机B torch --on
-python3 scripts/遥控.py 测试机B ring --seconds 5      # 找手机：响铃
-python3 scripts/遥控.py 测试机B shell --cmd "ls /sdcard"
-python3 scripts/遥控.py 测试机B update               # 有新版本就下载、安装（0.19）
-python3 scripts/遥控.py 测试机B update --check       # 只看有没有新版本
+export XIAOJU_PAIR=0   # 默认就是 0，不设也行
+python3 scripts/遥控.py A info
+python3 scripts/遥控.py A photo --lens front   # 拍完照片下载到当前目录
+python3 scripts/遥控.py A audio --seconds 8
+python3 scripts/遥控.py A location
+python3 scripts/遥控.py A torch --on
+python3 scripts/遥控.py A ring --seconds 5      # 找手机：响铃
+python3 scripts/遥控.py A shell --cmd "ls /sdcard"
+python3 scripts/遥控.py A update               # 有新版本就下载、安装（0.19）
+python3 scripts/遥控.py A update --check       # 只看有没有新版本
 ```
 
 ## 指令
@@ -65,7 +65,7 @@ python3 scripts/遥控.py 测试机B update --check       # 只看有没有新�
 
 | `cancel` | `target`（要取消的那条指令的 id） | 打断一条还在做的慢指令（测速、录音…），替它回「已取消」 |
 
-| `update` | `check`（只看不下载）、`auto`（开 / 关自动更新） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）。回执多 `version`、`build`、`auto` |
+| `update` | `check`（只看不下载） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）。回执多 `version`、`build` |
 
 ### 自动更新（0.19）
 
@@ -74,7 +74,7 @@ python3 scripts/遥控.py 测试机B update --check       # 只看有没有新�
   手机比「版本号，再比构建号」，所以同一个版本重编一次也会更新。本地编的构建号是 0。
 - 手机用自己的云盘令牌列 `/软件包/`，所以令牌要能读这个文件夹。读不了时 `update` 回执会说「云盘令牌读不了 /软件包」。
 - 待命时自动查：开始待命 1 分钟后查一次，以后每 6 小时一次；正在录像或直播时等一等再查。
-  App 里的「自动更新」勾掉、或者发 `{"do":"update","auto":false}` 就不自动查了。
+  0.20 起自动更新一直开着，不能关（App 里只留「检查更新」按钮）。
 - 下载后先检查：包名一样、版本不更旧、签名和手机上装的一样（不一样系统也装不上，要先卸载）。
 - 怎么装（`Updater.kt`）：
   - **手机有 root**（找得到 `su`）：`su -c pm install -r` 直接装，不用人点。第一次 root 管理器可能会问一下要不要允许。
@@ -93,6 +93,8 @@ python3 scripts/遥控.py 测试机B update --check       # 只看有没有新�
 - 指令带 `"ack": true` 时，慢指令先回一条 `pending:true` 的回执（「收到了，正在拍照…」），做完再回正式的；不带就只回正式的（老版本照常）。
 
 ### 模型测速（0.10，C++）
+
+- 0.20 起 App 界面上的「测模型速度」按钮删了，要测就从控制端发 `bench`。
 
 - 推理用 ncnn（腾讯开源，BSD），C++ 代码在 `app/src/main/cpp/`。先跑 `scripts/build-ncnn-android.sh` 编好 ncnn
   （要 NDK r23c，最后一个支持 4.2 的），Gradle 自动找到 `/opt/ncnn/armv7`（或 `-Pncnn.dir=`）；找不到就不带 C++，测不了模型，别的照常。

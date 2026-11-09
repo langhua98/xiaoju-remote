@@ -25,40 +25,42 @@
             android:textSize="13sp"
             android:paddingBottom="16dp" />
 
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="云盘地址" android:textStyle="bold" />
-        <EditText
-            android:id="@+id/base"
+        <!-- 令牌编译时打进 App；只有本地编、没带令牌的包才显示这一栏 -->
+        <LinearLayout
+            android:id="@+id/tokenRow"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="https://langhua1998-xiaoju-cloud.hf.space"
-            android:inputType="textUri"
-            android:singleLine="true" />
-
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="云盘令牌（xa_…）" android:textStyle="bold" android:paddingTop="12dp" />
-        <EditText
-            android:id="@+id/token"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="xa_xxx"
-            android:inputType="textPassword"
-            android:singleLine="true" />
+            android:orientation="vertical"
+            android:visibility="gone">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="云盘令牌（这个安装包没带令牌）" android:textStyle="bold" />
+            <EditText
+                android:id="@+id/token"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="xa_xxx"
+                android:inputType="textPassword"
+                android:singleLine="true" />
+        </LinearLayout>
 
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="这台设备的名字" android:textStyle="bold" android:paddingTop="12dp" />
-        <EditText
+        <RadioGroup
             android:id="@+id/device"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="比如 测试机B"
-            android:inputType="text"
-            android:singleLine="true" />
+            android:orientation="horizontal">
+            <RadioButton android:id="@+id/devA" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="A" />
+            <RadioButton android:id="@+id/devB" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="B" />
+            <RadioButton android:id="@+id/devC" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="C" />
+            <RadioButton android:id="@+id/devD" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="D" />
+        </RadioGroup>
 
-        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="配对口令（两台设备要一样）" android:textStyle="bold" android:paddingTop="12dp" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="配对口令（两台设备要一样，默认 0）" android:textStyle="bold" android:paddingTop="12dp" />
         <EditText
             android:id="@+id/pair"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:hint="自己定一个，别人猜不到的"
-            android:inputType="textPassword"
+            android:hint="0"
+            android:inputType="text"
             android:singleLine="true" />
 
         <LinearLayout
@@ -82,28 +84,10 @@
         </LinearLayout>
 
         <Button
-            android:id="@+id/bench"
+            android:id="@+id/update"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="测模型速度（大约 1 分钟，结果在下面）" />
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:gravity="center_vertical">
-            <Button
-                android:id="@+id/update"
-                android:layout_width="0dp"
-                android:layout_weight="1"
-                android:layout_height="wrap_content"
-                android:text="检查更新" />
-            <CheckBox
-                android:id="@+id/autoUpdate"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="自动更新" />
-        </LinearLayout>
+            android:text="检查更新" />
 
         <TextView
             android:id="@+id/version"
