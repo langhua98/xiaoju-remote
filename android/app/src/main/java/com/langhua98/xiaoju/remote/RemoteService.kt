@@ -42,6 +42,10 @@ class RemoteService : Service() {
     /** 长轮询从什么时候开始等（elapsedRealtime，睡着的时间也算），0 = 没在等 */
     @Volatile private var pollSince = 0L
     @Volatile private var cloudRef: Cloud? = null
+    /** 开始待命的时间：开始后先等一会儿再查更新 */
+    @Volatile private var startedAt = 0L
+    /** 正在查 / 下载更新（同一时间只有一个） */
+    private val updating = java.util.concurrent.atomic.AtomicBoolean(false)
 
     // 相机（实时画面 + 移动侦测）在 CameraHub 自己的线程里跑，指令循环照常收指令
     @Volatile private var hub: CameraHub? = null
@@ -55,10 +59,12 @@ class RemoteService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) { stopAll(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_STOP) { Prefs(this).standby = false; stopAll(); return START_NOT_STICKY }
         startAsForeground("待命中，等指令")
         if (!running) {
             running = true
+            Prefs(this).standby = true
+            startedAt = SystemClock.elapsedRealtime()
             Bus.running = true
             Bus.push("开始待命")
             Power.init(this)
@@ -116,6 +122,7 @@ class RemoteService : Service() {
         var lastFileCheck = 0L
         var lastError = ""
         while (running) {
+            maybeAutoUpdate(p)
             if (useRelay) {
                 try {
                     // 等服务器回话时 CPU 可以睡（别的事要 CPU 时自己会拿着，见 Power）
@@ -281,6 +288,10 @@ class RemoteService : Service() {
             restoreText()
             return
         }
+        if (action == "update") {
+            updateCommand(cmd, id, reply)
+            return
+        }
         if (action in setOf("monitor", "monitor_status", "events", "event_get", "event_delete")) {
             monitorCommand(cloud, cmd, action, id, viaRelay, reply)
             return
@@ -438,6 +449,74 @@ class RemoteService : Service() {
         }
     }
 
+    /**
+     * 更新指令：
+     *   {"do":"update"}               查云盘「软件包」，有新的就下载、安装（有 root 直接装，没有就弹安装界面要人点）
+     *   {"do":"update","check":true}  只看有没有新的，不下载
+     *   {"do":"update","auto":false}  关掉 / 打开自动更新（可以和上面两个一起用）
+     * 回执先回（用 root 装的话装完 App 就被系统杀了），再去装。
+     */
+    private fun updateCommand(cmd: JSONObject, id: String, reply: (JSONObject) -> Unit) {
+        val p = Prefs(this)
+        fun done(ok: Boolean, text: String) {
+            reply(JSONObject().put("id", id).put("do", "update").put("ok", ok).put("text", text)
+                .put("version", Updater.versionName(this)).put("build", BuildConfig.BUILD_NUMBER).put("auto", p.autoUpdate))
+            Bus.push(text.lineSequence().first())
+            restoreText()
+        }
+        var note = ""
+        if (cmd.has("auto")) {
+            p.autoUpdate = cmd.optBoolean("auto", true)
+            note = if (p.autoUpdate) "\n自动更新：开（待命时每 6 小时看一次）" else "\n自动更新：关"
+        }
+        if (!updating.compareAndSet(false, true)) { done(false, "正在查 / 下载更新，等一会儿再试$note"); return }
+        try {
+            val u = Updater(this, p.base, p.token)
+            val r = u.prepare(download = !cmd.optBoolean("check", false))
+            if (r.file == null) { done(r.ok, r.text + note); return }
+            r.pkg?.let { p.updatePrompted = it.name }
+            done(true, r.text + "\n" + u.plan(fromUi = false) + note)
+            u.install(r, null)
+        } finally {
+            updating.set(false)
+        }
+    }
+
+    /**
+     * 自动更新：待命开始 1 分钟后查一次，之后每 6 小时一次。正在录像、直播时先不查（装新版本会打断）。
+     * 同一个新版本只装 / 弹一次安装界面，没人点也不反复弹；通知一直留着。
+     */
+    private fun maybeAutoUpdate(p: Prefs) {
+        if (!p.autoUpdate || p.token.isBlank()) return
+        if (SystemClock.elapsedRealtime() - startedAt < 60_000) return
+        val now = System.currentTimeMillis()
+        val last = p.updateCheckedAt
+        if (last in (now - Updater.CHECK_EVERY_MS + 1)..now) return
+        val h = hub
+        if (h != null && (h.liveActive() || h.stage() == "record")) return
+        if (!updating.compareAndSet(false, true)) return
+        p.updateCheckedAt = now
+        Thread({
+            Power.hold {
+                try {
+                    val u = Updater(this, p.base, p.token)
+                    val r = u.prepare()
+                    if (!r.ok) Bus.push("自动更新：" + r.text)
+                    val pkg = r.pkg
+                    if (r.file != null && pkg != null && p.updatePrompted != pkg.name) {
+                        p.updatePrompted = pkg.name
+                        Bus.push("自动更新：" + r.text + "。" + u.plan(fromUi = false))
+                        u.install(r, null)
+                    }
+                } catch (e: Throwable) {
+                    Bus.push("自动更新出错：${e.message ?: e.javaClass.simpleName}")
+                } finally {
+                    updating.set(false)
+                }
+            }
+        }, "update").start()
+    }
+
     /** 指令做完，通知栏恢复成现在的状态。 */
     private fun restoreText() {
         val h = hub
@@ -482,7 +561,7 @@ class RemoteService : Service() {
 
     private fun label(a: String) = mapOf("photo" to "拍照", "audio" to "录音", "location" to "定位",
         "torch" to "手电筒", "vibrate" to "震动", "ring" to "响铃", "info" to "设备信息", "shell" to "命令", "video" to "实时画面", "video_set" to "调实时画面",
-        "monitor" to "移动侦测设置", "monitor_status" to "移动侦测状态", "events" to "看录像列表", "event_get" to "取录像", "event_delete" to "删录像", "bench" to "模型测速", "cancel" to "取消")[a] ?: a
+        "monitor" to "移动侦测设置", "monitor_status" to "移动侦测状态", "events" to "看录像列表", "event_get" to "取录像", "event_delete" to "删录像", "bench" to "模型测速", "cancel" to "取消", "update" to "更新")[a] ?: a
 
     // ---- 看门狗（只在等网络时让 CPU 睡的老系统上开）----
     // 2 分钟叫醒一次：长轮询本该 25 秒就回来，等了 70 秒还没回来，说明连接卡死了（睡着时没收到数据），断掉重来。

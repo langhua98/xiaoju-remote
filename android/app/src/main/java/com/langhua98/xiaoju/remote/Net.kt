@@ -141,6 +141,45 @@ object Net {
         }
     }
 
+    /**
+     * 下载一个大文件（安装包）直接写到 dest，不整个放进内存。返回写了多少字节。非 2xx 抛 HttpError。
+     * 服务器说了长度而没下完整，抛 IOException。
+     */
+    fun download(url: String, token: String, dest: java.io.File): Long {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        try {
+            if (conn is HttpsURLConnection) factory?.let { conn.sslSocketFactory = it }
+            conn.connectTimeout = 20_000
+            conn.readTimeout = 60_000
+            conn.useCaches = false
+            conn.setRequestProperty("Authorization", "Bearer $token")
+            conn.setRequestProperty("Connection", "close")
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                conn.errorStream?.use { readAll(it) }
+                throw HttpError(code, "云盘 $code")
+            }
+            val expect = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+            var total = 0L
+            conn.inputStream.use { input ->
+                java.io.FileOutputStream(dest).use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        total += n
+                    }
+                    out.fd.sync()
+                }
+            }
+            if (expect >= 0 && total != expect) throw java.io.IOException("只下了 $total / $expect 字节")
+            return total
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun readAll(input: InputStream): ByteArray {
         val out = ByteArrayOutputStream()
         val buf = ByteArray(16 * 1024)

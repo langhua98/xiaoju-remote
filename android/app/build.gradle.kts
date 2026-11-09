@@ -6,6 +6,8 @@ plugins {
 // 模型推理库 ncnn（C++，先用 scripts/build-ncnn-android.sh 编好）。找不到就不编 C++ 部分，App 照常能用，只是测不了模型。
 val ncnnDir = (findProperty("ncnn.dir") as String?) ?: System.getenv("NCNN_DIR") ?: "/opt/ncnn/armv7"
 val withNcnn = file("$ncnnDir/lib/cmake/ncnn/ncnnConfig.cmake").exists()
+// 构建号：GitHub 上是 run_number（和传到云盘的 xiaoju-remote-android-<版本>-build<构建号>.apk 一致），自动更新靠它比新旧。本地编是 0。
+val buildNumber = ((findProperty("buildNumber") as String?) ?: System.getenv("GITHUB_RUN_NUMBER"))?.toIntOrNull() ?: 0
 
 android {
     namespace = "com.langhua98.xiaoju.remote"
@@ -18,8 +20,9 @@ android {
         // 最低 Android 4.2（API 17）
         minSdk = 17
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.18"
+        versionCode = 19
+        versionName = "0.19"
+        buildConfigField("int", "BUILD_NUMBER", "$buildNumber")
         multiDexEnabled = true
         if (withNcnn) {
             // S4 是 32 位 ARM；只编这一种，安装包小一点
@@ -49,6 +52,10 @@ android {
             // 用 debug 签名，出来的 release APK 也能直接装
             signingConfig = signingConfigs.getByName("debug")
         }
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     compileOptions {

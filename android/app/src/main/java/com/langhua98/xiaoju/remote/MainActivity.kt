@@ -6,6 +6,7 @@ import android.app.Activity
 import android.os.Build
 import android.os.Bundle
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
 
@@ -50,6 +51,15 @@ class MainActivity : Activity() {
             }, "bench").start()
         }
 
+        findViewById<TextView>(R.id.version).text =
+            "现在是 ${Updater.currentLabel(this)}。自动更新：待命时每 6 小时看一次云盘「软件包」，有新版本就下载；" +
+            "有 root 直接装，没有 root 要点一下「安装」。"
+        findViewById<CheckBox>(R.id.autoUpdate).apply {
+            isChecked = prefs.autoUpdate
+            setOnCheckedChangeListener { _, on -> prefs.autoUpdate = on; Bus.push(if (on) "自动更新：开" else "自动更新：关") }
+        }
+        findViewById<Button>(R.id.update).setOnClickListener { b -> checkUpdate(b as Button) }
+
         Bus.onLog = { lines -> log.text = lines.takeLast(80).joinToString("\n"); refresh() }
         log.text = Bus.snapshot().takeLast(80).joinToString("\n")
         refresh()
@@ -85,6 +95,30 @@ class MainActivity : Activity() {
                 else Bus.push("连不上，没启动：$err")
             }
         }.start()
+    }
+
+    /** 用户点「检查更新」：查云盘，有新的就下载，弹安装界面（有 root 直接装）。 */
+    private fun checkUpdate(b: Button) {
+        save()
+        if (prefs.token.isBlank()) { Bus.push("先填云盘令牌"); return }
+        b.isEnabled = false
+        Bus.push("查更新…")
+        Thread({
+            try {
+                Net.init(this)
+                val u = Updater(applicationContext, prefs.base, prefs.token)
+                val r = u.prepare()
+                Bus.push(r.text)
+                if (r.file != null) {
+                    r.pkg?.let { prefs.updatePrompted = it.name }
+                    Bus.push(u.plan(fromUi = true))
+                    u.install(r, this)   // 用 root 装要等一会儿，留在后台线程（startActivity 在哪个线程都行）
+                }
+            } catch (e: Exception) {
+                Bus.push("查更新出错：${e.message ?: e.javaClass.simpleName}")
+            }
+            runOnUiThread { b.isEnabled = true }
+        }, "update").start()
     }
 
     private fun requestPerms() {

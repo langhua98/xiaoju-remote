@@ -37,6 +37,8 @@ python3 scripts/遥控.py 测试机B location
 python3 scripts/遥控.py 测试机B torch --on
 python3 scripts/遥控.py 测试机B ring --seconds 5      # 找手机：响铃
 python3 scripts/遥控.py 测试机B shell --cmd "ls /sdcard"
+python3 scripts/遥控.py 测试机B update               # 有新版本就下载、安装（0.19）
+python3 scripts/遥控.py 测试机B update --check       # 只看有没有新版本
 ```
 
 ## 指令
@@ -62,6 +64,26 @@ python3 scripts/遥控.py 测试机B shell --cmd "ls /sdcard"
 | `bench` | — | 模型测速（0.10）：几个能认人的小模型各跑一遍（1/2/4 核），有人看实时画面时再测直播帧率掉多少；大约 1 分钟 |
 
 | `cancel` | `target`（要取消的那条指令的 id） | 打断一条还在做的慢指令（测速、录音…），替它回「已取消」 |
+
+| `update` | `check`（只看不下载）、`auto`（开 / 关自动更新） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）。回执多 `version`、`build`、`auto` |
+
+### 自动更新（0.19）
+
+- 新安装包从哪来：`android.yml` 每次编好都传到小橘云盘 `/软件包/xiaoju-remote-android-<版本>-build<构建号>.apk`。
+  构建号是 GitHub 的 run_number，编译时也写进 App（`BuildConfig.BUILD_NUMBER`，Gradle 参数 `-PbuildNumber`），
+  手机比「版本号，再比构建号」，所以同一个版本重编一次也会更新。本地编的构建号是 0。
+- 手机用自己的云盘令牌列 `/软件包/`，所以令牌要能读这个文件夹。读不了时 `update` 回执会说「云盘令牌读不了 /软件包」。
+- 待命时自动查：开始待命 1 分钟后查一次，以后每 6 小时一次；正在录像或直播时等一等再查。
+  App 里的「自动更新」勾掉、或者发 `{"do":"update","auto":false}` 就不自动查了。
+- 下载后先检查：包名一样、版本不更旧、签名和手机上装的一样（不一样系统也装不上，要先卸载）。
+- 怎么装（`Updater.kt`）：
+  - **手机有 root**（找得到 `su`）：`su -c pm install -r` 直接装，不用人点。第一次 root 管理器可能会问一下要不要允许。
+  - **没有 root**：安卓不让普通 App 自己装，只能打开系统安装界面，要有人点一下「安装」。
+    Android 10 以下直接弹出安装界面，10 以上只发一条通知「点这里安装」；Android 8 以上第一次还要允许法莉娅「安装未知应用」。
+    自动更新对同一个新版本只弹一次，没人点也不反复弹，通知一直留着。
+- 装好后系统发「自己被更新了」（`UpdateReceiver`）：删掉下好的安装包，更新前在待命就接着待命（点过「停止」的不会自己开）。
+- `info` 回执多一行「法莉娅：0.19（构建 57）」，看手机上现在是哪一版。
+- 从 0.18 或更早的版本升到 0.19 要手动装一次，0.19 以后就能自动更新了。
 
 ### 同时收好几条指令（0.11）
 
