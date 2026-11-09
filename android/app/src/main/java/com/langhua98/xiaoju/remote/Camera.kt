@@ -23,6 +23,12 @@ import java.util.concurrent.TimeUnit
  */
 @Suppress("DEPRECATION")
 object Camera {
+    /** 预览缓冲区几块（轮着用，相机手里最多一块） */
+    private const val BUFFERS = 2
+    /** 相机这么久没交一帧：补缓冲区 */
+    private const val STALL_REFILL_MS = 4_000L
+    /** 补了还是没有：关掉相机重开 */
+    private const val STALL_REOPEN_MS = 10_000L
 
     private fun findCamera(front: Boolean): Int {
         val want = if (front) LegacyCamera.CameraInfo.CAMERA_FACING_FRONT else LegacyCamera.CameraInfo.CAMERA_FACING_BACK
@@ -102,22 +108,27 @@ object Camera {
                         c.setPreviewTexture(t)
                         val size = fw * fh * ImageFormat.getBitsPerPixel(ImageFormat.NV21) / 8
                         // 缓冲区：两块轮着用，相机手里最多一块（下面这些变量只在相机线程 h 上碰）
-                        val pool = ArrayDeque<ByteArray>().apply { repeat(2) { add(ByteArray(size)) } }
-                        val st = Feed(c, pool)
+                        val st = Feed(c, size)
+                        val pool = st.pool
                         feed = st
                         val pacer = FramePacer()
+                        var frameErrLogged = false
                         c.setPreviewCallbackWithBuffer { data, _ ->
                             if (data == null) return@setPreviewCallbackWithBuffer
                             st.inCam = maxOf(0, st.inCam - 1)
+                            st.lastFrameAt = System.currentTimeMillis()
                             CamStats.callbacks++
                             val now = System.currentTimeMillis()
                             // 按节拍抽帧：平均下来正好是要的帧率（守望时每秒 4 帧）
                             if (running() && pacer.due(now, s.frameFps)) {
                                 val ts = StreamClient.now()   // 采集时间（和声音同一个时钟）
                                 val r = if (s.flip) (rot + 180) % 360 else rot   // 上下翻转 = 多转 180°
-                                try { onFrame(data, fw, fh, r, ts) } catch (e: Throwable) { /* 丢这一帧 */ }
+                                try { onFrame(data, fw, fh, r, ts) } catch (e: Throwable) {
+                                    // 丢这一帧；每次开相机只记第一次（以前一声不吭，出了错根本看不出来）
+                                    if (!frameErrLogged) { frameErrLogged = true; Bus.push("处理画面出错：${e.message ?: e.javaClass.simpleName}") }
+                                }
                             }
-                            pool.addLast(data)
+                            if (data.size == st.size) pool.addLast(data)
                             // 下一帧快该用了才把缓冲区给相机；这之间的帧相机自己丢掉，不拷贝
                             h.removeCallbacks(st)
                             val d = pacer.returnDelay(System.currentTimeMillis())
@@ -125,10 +136,12 @@ object Camera {
                         }
                         st.run()
                         c.startPreview()
+                        st.lastFrameAt = System.currentTimeMillis()
                         CamStats.opened(c.parameters, System.currentTimeMillis() - t0)
                     } catch (e: Throwable) { startErr = e } finally { ready.countDown() }
                 }
-                ready.await(8, TimeUnit.SECONDS)
+                // 8 秒还没开好：当打不开处理（以前会当成开好了，相机线程空转、一帧画面都没有）
+                if (!ready.await(8, TimeUnit.SECONDS) && startErr == null) startErr = IllegalStateException("8 秒还没打开")
                 startErr?.let { e ->
                     val done = CountDownLatch(1)
                     h.post { feed?.let { it.open = false; h.removeCallbacks(it) }; cleanup(cam, tex); done.countDown() }
@@ -136,9 +149,21 @@ object Camera {
                     throw e
                 }
                 var tw = s.tweak
+                var refilled = false
                 while (running() && s.version == ver) {
                     if (s.tweak != tw) { tw = s.tweak; h.post { cam?.let { runCatching { tweak(it, s, front) } } } }
                     if (s.profile != pf) { pf = s.profile; h.post { cam?.let { runCatching { switchFps(it, s, feed) } } } }
+                    // 保险：相机好几秒没交一帧（缓冲区丢了、驱动卡住），先补缓冲区，还不行就关掉重开
+                    val f = feed
+                    val quiet = if (f == null) 0L else System.currentTimeMillis() - f.lastFrameAt
+                    if (quiet > STALL_REFILL_MS && !refilled) {
+                        refilled = true
+                        Bus.push("相机 ${quiet / 1000} 秒没出画面，重新给缓冲区")
+                        h.post { f?.refill() }
+                    } else if (quiet > STALL_REOPEN_MS) {
+                        Bus.push("相机还是没出画面，关掉重开")
+                        break
+                    } else if (quiet < STALL_REFILL_MS) refilled = false
                     try { Thread.sleep(100) } catch (e: InterruptedException) { break }
                 }
                 // 关掉这台相机（换镜头/清晰度时接着开新的）
@@ -155,14 +180,27 @@ object Camera {
         }
     }
 
-    /** 给相机一块空缓冲区（相机手里已经有了就不给）。只在相机线程上用。 */
-    private class Feed(val cam: LegacyCamera, val pool: ArrayDeque<ByteArray>) : Runnable {
+    /**
+     * 给相机一块空缓冲区（相机手里已经有了就不给）。只在相机线程上用。
+     * 两块缓冲区轮着用。停过预览（换帧率档、对焦失败时）相机手里那块就收不回来了，要 refill 补上：
+     * 0.18、0.19 没补，换两次就一块都不剩，相机开着却一帧都不交（直播「发出 0 帧」、拍照「没截到画面」）。
+     */
+    private class Feed(val cam: LegacyCamera, val size: Int) : Runnable {
+        val pool = ArrayDeque<ByteArray>().apply { repeat(BUFFERS) { add(ByteArray(size)) } }
         var inCam = 0
         var open = true
+        /** 上一帧回调的时间（开预览时也算一次） */
+        @Volatile var lastFrameAt = System.currentTimeMillis()
         override fun run() {
             if (!open || inCam > 0) return
-            val b = pool.removeFirstOrNull() ?: return
+            val b = pool.removeFirstOrNull() ?: ByteArray(size)   // 万一一块都没有了：新给一块，不让相机饿着
             try { cam.addCallbackBuffer(b); inCam++ } catch (e: RuntimeException) { pool.addLast(b) }
+        }
+        /** 停过预览以后：相机手里的缓冲区作废，池子补满，再给一块 */
+        fun refill() {
+            inCam = 0
+            while (pool.size < BUFFERS) pool.addLast(ByteArray(size))
+            run()
         }
     }
 
@@ -183,10 +221,16 @@ object Camera {
         try {
             c.parameters = p
         } catch (e: RuntimeException) {
-            runCatching { c.stopPreview() }
-            runCatching { c.parameters = p }
-            c.startPreview()
-            feed?.let { it.inCam = 0; it.run() }
+            // 先只换帧率档（对焦方式有的手机预览中不让改），还不行才停一下预览
+            val q = c.parameters
+            r?.let { q.setPreviewFpsRange(it[0], it[1]) }
+            val ok = runCatching { c.parameters = q }.isSuccess
+            if (!ok) {
+                runCatching { c.stopPreview() }
+                runCatching { c.parameters = p }
+                c.startPreview()
+                feed?.refill()   // 停预览时相机手里的缓冲区收不回来了，补上
+            }
         }
         CamStats.update(c.parameters)
     }
