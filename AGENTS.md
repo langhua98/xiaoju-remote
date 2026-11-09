@@ -165,6 +165,8 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 - 编译：`.github/workflows/android.yml`，只能手动触发。它先用 `scripts/build-ncnn-android.sh` 编 ncnn，跑 `android/tests/detector` 和 Kotlin 单元测试，再编 APK。
   只改 `android/` 不会触发 iPhone 的 ipa 编译（`build.yml` 只看 `App/`、`Robot/live2d/`、`Tests/`、`project.yml`）。
 - 自动更新（0.19，`Updater.kt`）：手机从云盘 `/软件包/` 找 `xiaoju-remote-android-<版本>-build<构建号>.apk`，比版本号和构建号（`BuildConfig.BUILD_NUMBER`，workflow 用 `-PbuildNumber=run_number` 写进去），新的就下载；
-  有 root 直接 `pm install`，没有就弹系统安装界面要人点。所以**传到云盘的文件名格式别改**，改了手机就认不出新版本。指令 `update`，说明见 `android/README.md`。
+  有 root 直接 `pm install`，没有就弹系统安装界面要人点。所以**传到云盘的文件名格式别改**，改了手机就认不出新版本。指令 `update`，说明见 `android/README.md`。自动更新一直开着。
+- 界面（0.20）：云盘地址固定；令牌编译时从 secret `XIAOJU_TOKEN` 打进 App（`BuildConfig.CLOUD_TOKEN`，William 定的，知道 APK 里能拆出令牌）；
+  设备名只能选 A～D（默认 A），配对口令默认 `0`。控制端口令空着时发 `0`。
 - 签名一律用固定密钥（小橘云盘私有文件夹 `/小橘推送/签名/android-signing.json`，别分享、别放进仓库），换了密钥手机上就不能覆盖安装。
   workflow 要有 secret `XIAOJU_TOKEN` 才能取密钥签名、上传云盘；没有时编出来是临时签名，上传前用 `scripts/resign_apk.py` 重签。

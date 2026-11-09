@@ -453,22 +453,18 @@ class RemoteService : Service() {
      * 更新指令：
      *   {"do":"update"}               查云盘「软件包」，有新的就下载、安装（有 root 直接装，没有就弹安装界面要人点）
      *   {"do":"update","check":true}  只看有没有新的，不下载
-     *   {"do":"update","auto":false}  关掉 / 打开自动更新（可以和上面两个一起用）
+     * 自动更新一直开着（0.20 起不能关）。
      * 回执先回（用 root 装的话装完 App 就被系统杀了），再去装。
      */
     private fun updateCommand(cmd: JSONObject, id: String, reply: (JSONObject) -> Unit) {
         val p = Prefs(this)
         fun done(ok: Boolean, text: String) {
             reply(JSONObject().put("id", id).put("do", "update").put("ok", ok).put("text", text)
-                .put("version", Updater.versionName(this)).put("build", BuildConfig.BUILD_NUMBER).put("auto", p.autoUpdate))
+                .put("version", Updater.versionName(this)).put("build", BuildConfig.BUILD_NUMBER))
             Bus.push(text.lineSequence().first())
             restoreText()
         }
-        var note = ""
-        if (cmd.has("auto")) {
-            p.autoUpdate = cmd.optBoolean("auto", true)
-            note = if (p.autoUpdate) "\n自动更新：开（待命时每 6 小时看一次）" else "\n自动更新：关"
-        }
+        val note = ""
         if (!updating.compareAndSet(false, true)) { done(false, "正在查 / 下载更新，等一会儿再试$note"); return }
         try {
             val u = Updater(this, p.base, p.token)
@@ -487,7 +483,7 @@ class RemoteService : Service() {
      * 同一个新版本只装 / 弹一次安装界面，没人点也不反复弹；通知一直留着。
      */
     private fun maybeAutoUpdate(p: Prefs) {
-        if (!p.autoUpdate || p.token.isBlank()) return
+        if (p.token.isBlank()) return
         if (SystemClock.elapsedRealtime() - startedAt < 60_000) return
         val now = System.currentTimeMillis()
         val last = p.updateCheckedAt

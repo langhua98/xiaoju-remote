@@ -18,10 +18,10 @@
 
 ## 用
 
-B 手机，打开 App：
-- 填**云盘地址**、**云盘令牌**（`xa_`，要有写权限，才能把回执和照片传回去）。
-- 给这台手机起个**设备名**，比如 `测试机B`。
-- 定一个**配对口令**，A 发指令时要带同一个口令，不对的指令会被拒绝。
+B 手机，打开 App（0.20 起界面简化了）：
+- **云盘地址、令牌不用填**：地址固定，令牌编译时打进 App（GitHub secret `XIAOJU_TOKEN`）。本地编、没带令牌的包才会显示令牌框。
+- **设备名**只能选 A、B、C、D，默认 A。控制端发指令时设备名写 `A`～`D`。
+- **配对口令**默认 `0`，A 发指令时要带同一个口令，不对的指令会被拒绝。清空了也会回到 `0`。
 - 点**授权硬件**，把相机 / 麦克风 / 定位 / 通知的权限都允许（想用哪个就给哪个）。
 - 点**开始待命**。通知栏出现「小橘遥控 · 待命中」就对了。建议插着电、屏幕可以息屏，但别在系统里把 App 强制「省电 / 休眠」。
 
@@ -29,16 +29,16 @@ A 设备发指令，用 `scripts/遥控.py`：
 
 ```bash
 export XIAOJU_TOKEN=xa_你的令牌
-export XIAOJU_PAIR=你定的口令
-python3 scripts/遥控.py 测试机B info
-python3 scripts/遥控.py 测试机B photo --lens front   # 拍完照片下载到当前目录
-python3 scripts/遥控.py 测试机B audio --seconds 8
-python3 scripts/遥控.py 测试机B location
-python3 scripts/遥控.py 测试机B torch --on
-python3 scripts/遥控.py 测试机B ring --seconds 5      # 找手机：响铃
-python3 scripts/遥控.py 测试机B shell --cmd "ls /sdcard"
-python3 scripts/遥控.py 测试机B update               # 有新版本就下载、安装（0.19）
-python3 scripts/遥控.py 测试机B update --check       # 只看有没有新版本
+export XIAOJU_PAIR=0   # 默认就是 0，不设也行
+python3 scripts/遥控.py A info
+python3 scripts/遥控.py A photo --lens front   # 拍完照片下载到当前目录
+python3 scripts/遥控.py A audio --seconds 8
+python3 scripts/遥控.py A location
+python3 scripts/遥控.py A torch --on
+python3 scripts/遥控.py A ring --seconds 5      # 找手机：响铃
+python3 scripts/遥控.py A shell --cmd "ls /sdcard"
+python3 scripts/遥控.py A update               # 有新版本就下载、安装（0.19）
+python3 scripts/遥控.py A update --check       # 只看有没有新版本
 ```
 
 ## 指令
@@ -65,7 +65,36 @@ python3 scripts/遥控.py 测试机B update --check       # 只看有没有新�
 
 | `cancel` | `target`（要取消的那条指令的 id） | 打断一条还在做的慢指令（测速、录音…），替它回「已取消」 |
 
-| `update` | `check`（只看不下载）、`auto`（开 / 关自动更新） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）。回执多 `version`、`build`、`auto` |
+| `update` | `check`（只看不下载） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）。回执多 `version`、`build` |
+
+### 直播没画面：真正的原因（0.22）
+
+- 在 S4 上用 `shell` 读 App 自己的系统日志（`logcat -d -v time Camera:V *:E`），每次开相机都是：
+  `Camera-JNI: Callback buffer was too small! Expected 460800 bytes, but got 0 bytes!` 和
+  `BufferQueue: dequeueBuffer: min undequeued buffer count (2) exceeded`。相机开着（`camera_opens` 在涨），预览回调却一次都没来（`callbacks` 是 0）。
+- 原因：0.13 起为了省电，相机手里最多放一块缓冲区、快用到时才给（FramePacer）。三星 S4（4.2）相机手里一没有缓冲区，
+  系统就把预览回调关掉、预览也卡住，之后再也不交画面：直播没画面（声音也跟着出不来）、侦测看不到东西、拍照「没截到画面」。
+- 0.22：3 块缓冲区一直放在相机手里，每帧用完马上还；用不上的帧在 Java 这边丢掉（`FramePacer.due` 只管抽帧）。比 0.13 的做法多拷一些帧、多费一点电，但一直出画面。
+- 4.2 的系统没有 grep：在手机上过滤日志用 logcat 自己的过滤（`Tag:级别 *:S`）。
+
+### 直播没画面、手机卡（0.21）
+
+- 0.20 没修好，还更糟：S4 上直播、手电、声音都不行，手机很卡。原因推测是 0.18 加的「在开着的相机上换对焦方式」
+  （守望时定焦、直播时连续对焦）：S4 一换对焦预览就不出画面；0.20 加的「10 秒没画面就关掉相机重开」于是一直循环，
+  相机一直被占（手电不行）、CPU 一直忙（手机卡）。
+- 0.21：对焦一直是连续对焦，不在开着的相机上换（回到 0.17 的做法）；去掉关掉重开，只在 4 秒没画面时补一次缓冲区、记一行日志。
+
+- 真正的原因（0.21 查到的）：这台 S4 的系统相机服务卡住了，开相机（`Camera.open`）一直不回来、也不报错，
+  所以相机「开着」却一次都没开成（`monitor_status` 里 `camera_opens` 是 0）。重启手机就好。
+  0.20 开相机 8 秒没回来就当失败、5 秒后再开，卡住的线程越堆越多，手机很卡。0.21 起所有开相机都走 `Camera.open`：
+  上一次还没回来就不再开新的，直接回「系统相机服务卡住了，重启手机就好」（直播、拍照、手电都一样）；同样的错只记一次日志。
+
+### 直播没画面（0.20 的修法，保留缓冲区补满）
+
+- 0.18、0.19 的 bug：开直播、开始 / 结束录像时，相机要换帧率档和对焦方式（守望时定焦、直播时连续对焦）。
+  S4 不让在预览中直接改，就停一下预览再开，可停预览时相机手里那块缓冲区收不回来；缓冲区一共两块，换两次就没了，
+  相机开着却一帧都不交：直播「发出 0 帧」（声音照常）、拍照「相机正在用，没截到画面」，而且没有任何报错。
+- 修法（`Camera.kt`）：改不了先只换帧率档；真要停预览，停完把缓冲区补满。再加一道保险：相机 4 秒没交一帧就补缓冲区；开相机 8 秒没开好当失败处理（以前会当成开好了空转）。处理画面出错也会记一行日志，不再一声不吭。
 
 ### 自动更新（0.19）
 
@@ -74,7 +103,7 @@ python3 scripts/遥控.py 测试机B update --check       # 只看有没有新�
   手机比「版本号，再比构建号」，所以同一个版本重编一次也会更新。本地编的构建号是 0。
 - 手机用自己的云盘令牌列 `/软件包/`，所以令牌要能读这个文件夹。读不了时 `update` 回执会说「云盘令牌读不了 /软件包」。
 - 待命时自动查：开始待命 1 分钟后查一次，以后每 6 小时一次；正在录像或直播时等一等再查。
-  App 里的「自动更新」勾掉、或者发 `{"do":"update","auto":false}` 就不自动查了。
+  0.20 起自动更新一直开着，不能关（App 里只留「检查更新」按钮）。
 - 下载后先检查：包名一样、版本不更旧、签名和手机上装的一样（不一样系统也装不上，要先卸载）。
 - 怎么装（`Updater.kt`）：
   - **手机有 root**（找得到 `su`）：`su -c pm install -r` 直接装，不用人点。第一次 root 管理器可能会问一下要不要允许。
@@ -93,6 +122,8 @@ python3 scripts/遥控.py 测试机B update --check       # 只看有没有新�
 - 指令带 `"ack": true` 时，慢指令先回一条 `pending:true` 的回执（「收到了，正在拍照…」），做完再回正式的；不带就只回正式的（老版本照常）。
 
 ### 模型测速（0.10，C++）
+
+- 0.20 起 App 界面上的「测模型速度」按钮删了，要测就从控制端发 `bench`。
 
 - 推理用 ncnn（腾讯开源，BSD），C++ 代码在 `app/src/main/cpp/`。先跑 `scripts/build-ncnn-android.sh` 编好 ncnn
   （要 NDK r23c，最后一个支持 4.2 的），Gradle 自动找到 `/opt/ncnn/armv7`（或 `-Pncnn.dir=`）；找不到就不带 C++，测不了模型，别的照常。
@@ -128,7 +159,7 @@ python3 scripts/遥控.py 测试机B update --check       # 只看有没有新�
   - 背景还没学好、或者正看到一半的动静（连着两次才算），不歇。有动静、开始直播、要拍照、开手电、改设置时马上叫醒。
   - 老系统（Android 6 以下）用 `ELAPSED_REALTIME_WAKEUP` 闹钟叫醒（4.4 起用 `setExact`）；6 以上有 Doze，只关相机、不放 CPU 锁。
 - 守望时不印时间戳：留下的几帧开始录时按拍下的钟点补印，录像、截图、直播照样带时间。
-- 守望时对焦定在无限远（没有就固定焦），对焦马达不来回找；开始录、直播时换回连续对焦。
+- 守望时对焦定在无限远：0.21 去掉了（S4 上换对焦会让预览停住），一直连续对焦。
 - 麦克风、编码器守望时本来就关着（0.14）。
 
 **耗电诊断（0.18）**：`monitor_status` 回执的 `status.power`，`info` 里也有一行。S4 读不到实时电流，就比这几个数：

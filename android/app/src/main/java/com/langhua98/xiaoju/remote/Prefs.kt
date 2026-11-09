@@ -6,20 +6,23 @@ import android.content.Context
 class Prefs(ctx: Context) {
     private val sp = ctx.getSharedPreferences("xiaoju-remote", Context.MODE_PRIVATE)
 
-    var base: String
-        get() = sp.getString("base", "")!!.ifBlank { DEFAULT_BASE }
-        set(v) { sp.edit().putString("base", v.trim().trimEnd('/')).apply() }
+    /** 云盘地址固定（0.20 起界面上不用填） */
+    val base: String get() = DEFAULT_BASE
 
+    /** 云盘令牌：编译时打进 App（BuildConfig.CLOUD_TOKEN，workflow 用 secret XIAOJU_TOKEN）。
+     *  本地编、没带令牌的包才用界面上填的。 */
     var token: String
-        get() = sp.getString("token", "")!!
+        get() = BuildConfig.CLOUD_TOKEN.ifBlank { sp.getString("token", "")!! }
         set(v) { sp.edit().putString("token", v.trim()).apply() }
 
+    /** 设备名只能是 A、B、C、D，默认 A（以前存的别的名字也当 A） */
     var device: String
-        get() = sp.getString("device", "")!!.ifBlank { android.os.Build.MODEL }
-        set(v) { sp.edit().putString("device", v.trim()).apply() }
+        get() = sp.getString("device", "")!!.takeIf { it in DEVICES } ?: DEVICES[0]
+        set(v) { sp.edit().putString("device", v.takeIf { it in DEVICES } ?: DEVICES[0]).apply() }
 
+    /** 配对口令，默认 0 */
     var pair: String
-        get() = sp.getString("pair", "")!!
+        get() = sp.getString("pair", DEFAULT_PAIR)!!
         set(v) { sp.edit().putString("pair", v.trim()).apply() }
 
     /** 移动侦测的设置（JSON，见 MonitorConfig） */
@@ -47,11 +50,6 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("standby", false)
         set(v) { sp.edit().putBoolean("standby", v).apply() }
 
-    /** 自动更新：待命时每 6 小时看一次云盘「软件包」，有新版本就下载、安装 */
-    var autoUpdate: Boolean
-        get() = sp.getBoolean("autoUpdate", true)
-        set(v) { sp.edit().putBoolean("autoUpdate", v).apply() }
-
     /** 上次自动查更新的时间（毫秒） */
     var updateCheckedAt: Long
         get() = sp.getLong("updateCheckedAt", 0L)
@@ -77,5 +75,7 @@ class Prefs(ctx: Context) {
 
     companion object {
         const val DEFAULT_BASE = "https://langhua1998-xiaoju-cloud.hf.space"
+        val DEVICES = listOf("A", "B", "C", "D")
+        const val DEFAULT_PAIR = "0"
     }
 }
