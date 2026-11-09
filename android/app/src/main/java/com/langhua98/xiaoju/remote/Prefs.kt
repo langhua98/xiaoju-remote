@@ -42,6 +42,31 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("tgChat", 0L)
         set(v) { sp.edit().putLong("tgChat", v).apply() }
 
+    /** 用户开着待命（更新完 App 被重启后，要接着待命）。用户点「停止」才变 false。 */
+    var standby: Boolean
+        get() = sp.getBoolean("standby", false)
+        set(v) { sp.edit().putBoolean("standby", v).apply() }
+
+    /** 自动更新：待命时每 6 小时看一次云盘「软件包」，有新版本就下载、安装 */
+    var autoUpdate: Boolean
+        get() = sp.getBoolean("autoUpdate", true)
+        set(v) { sp.edit().putBoolean("autoUpdate", v).apply() }
+
+    /** 上次自动查更新的时间（毫秒） */
+    var updateCheckedAt: Long
+        get() = sp.getLong("updateCheckedAt", 0L)
+        set(v) { sp.edit().putLong("updateCheckedAt", v).apply() }
+
+    /** 已经下好的安装包是云盘上哪个文件（同一个不再下） */
+    var updateFile: String
+        get() = sp.getString("updateFile", "")!!
+        set(v) { sp.edit().putString("updateFile", v).apply() }
+
+    /** 自动更新已经为哪个安装包装过 / 弹过安装界面（同一个只弹一次，不烦人） */
+    var updatePrompted: String
+        get() = sp.getString("updatePrompted", "")!!
+        set(v) { sp.edit().putString("updatePrompted", v).apply() }
+
     /** 处理过的文件信箱指令 id（避免重复执行），最多记 500 条 */
     fun isSeen(id: String) = seen().contains(id)
     fun markSeen(id: String) {

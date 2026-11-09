@@ -74,7 +74,8 @@ jobs:
         working-directory: android
         run: |
           chmod +x gradlew
-          NCNN_DIR=$HOME/ncnn/armv7 ./gradlew assembleDebug --no-daemon --stacktrace
+          # 构建号写进 App（BuildConfig.BUILD_NUMBER），要和下面传到云盘的文件名里的 build<号> 一样，自动更新靠它比新旧
+          NCNN_DIR=$HOME/ncnn/armv7 ./gradlew assembleDebug --no-daemon --stacktrace -PbuildNumber=${{ github.run_number }}
           # 一定要带上 C++（不然认不了东西）
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/armeabi-v7a/libxjbench.so'
 
