@@ -25,8 +25,27 @@ import java.util.concurrent.TimeUnit
 object Camera {
     /** 预览缓冲区几块（轮着用，相机手里最多一块） */
     private const val BUFFERS = 2
+    /** 正在开相机（LegacyCamera.open 还没回来）从什么时候开始，0 = 没在开 */
+    @Volatile var openingSince = 0L
+        private set
+
+    /**
+     * 开相机，所有开相机的地方都走这里。S4 的系统相机服务卡住时，open 会一直不回来（不报错）：
+     * 这时再开新的只会多卡一个线程（0.20 每 5 秒开一次，越堆越多，手机很卡），所以上一次还没回来就直接报错。
+     */
+    fun open(id: Int): LegacyCamera {
+        val since = openingSince
+        if (since > 0) throw IllegalStateException(
+            "系统相机服务卡住了（上次开相机 ${(System.currentTimeMillis() - since) / 1000} 秒还没回来），重启手机就好")
+        openingSince = System.currentTimeMillis()
+        try { return LegacyCamera.open(id) } finally { openingSince = 0L }
+    }
+
     /** 相机这么久没交一帧：补缓冲区 */
     private const val STALL_REFILL_MS = 4_000L
+
+    /** 后置镜头的编号（手电用） */
+    fun backId(): Int = findCamera(false)
 
     private fun findCamera(front: Boolean): Int {
         val want = if (front) LegacyCamera.CameraInfo.CAMERA_FACING_FRONT else LegacyCamera.CameraInfo.CAMERA_FACING_BACK
@@ -79,7 +98,7 @@ object Camera {
                     try {
                         val t0 = System.currentTimeMillis()
                         val id = findCamera(front)
-                        val c = LegacyCamera.open(id)
+                        val c = open(id)
                         cam = c
                         val rot = LegacyCamera.CameraInfo().also { LegacyCamera.getCameraInfo(id, it) }.orientation
                         val p = c.parameters
@@ -264,7 +283,7 @@ object Camera {
         h.post {
             try {
                 val id = findCamera(front)
-                val c = LegacyCamera.open(id)
+                val c = open(id)
                 cam = c
                 val info = LegacyCamera.CameraInfo().also { LegacyCamera.getCameraInfo(id, it) }
                 val p = c.parameters
@@ -361,7 +380,8 @@ object Torch {
         if (Build.VERSION.SDK_INT >= 23) return Torch23.set(ctx, on)
         if (!on) { releaseLegacy(); return "手电筒已关闭" }
         if (legacy != null) return "手电筒已打开"
-        val c = LegacyCamera.open()  ?: return "这台手机没有后置摄像头"
+        if (LegacyCamera.getNumberOfCameras() == 0) return "这台手机没有摄像头"
+        val c = Camera.open(Camera.backId())
         val p = c.parameters
         val modes = p.supportedFlashModes ?: emptyList()
         if ("torch" !in modes) { c.release(); return "这台手机不支持手电筒常亮" }

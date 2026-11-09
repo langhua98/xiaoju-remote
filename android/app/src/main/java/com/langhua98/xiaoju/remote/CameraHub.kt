@@ -297,6 +297,8 @@ class CameraHub(
 
     private fun cameraLoop() = Power.hold { cameraLoopInner() }   // 相机开着时 CPU 一直醒着
 
+    @Volatile private var lastOpenErr = ""
+
     private fun cameraLoopInner() {
         try {
             while (wanted()) {
@@ -312,7 +314,9 @@ class CameraHub(
                     // 间歇守望：看完这一轮没动静，相机已经关了，歇一会儿
                     if (restWanted && wanted()) { restWanted = false; rest(monitor.dutyOff * 1000L) }
                 } catch (e: Exception) {
-                    Bus.push("相机打不开：${e.message}，5 秒后再试")
+                    // 同样的错只记一次（相机服务卡住时每 5 秒一条，以前会刷满日志）
+                    val msg = "相机打不开：${e.message}"
+                    if (msg != lastOpenErr) { lastOpenErr = msg; Bus.push("$msg，5 秒后再试") }
                     live?.let { endLive() }
                     var waited = 0
                     while (wanted() && waited < 5_000) { try { Thread.sleep(200) } catch (ie: InterruptedException) { return }; waited += 200 }
@@ -382,6 +386,7 @@ class CameraHub(
         // 刚开相机的第一帧：这一轮从这里算；头几帧曝光还在变，不看（间歇守望每轮都重开相机）
         if (sessionAt == 0L) {
             sessionAt = now; settleUntil = now + SETTLE_MS
+            lastOpenErr = ""   // 相机又好了：下次再打不开要再记
             detector.pause()
             preroll.clear()   // 上一轮留的帧隔着一段空白，不要了
         }
