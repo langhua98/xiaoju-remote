@@ -67,6 +67,16 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 
 | `update` | `check`（只看不下载） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）。回执多 `version`、`build` |
 
+### 直播没画面：真正的原因（0.22）
+
+- 在 S4 上用 `shell` 读 App 自己的系统日志（`logcat -d -v time Camera:V *:E`），每次开相机都是：
+  `Camera-JNI: Callback buffer was too small! Expected 460800 bytes, but got 0 bytes!` 和
+  `BufferQueue: dequeueBuffer: min undequeued buffer count (2) exceeded`。相机开着（`camera_opens` 在涨），预览回调却一次都没来（`callbacks` 是 0）。
+- 原因：0.13 起为了省电，相机手里最多放一块缓冲区、快用到时才给（FramePacer）。三星 S4（4.2）相机手里一没有缓冲区，
+  系统就把预览回调关掉、预览也卡住，之后再也不交画面：直播没画面（声音也跟着出不来）、侦测看不到东西、拍照「没截到画面」。
+- 0.22：3 块缓冲区一直放在相机手里，每帧用完马上还；用不上的帧在 Java 这边丢掉（`FramePacer.due` 只管抽帧）。比 0.13 的做法多拷一些帧、多费一点电，但一直出画面。
+- 4.2 的系统没有 grep：在手机上过滤日志用 logcat 自己的过滤（`Tag:级别 *:S`）。
+
 ### 直播没画面、手机卡（0.21）
 
 - 0.20 没修好，还更糟：S4 上直播、手电、声音都不行，手机很卡。原因推测是 0.18 加的「在开着的相机上换对焦方式」

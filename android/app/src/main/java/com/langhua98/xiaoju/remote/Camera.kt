@@ -23,8 +23,8 @@ import java.util.concurrent.TimeUnit
  */
 @Suppress("DEPRECATION")
 object Camera {
-    /** 预览缓冲区几块（轮着用，相机手里最多一块） */
-    private const val BUFFERS = 2
+    /** 预览缓冲区几块（一直都放在相机手里，用完马上还） */
+    private const val BUFFERS = 3
     /** 正在开相机（LegacyCamera.open 还没回来）从什么时候开始，0 = 没在开 */
     @Volatile var openingSince = 0L
         private set
@@ -124,15 +124,13 @@ object Camera {
                         val t = SurfaceTexture(20); tex = t
                         c.setPreviewTexture(t)
                         val size = fw * fh * ImageFormat.getBitsPerPixel(ImageFormat.NV21) / 8
-                        // 缓冲区：两块轮着用，相机手里最多一块（下面这些变量只在相机线程 h 上碰）
+                        // 缓冲区：3 块一直放在相机手里，每帧用完马上还（见 Feed）
                         val st = Feed(c, size)
-                        val pool = st.pool
                         feed = st
                         val pacer = FramePacer()
                         var frameErrLogged = false
                         c.setPreviewCallbackWithBuffer { data, _ ->
                             if (data == null) return@setPreviewCallbackWithBuffer
-                            st.inCam = maxOf(0, st.inCam - 1)
                             st.lastFrameAt = System.currentTimeMillis()
                             CamStats.callbacks++
                             val now = System.currentTimeMillis()
@@ -145,13 +143,10 @@ object Camera {
                                     if (!frameErrLogged) { frameErrLogged = true; Bus.push("处理画面出错：${e.message ?: e.javaClass.simpleName}") }
                                 }
                             }
-                            if (data.size == st.size) pool.addLast(data)
-                            // 下一帧快该用了才把缓冲区给相机；这之间的帧相机自己丢掉，不拷贝
-                            h.removeCallbacks(st)
-                            val d = pacer.returnDelay(System.currentTimeMillis())
-                            if (d <= 0) st.run() else h.postDelayed(st, d)
+                            // 用完马上还给相机（不能让相机手里没有缓冲区，见 Feed）
+                            if (data.size >= st.size) st.give(data)
                         }
-                        st.run()
+                        st.fill()
                         c.startPreview()
                         st.lastFrameAt = System.currentTimeMillis()
                         CamStats.opened(c.parameters, System.currentTimeMillis() - t0)
@@ -161,7 +156,7 @@ object Camera {
                 if (!ready.await(8, TimeUnit.SECONDS) && startErr == null) startErr = IllegalStateException("8 秒还没打开")
                 startErr?.let { e ->
                     val done = CountDownLatch(1)
-                    h.post { feed?.let { it.open = false; h.removeCallbacks(it) }; cleanup(cam, tex); done.countDown() }
+                    h.post { feed?.open = false; cleanup(cam, tex); done.countDown() }
                     done.await(3, TimeUnit.SECONDS)
                     throw e
                 }
@@ -184,7 +179,7 @@ object Camera {
                 // 关掉这台相机（换镜头/清晰度时接着开新的）
                 val closed = CountDownLatch(1)
                 h.post {
-                    feed?.let { it.open = false; h.removeCallbacks(it) }
+                    feed?.open = false
                     runCatching { cam?.setPreviewCallbackWithBuffer(null) }; cleanup(cam, tex); closed.countDown()
                 }
                 closed.await(3, TimeUnit.SECONDS)
@@ -196,28 +191,27 @@ object Camera {
     }
 
     /**
-     * 给相机一块空缓冲区（相机手里已经有了就不给）。只在相机线程上用。
-     * 两块缓冲区轮着用。停过预览（换帧率档、对焦失败时）相机手里那块就收不回来了，要 refill 补上：
-     * 0.18、0.19 没补，换两次就一块都不剩，相机开着却一帧都不交（直播「发出 0 帧」、拍照「没截到画面」）。
+     * 预览缓冲区：BUFFERS 块一直放在相机手里，每帧用完马上还，用不上的帧在 Java 这边丢掉（FramePacer.due）。
+     *
+     * 0.13～0.21 为了省电，相机手里最多放一块、快用到时才给。三星 S4（Android 4.2）受不了：
+     * 相机手里一没有缓冲区，系统就把预览回调关掉（日志「Callback buffer was too small! … got 0 bytes」），
+     * 预览也卡住（「BufferQueue: min undequeued buffer count exceeded」），之后再也不交画面：
+     * 直播没画面、侦测看不到东西、拍照「没截到画面」。0.22 改回最稳的做法。
      */
-    private class Feed(val cam: LegacyCamera, val size: Int) : Runnable {
-        val pool = ArrayDeque<ByteArray>().apply { repeat(BUFFERS) { add(ByteArray(size)) } }
-        var inCam = 0
+    private class Feed(val cam: LegacyCamera, val size: Int) {
         var open = true
         /** 上一帧回调的时间（开预览时也算一次） */
         @Volatile var lastFrameAt = System.currentTimeMillis()
-        override fun run() {
-            if (!open || inCam > 0) return
-            val b = pool.removeFirstOrNull() ?: ByteArray(size)   // 万一一块都没有了：新给一块，不让相机饿着
-            try { cam.addCallbackBuffer(b); inCam++ } catch (e: RuntimeException) { pool.addLast(b) }
+        /** 一块缓冲区交给相机 */
+        fun give(b: ByteArray) {
+            if (!open) return
+            try { cam.addCallbackBuffer(b) } catch (e: RuntimeException) { }
         }
-        /** 停过预览以后：相机手里的缓冲区作废，池子补满，再给一块 */
-        fun refill() {
-            inCam = 0
-            while (pool.size < BUFFERS) pool.addLast(ByteArray(size))
-            run()
-        }
+        /** 给相机 BUFFERS 块新的缓冲区（开预览前、停过预览以后） */
+        fun fill() { repeat(BUFFERS) { give(ByteArray(size)) } }
+        fun refill() = fill()
     }
+
 
     /**
      * 相机开着时换传感器帧率档（进出守望）：大多数手机能直接设；不行就停一下预览再设（不用重开相机，大约 0.2 秒）。
