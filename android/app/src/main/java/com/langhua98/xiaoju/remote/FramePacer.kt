@@ -13,12 +13,17 @@ package com.langhua98.xiaoju.remote
  */
 class FramePacer {
     private var nextAt = 0L
+    private var lastAt = 0L
+    private var lastGap = 0L
 
     /** 这一帧（now 毫秒到的）要不要用：按节拍抽，平均下来正好是 fps。 */
     fun due(now: Long, fps: Int): Boolean {
         val gap = 1000L / fps.coerceIn(1, 60)
+        // 帧率变了（比如 C++ 侦测从待命 2 帧/秒进到疑似 4 帧/秒）：从上一帧开始按新节拍算，不用等完旧的间隔
+        if (gap != lastGap) { if (lastAt > 0) nextAt = lastAt + gap; lastGap = gap }
         if (now < nextAt - LEAD) return false
         nextAt = if (now - nextAt > gap) now + gap else nextAt + gap
+        lastAt = now
         return true
     }
 

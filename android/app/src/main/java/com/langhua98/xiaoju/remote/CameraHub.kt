@@ -54,7 +54,13 @@ class CameraHub(
         private set
 
     val store = EventStore(eventsDir())
-    private val detector = MotionDetector()
+    private val detector = MotionDetector()          // Kotlin 基准版（engine = kotlin，以及 ab 对比里的一半）
+    /** 现在用的侦测引擎（MotionEngine.kt）：monitor 指令的 engine 字段选，换了就重新计数 */
+    @Volatile private var engine: MotionEngine = KotlinMotion(detector)
+    private val engineLock = Object()
+    @Volatile private var mstats = MotionStats(MonitorConfig.KOTLIN) { battery() }
+    @Volatile private var engineNote = ""
+    private var aiBuf = ByteArray(0)                 // 录像中再认一次时复用的画面缓冲区（AI 线程用，detBusy 保证一次一个）
     private val recorder = EventRecorder(store)
     private val notifier = Notifier(cloud, prefs, device)
     val uploader = Uploader(cloud, store, device, enabled = { monitor.upload }, busy = { watching() })
@@ -153,6 +159,7 @@ class CameraHub(
         monitor = m
         prefs.monitor = m
         applyMonitor()
+        if (m.on && !old.on) mstats = MotionStats(engine.name) { battery() }   // 重新打开侦测：耗电统计从头算
         // 直播中先不动相机（看的人在调），直播完再换成侦测的设置
         if (m.on && !liveActive()) settings.apply(m.cameraJson())
         kick()
@@ -223,7 +230,7 @@ class CameraHub(
         val today = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
         val list = store.list()
         return JSONObject().put("monitor", monitor.toJson()).put("camera", cameraOn).put("live", liveActive())
-            .put("recording", recorder.recording).put("score", detector.score.toDouble()).put("noise", detector.noise.toDouble())
+.put("recording", recorder.recording).put("score", engine.score.toDouble()).put("noise", engine.noise.toDouble())
             .put("today", list.count { it.name.startsWith(today) }).put("events", list.size)
             .put("last", list.firstOrNull()?.name ?: "").put("pending", store.pendingUpload().size)
             .put("storage_mb", store.usedBytes() / (1 shl 20)).put("free_mb", store.dir.usableSpace / (1 shl 20))
@@ -232,7 +239,19 @@ class CameraHub(
             .put("eco", monitor.eco).put("stage", stage()).put("resting", resting)
             .put("current_ma", PowerMeter.currentMa(3, 100) ?: -1)
             .put("power", powerJson())
+            .put("engine", mstats.json(engine).put("note", engineNote))
     }
+
+    /** 侦测引擎的实测（「设备信息」里看）。没开侦测返回空。 */
+    fun engineText(): String = if (!monitor.on) "" else mstats.text(engine) + if (engineNote.isEmpty()) "" else "\n$engineNote"
+
+    /** 电量（%）和插没插电 */
+    private fun battery(): Pair<Int, Boolean>? = runCatching {
+        val b = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED)) ?: return@runCatching null
+        val level = b.getIntExtra(android.os.BatteryManager.EXTRA_LEVEL, -1)
+        val scale = b.getIntExtra(android.os.BatteryManager.EXTRA_SCALE, 100).coerceAtLeast(1)
+        if (level < 0) null else (level * 100 / scale) to (b.getIntExtra(android.os.BatteryManager.EXTRA_PLUGGED, 0) != 0)
+    }.getOrNull()
 
     /**
      * 耗电诊断：CPU 醒着、相机开着各占多少时间，相机实际的帧率档 / 尺寸 / 对焦，间歇守望歇了多少，电池电压和温度。
@@ -286,6 +305,7 @@ class CameraHub(
         uploader.close()
         work.shutdown()
         detect.shutdown()
+        synchronized(engineLock) { engine.close() }
     }
 
     // ---- 相机线程 ----
@@ -326,7 +346,7 @@ class CameraHub(
             closeEncoder()
             setMic(false)
             recorder.close()
-            detector.reset()
+            engine.reset()
             if (live != null) endLive()
             status(stateText())
         }
@@ -387,7 +407,7 @@ class CameraHub(
         if (sessionAt == 0L) {
             sessionAt = now; settleUntil = now + SETTLE_MS
             lastOpenErr = ""   // 相机又好了：下次再打不开要再记
-            detector.pause()
+            engine.pause()
             preroll.clear()   // 上一轮留的帧隔着一段空白，不要了
         }
         // 先看有没有动静（在印时间之前看：跳动的秒数不能算动静）；省电侦测时，发现动静的这一帧就开始录
@@ -403,6 +423,7 @@ class CameraHub(
             if (grabbed == null) { grabbed = nv21.copyOf(); grabW = w; grabH = h; grabRot = r; gl.countDown() }
         }
         val liveH264 = sinks.isNotEmpty() && settings.codec == LiveSettings.H264
+        settings.watchFps = engine.watchFps
         settings.setWatch(eco && !rec && l == null)
         val wantH264 = !h264Broken && (rec || liveH264)
         if (wantH264) {
@@ -521,31 +542,72 @@ class CameraHub(
         } catch (e: Throwable) { /* 丢这一帧 */ }
     }
 
-    /** 移动侦测：每 200 ms 看一帧；新的事件截一张图、发提醒。 */
+    /**
+     * 移动侦测：Kotlin 基准版每 200 ms 看一帧；C++ 版自己定（待命 500 ms、疑似 250 ms、录像 200 ms）。
+     * 新的事件截一张图、发提醒；AI（FastestDet）只在有动静时、在另一个线程上跑。
+     */
     private fun look(nv21: ByteArray, w: Int, h: Int, r: Int, ts: Long) {
         val now = System.currentTimeMillis()
-        if (now - lastLook < 200) return
+        val eng = engine
+        if (now - lastLook < eng.minGapMs) return
         lastLook = now
         looks++
-        if (settings.version != detVersion || settings.tweak != detTweak) {
-            detVersion = settings.version; detTweak = settings.tweak
-            detector.reset()   // 换了镜头、调了亮度：重新学背景
+        val moving: Boolean
+        synchronized(engineLock) {
+            if (eng !== engine) return   // 刚换了引擎：下一帧用新的
+            if (settings.version != detVersion || settings.tweak != detTweak) {
+                detVersion = settings.version; detTweak = settings.tweak
+                eng.reset()   // 换了镜头、调了亮度：重新学背景
+            }
+            if (regionsDirty || r != detRot) { eng.setRegions(monitor.regions, r); detRot = r; regionsDirty = false }
+            val st = mstats
+            st.look(now, eng.stage, CamStats.callbacks)
+            val t0 = System.nanoTime()
+            moving = eng.analyze(nv21, w, h, now, recorder.recording)
+            if (eng !is DualMotion) st.timed(eng.name, System.nanoTime() - t0)
         }
-        if (regionsDirty || r != detRot) { detector.setRegions(monitor.regions, r); detRot = r; regionsDirty = false }
-        val moving = detector.analyze(nv21, w, h)
         if (moving && recorder.motion(ts)) {
             val e = recorder.current ?: return
             lastEvent = e.name
+            mstats.event()
             Bus.push("有动静：${e.name}")
             newEvent(e, nv21.copyOf(), w, h, r)
             return
         }
-        // 事件进行中：每 1.5 秒再认一次（新进来的人、刚才没认出来的）
+        // 事件进行中：每 1.5 秒再认一次（新进来的人、刚才没认出来的）。画面拷到复用的缓冲区，不每次分配
         if (recorder.recording && !detBusy && now - lastDetect > 1_500 && objectsOn()) {
             lastDetect = now
             detBusy = true
-            val copy = nv21.copyOf()
+            if (aiBuf.size != nv21.size) aiBuf = ByteArray(nv21.size)
+            System.arraycopy(nv21, 0, aiBuf, 0, nv21.size)
+            val copy = aiBuf
             detect.execute { Power.hold { try { later(copy, w, h, r) } finally { detBusy = false } } }
+        }
+    }
+
+    /** 按设置换侦测引擎（换了才换：新的要重新学背景，统计也从头算）。 */
+    private fun pickEngine(m: MonitorConfig) {
+        var want = m.engine
+        engineNote = ""
+        if (want != MonitorConfig.KOTLIN && !MotionNative.available) {
+            engineNote = "这个安装包没带 C++ 侦测库，用的是 Kotlin 版"
+            want = MonitorConfig.KOTLIN
+        }
+        synchronized(engineLock) {
+            if (engine.name != want) {
+                val old = engine
+                engine = when (want) {
+                    MonitorConfig.NATIVE -> NativeMotion()
+                    MonitorConfig.AB -> DualMotion(KotlinMotion(detector), NativeMotion()) { mstats }
+                    else -> KotlinMotion(detector)
+                }
+                if (old !is KotlinMotion) old.close()
+                detector.reset()
+                mstats = MotionStats(want) { battery() }
+                detRot = -1
+                if (m.on) Bus.push("移动侦测引擎：" + when (want) { MonitorConfig.NATIVE -> "C++ 超低功耗版"; MonitorConfig.AB -> "C++ 和 Kotlin 对比"; else -> "Kotlin 基准版" })
+            }
+            engine.configure(m)
         }
     }
 
@@ -562,7 +624,7 @@ class CameraHub(
     private fun recognize(nv21: ByteArray, w: Int, h: Int): List<ObjectDetector.Detection> {
         if (!ObjectDetector.ready(ctx)) return emptyList()
         Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
-        return ObjectDetector.detect(nv21, w, h).filter { it.canMove && detector.moved(it.x1, it.y1, it.x2, it.y2) }
+        return ObjectDetector.detect(nv21, w, h).filter { it.canMove && engine.moved(it.x1, it.y1, it.x2, it.y2) }
     }
 
     /** 记下这次认出来的，更新正在录的那段的标签。返回现在的汇总。 */
@@ -642,10 +704,14 @@ class CameraHub(
         preroll.windowMs = if (m.eco) m.ecoPreMs else 0
         recorder.postMs = m.postSec * 1000L
         detector.sensitivity = m.sensitivity
+        pickEngine(m)
         regionsDirty = true
     }
 
     /** 侦测现在在哪一档：off / watch（省电守望）/ record（在录，或不省电时一直开着编码器） */
+    /** 守望时相机每秒交几帧（Kotlin 版 4 帧；C++ 版待命 2 帧、疑似 4 帧） */
+    fun watchFps(): Int = engine.watchFps
+
     fun stage(): String = when {
         !monitor.on -> "off"
         monitor.eco && !recorder.recording && live == null -> "watch"
@@ -667,8 +733,13 @@ class CameraHub(
         if (!m.on) return "移动侦测已关闭（录好的 ${store.list().size} 段还在手机上）"
         val area = if (m.regions.isEmpty()) "整个画面" else "${m.regions.size} 个区域"
         val pre = if (m.eco) "省电（动静前留 ${m.ecoPreMs / 1000} 秒画面）" else "动静前 ${m.preSec} 秒"
+        val eng = when (engine.name) {
+            MonitorConfig.NATIVE -> "，C++ 超低功耗引擎（待命 ${m.standbyFps} 帧/秒，疑似时连续 ${m.confirm} 帧确认）"
+            MonitorConfig.AB -> "，C++ 和 Kotlin 两个引擎对比"
+            else -> ""
+        } + if (engineNote.isEmpty()) "" else "（$engineNote）"
         val duty = if (m.dutyActive) "，间歇守望（看 ${m.dutyOn} 秒、歇 ${m.dutyOff} 秒，歇着时的动静会漏）" else ""
-        return "移动侦测已打开：$area，灵敏度 ${m.sensitivity}，$pre、后 ${m.postSec} 秒$duty" +
+        return "移动侦测已打开：$area，灵敏度 ${m.sensitivity}，$pre、后 ${m.postSec} 秒$duty$eng" +
             (if (m.notify) "，Telegram 提醒（隔 ${m.cooldownMin} 分钟）" else "，不提醒") +
             (if (m.upload) "，慢慢备份到云盘" else "，只存手机") +
             (if (h264Broken) "（${settings.codecNote}）" else "")
@@ -695,7 +766,8 @@ class CameraHub(
         if (!m.dutyActive || live != null || recorder.recording || grabLatch != null || settings.torch) return false
         val at = sessionAt
         if (at == 0L || System.currentTimeMillis() - at < m.dutyOn * 1000L) return false
-        return detector.ready && !detector.pending
+        val e = engine
+        return e.ready && !e.pending
     }
 
     /** 有事（直播、拍照、改设置、停止）：不歇了，马上开相机。 */

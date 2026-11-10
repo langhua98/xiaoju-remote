@@ -64,11 +64,20 @@ jobs:
           [ -d "$RUNNER_TEMP/ncnn/src" ] && export NCNN_SRC=$RUNNER_TEMP/ncnn/src
           WORK=$HOME/ncnn/desktop sh android/tests/detector/run.sh
 
+      - name: Motion detection test (desktop)
+        # C++ 超低功耗移动侦测：模拟场景算漏检率、误报率，查 analyze() 里不分配内存；顺便编一份电脑版 libxjmotion.so 给单元测试走 JNI
+        run: WORK=$RUNNER_TEMP/motion sh android/tests/motion/run.sh $RUNNER_TEMP/motion/scenes.tsv
+
       - name: Unit tests
         working-directory: android
+        env:
+          XJ_NATIVE_LIB: ${{ runner.temp }}/motion/lib
+          XJ_MOTION_TSV: ${{ runner.temp }}/motion/scenes.tsv
         run: |
           chmod +x gradlew
           ./gradlew testDebugUnitTest --no-daemon
+          # C++ 版和 Kotlin 基准版在同一套模拟场景里的结果（漏检、误报），放进这次运行的摘要
+          { echo "### 移动侦测：C++ 和 Kotlin 基准对比（模拟场景）"; echo; echo '```'; column -t -s "$(printf '\t')" "$XJ_MOTION_TSV"; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
 
       - name: Build debug APK
         working-directory: android
@@ -85,6 +94,7 @@ jobs:
           NCNN_DIR=$HOME/ncnn/armv7 ./gradlew assembleDebug --no-daemon --stacktrace -PbuildNumber=${{ github.run_number }}
           # 一定要带上 C++（不然认不了东西）
           unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/armeabi-v7a/libxjbench.so'
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/armeabi-v7a/libxjmotion.so'
 
       - name: Sign with the fixed key
         # 固定签名：密钥在小橘云盘私有文件夹 /小橘推送/签名/android-signing.json（PKCS12 + 密码），用 XIAOJU_TOKEN 取。
