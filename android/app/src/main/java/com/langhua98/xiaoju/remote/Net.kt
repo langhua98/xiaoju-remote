@@ -7,7 +7,6 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
-import java.security.Security
 import java.security.cert.CertificateFactory
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
@@ -28,28 +27,28 @@ object Net {
 
     fun init(ctx: Context) {
         if (factory != null) return
-        // Conscrypt 自带验证证书链的 TrustManager（provideTrustManager），并且排到加密算法的第一位：
-        // 2026-11 云盘搬到 Tailscale 后证书是 Let's Encrypt 的 ECDSA 证书链（YE2 → Root YE → ISRG Root X2），
-        // Android 4.2 自带的证书验证算不了这种签名，握手失败；系统 HttpsURLConnection 接着退回 SSLv3 重试，
-        // 又被 Conscrypt 拒绝，界面上只看到「No enabled protocols; SSLv3 is no longer supported」，安卓端整个连不上云盘。
-        // 以前的 HF Space 是 RSA 证书，所以没出过问题。
-        val provider = Conscrypt.newProviderBuilder().provideTrustManager(true).build()
-        runCatching { if (Security.getProvider(provider.name) == null) Security.insertProviderAt(provider, 1) }
+        val provider = Conscrypt.newProvider()
         val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply { load(null, null) }
+        val anchors = ArrayList<java.security.cert.X509Certificate>()
         // 系统自带的根证书
         runCatching {
             val sys = KeyStore.getInstance("AndroidCAStore").apply { load(null, null) }
-            for (alias in sys.aliases()) sys.getCertificate(alias)?.let { ks.setCertificateEntry("sys-$alias", it) }
+            for (alias in sys.aliases()) (sys.getCertificate(alias) as? java.security.cert.X509Certificate)?.let {
+                ks.setCertificateEntry("sys-$alias", it); anchors.add(it)
+            }
         }
         // App 自带的根证书
         val cf = CertificateFactory.getInstance("X.509")
         ctx.resources.openRawResource(R.raw.roots).use { input ->
-            cf.generateCertificates(input).forEachIndexed { i, c -> ks.setCertificateEntry("app-$i", c) }
+            cf.generateCertificates(input).forEachIndexed { i, c ->
+                ks.setCertificateEntry("app-$i", c); (c as? java.security.cert.X509Certificate)?.let { anchors.add(it) }
+            }
         }
-        // 先用 Conscrypt 的 TrustManager（签名都用 Conscrypt 算），不行再退回系统的
-        val tmf = runCatching { TrustManagerFactory.getInstance("PKIX", provider).apply { init(ks) } }.getOrNull()
-            ?: TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(ks) }
-        val tm = tmf.trustManagers.first { it is X509TrustManager } as X509TrustManager
+        val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(ks) }
+        val sys = tmf.trustManagers.first { it is X509TrustManager } as X509TrustManager
+        // 系统验证不过时（Android 4.2 算不了新云盘的 ECDSA 证书链），用 Conscrypt 自己再验一遍证书链（见 ChainCheck）。
+        // 只在验证时点名用 Conscrypt，不改全局的加密算法顺序（0.25 改了全局顺序，S4 上一打开就闪退）。
+        val tm = FallbackTrustManager(sys, ChainCheck(anchors, provider))
         val ssl = SSLContext.getInstance("TLS", provider)
         ssl.init(null, arrayOf(tm), null)
         trust = tm

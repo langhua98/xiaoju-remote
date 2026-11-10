@@ -59,6 +59,7 @@ class RemoteService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        CrashLog.install(this)
         if (intent?.action == ACTION_STOP) { Prefs(this).standby = false; stopAll(); return START_NOT_STICKY }
         startAsForeground("待命中，等指令")
         if (!running) {
