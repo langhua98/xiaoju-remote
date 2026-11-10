@@ -61,7 +61,9 @@ class RemoteService : Service() {
             running = true
             Bus.running = true
             Bus.push("开始待命")
+            Prefs(this).armed = true
             Power.init(this)
+            if (Prefs(this).useRoot) Thread({ Root.apply(applicationContext) }, "root-setup").start()
             // Wi-Fi 在锁屏后也别断（老系统有的设成「休眠时断开」，断了就收不到指令）
             wifi = runCatching {
                 @Suppress("DEPRECATION")
@@ -75,6 +77,7 @@ class RemoteService : Service() {
     }
 
     private fun stopAll() {
+        Prefs(this).armed = false
         running = false
         Bus.running = false
         hub?.let { h -> Thread({ h.shutdown() }, "hub-stop").start() }
@@ -113,9 +116,21 @@ class RemoteService : Service() {
         hub = CameraHub(this, p, cloud, device, serviceRunning = { running }, status = ::notifyText).also { it.resume() }
 
         var useRelay = true
+        var useWs = true
         var lastFileCheck = 0L
         var lastError = ""
+        // 常驻推送：挂一条 WebSocket，指令秒推、CPU 一直睡。连不上（服务端没这个口）就退回长轮询。
+        val channel = RelayChannel(Net.okHttp(), cloud.relayWsUrl(RemoteBox.inbox(device)), Prefs(this).token,
+            running = { running }, onCommand = { cmd -> dispatch(cloud, cmd, device, viaRelay = true, filesDir = filesDir) },
+            log = { Bus.push(it) })
         while (running) {
+            if (useRelay && useWs) {
+                when (channel.run()) {
+                    RelayChannel.Outcome.STOPPED -> {}
+                    RelayChannel.Outcome.FALLBACK -> { useWs = false; Bus.push("常驻推送连不上，改用长轮询") }
+                }
+                continue
+            }
             if (useRelay) {
                 try {
                     // 等服务器回话时 CPU 可以睡（别的事要 CPU 时自己会拿着，见 Power）

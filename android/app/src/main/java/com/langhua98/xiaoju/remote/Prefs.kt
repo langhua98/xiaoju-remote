@@ -32,6 +32,16 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("flip", false)
         set(v) { sp.edit().putBoolean("flip", v).apply() }
 
+    /** 用户开过「待命」（开机自启、被杀重启时据此决定要不要自动起来） */
+    var armed: Boolean
+        get() = sp.getBoolean("armed", false)
+        set(v) { sp.edit().putBoolean("armed", v).apply() }
+
+    /** 有 root 时自动调系统设置保活（Wi-Fi 休眠策略、省电白名单） */
+    var useRoot: Boolean
+        get() = sp.getBoolean("useRoot", true)
+        set(v) { sp.edit().putBoolean("useRoot", v).apply() }
+
     /** 画面上印日期时间 */
     var stamp: Boolean
         get() = sp.getBoolean("stamp", true)

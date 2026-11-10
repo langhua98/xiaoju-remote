@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- Wi-Fi 休眠策略（老系统息屏后别断 Wi-Fi） -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <!-- 录像存在 App 自己的外部存储目录：Android 4.4 以前要这个权限，之后不用 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="18" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -43,5 +46,15 @@
             android:name=".RemoteService"
             android:exported="false"
             android:foregroundServiceType="dataSync|camera|microphone|location" />
+
+        <!-- 开机自启：上次开着待命就自动起来 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

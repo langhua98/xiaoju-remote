@@ -13,7 +13,12 @@ data class CloudItem(val id: String, val name: String, val type: String) {
  * 快路是即时信箱 /relay（长轮询），服务端太旧没有时退回文件信箱。
  */
 class Cloud(base: String, private val token: String) {
-    private val api = base.trimEnd('/') + "/api/agent/v1"
+    private val root = base.trimEnd('/')
+    private val api = "$root/api/agent/v1"
+
+    /** 常驻推送的 WebSocket 地址：https://… → wss://…/api/agent/v1/relay/ws?box=… */
+    fun relayWsUrl(box: String): String =
+        root.replaceFirst(Regex("^http"), "ws") + "/api/agent/v1/relay/ws?box=${q(box)}"
 
     private fun q(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
