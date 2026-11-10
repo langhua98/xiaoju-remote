@@ -31,6 +31,9 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault">
 
+        <!-- 构建号（GitHub run_number）：自动更新读安装包时用，见 Updater -->
+        <meta-data android:name="xiaoju.build" android:value="${xiaojuBuild}" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

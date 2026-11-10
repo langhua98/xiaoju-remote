@@ -22,9 +22,11 @@ android {
         // 最低 Android 4.2（API 17）
         minSdk = 17
         targetSdk = 35
-        versionCode = 22
-        versionName = "0.22"
+        versionCode = 23
+        versionName = "0.23"
         buildConfigField("int", "BUILD_NUMBER", "$buildNumber")
+        // 构建号也写进安装包的 meta-data：云盘上名字不规范的安装包，下载后靠它判断新旧（Updater）
+        manifestPlaceholders["xiaojuBuild"] = "$buildNumber"
         buildConfigField("String", "CLOUD_TOKEN", "\"$cloudToken\"")
         multiDexEnabled = true
         if (withNcnn) {
