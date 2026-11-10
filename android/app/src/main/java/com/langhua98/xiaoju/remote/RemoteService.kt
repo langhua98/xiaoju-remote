@@ -454,6 +454,11 @@ class RemoteService : Service() {
                     val name = cmd.optString("name")
                     val e = h.store.get(name) ?: run { done(false, "手机上没有 $name（可能已经满了被删掉，看云盘备份）"); return }
                     val f = h.store.mov(name)
+                    // 记着「已备份」，但云盘上已经没有了（云盘搬家、在云盘里删了）：去掉记号，下面重新传
+                    if (e.video && f.exists() && e.uploaded.isNotEmpty() &&
+                        runCatching { !cloud.exists(e.uploaded) }.getOrDefault(false)) {
+                        h.store.markUploaded(name, ""); e.uploaded = ""
+                    }
                     val files = JSONArray()
                     when {
                         !e.video || !f.exists() -> {

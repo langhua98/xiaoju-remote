@@ -67,6 +67,8 @@ class Uploader(
     @Volatile var status = ""
         private set
     @Volatile private var stop = false
+    /** 这次启动后核对过「已备份」的录像云盘上还在不在（见 EventStore.forgetMissing） */
+    @Volatile private var verified = false
     private val wake = Object()
     private val thread = Thread({ loop() }, "backup").apply { isDaemon = true; start() }
 
@@ -95,6 +97,18 @@ class Uploader(
             if (stop) return
             if (!enabled() || busy()) continue
             if (System.currentTimeMillis() - lastDone < GAP_MS) continue
+            if (!verified) {
+                try {
+                    val lost = Power.hold { store.forgetMissing { cloud.names(it) } }
+                    verified = true
+                    if (lost > 0) { status = "云盘上少了 $lost 段（云盘搬家时丢的），重新备份"; Bus.push(status) }
+                } catch (ex: Exception) {
+                    status = "核对云盘备份出错，5 分钟后再试：${ex.message}"
+                    Bus.push(status)
+                    backoff = 5 * 60_000L
+                    continue
+                }
+            }
             val day = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date())
             if (day != today) { today = day; count = 0 }
             if (count >= DAILY_MAX) { status = "今天已经备份了 $count 段，明天接着传"; continue }

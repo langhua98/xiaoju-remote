@@ -49,6 +49,32 @@ class Cloud(base: String, private val token: String) {
         return out
     }
 
+    /** 云盘上这个文件夹里的文件名。文件夹不存在返回空集合；别的错误抛出来（和 list 不同，不能把出错当成「没有」）。 */
+    fun names(path: String): Set<String> {
+        val out = HashSet<String>()
+        var cursor: String? = null
+        try {
+            do {
+                var url = "$api/items?path=${q(path)}&limit=1000"
+                cursor?.let { url += "&cursor=${q(it)}" }
+                val j = JSONObject(String(Net.request("GET", url, token), Charsets.UTF_8))
+                val arr = j.optJSONArray("children")
+                if (arr != null) for (i in 0 until arr.length()) arr.getJSONObject(i).optString("name").let { if (it.isNotEmpty()) out.add(it) }
+                cursor = j.optString("next_cursor").ifBlank { null }.takeIf { it != "null" }
+            } while (cursor != null)
+        } catch (e: HttpError) {
+            if (e.code != 404) throw e
+        }
+        return out
+    }
+
+    /** 云盘上有没有这个文件。404 = 没有；别的错误抛出来。 */
+    fun exists(path: String): Boolean = try {
+        Net.request("GET", "$api/items?path=${q(path)}&limit=1", token); true
+    } catch (e: HttpError) {
+        if (e.code == 404) false else throw e
+    }
+
     fun download(id: String): ByteArray = Net.request("GET", "$api/items/$id/content", token)
 
     /** 慢慢传（限速 bps 字节/秒），给录像备份用。已经有同名的文件当传过了。 */
