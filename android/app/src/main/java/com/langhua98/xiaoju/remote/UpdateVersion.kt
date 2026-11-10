@@ -39,10 +39,41 @@ object UpdateVersion {
         return if (c != 0) c > 0 else p.build > build
     }
 
+    /** 是不是安装包（不管名字规不规范）。 */
+    fun isApk(name: String) = name.endsWith(".apk", ignoreCase = true)
+
+    /**
+     * 安装包里读出来的版本比手机上的新吗？先比 versionCode，一样再比构建号
+     * （构建号写在安装包的 meta-data `xiaoju.build` 里，0.23 起才有；读不到当 0）。
+     */
+    fun isNewerBuild(code: Int, build: Int, myCode: Int, myBuild: Int): Boolean =
+        if (code != myCode) code > myCode else build > myBuild
+
     /** 一堆文件名里最新的那个安装包，没有返回 null。 */
     fun newest(names: Collection<String>): Pkg? =
         names.mapNotNull { parse(it) }.maxWithOrNull(Comparator { a, b ->
             val c = compareVersion(a.version, b.version)
             if (c != 0) c else a.build.compareTo(b.build)
         })
+
+    /**
+     * root 安装脚本（Updater.rootInstall 交给 su 在后台跑）。只用 Android 4.2 的 toolbox 也有的命令（没有 grep）。
+     * pm 的输出和 exit=<退出码> 写进 log；输出里有 Success 并且 restart 时，等 3 秒把待命服务拉起来。
+     */
+    fun rootScript(apk: String, log: String, pkg: String, restart: Boolean): String {
+        val tmp = "/data/local/tmp/falia-update.apk"
+        val svc = "$pkg/.RemoteService"
+        val sb = StringBuilder()
+        sb.append("cat '").append(apk).append("' > ").append(tmp).append(" && chmod 644 ").append(tmp).append('\n')
+        sb.append("pm install -r ").append(tmp).append(" > '").append(log).append("' 2>&1\n")
+        sb.append("echo \"exit=$?\" >> '").append(log).append("'\n")
+        sb.append("rm -f ").append(tmp).append('\n')
+        if (restart) {
+            sb.append("case \"$(cat '").append(log).append("')\" in *Success*)\n")
+            sb.append("  sleep 3\n")
+            sb.append("  am start-foreground-service -n ").append(svc).append(" >/dev/null 2>&1 || am startservice -n ").append(svc).append(" >/dev/null 2>&1\n")
+            sb.append(";;\nesac\n")
+        }
+        return sb.toString()
+    }
 }

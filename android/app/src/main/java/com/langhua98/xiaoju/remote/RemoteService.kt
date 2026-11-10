@@ -127,9 +127,13 @@ class RemoteService : Service() {
                 try {
                     // 等服务器回话时 CPU 可以睡（别的事要 CPU 时自己会拿着，见 Power）
                     pollSince = SystemClock.elapsedRealtime()
-                    val msgs = try { Power.sleepWhile { cloud.relayWait(RemoteBox.inbox(device)) } } finally { pollSince = 0L }
+                    val msgs = try { Power.sleepWhile { cloud.relayWait(RemoteBox.inbox(device), updates = true) } } finally { pollSince = 0L }
                     lastError = ""
-                    for (cmd in msgs) dispatch(cloud, cmd, device, viaRelay = true, filesDir = filesDir)
+                    for (cmd in msgs) {
+                        // 云盘「软件包」来了新安装包（服务端发的提醒，不是指令，没有口令也不回执）：下一圈马上查更新
+                        if (cmd.optString("do") == "update_hint") { updateHint(p, cmd.optString("name")); continue }
+                        dispatch(cloud, cmd, device, viaRelay = true, filesDir = filesDir)
+                    }
                 } catch (e: Exception) {
                     if (!running) break
                     if (Cloud.relayMissing(e)) {
@@ -479,7 +483,21 @@ class RemoteService : Service() {
     }
 
     /**
-     * 自动更新：待命开始 1 分钟后查一次，之后每 6 小时一次。正在录像、直播时先不查（装新版本会打断）。
+     * 服务端说云盘「软件包」里来了新安装包：把「上次查的时间」清掉，收件循环下一圈（马上）就去查。
+     * 正在录像、直播时 maybeAutoUpdate 先不查，每一圈都再看一次，结束了就查、就装。
+     * 提醒里没有口令，所以它只能让手机去查；装不装还是看版本和签名。
+     */
+    private fun updateHint(p: Prefs, name: String) {
+        Bus.push("云盘「软件包」来了新安装包${if (name.isNotBlank()) "（$name）" else ""}，去查更新")
+        p.updateCheckedAt = 0L
+        p.updatePrompted = ""   // root 上次没装上的话，这次再试一次
+        val h = hub
+        if (h != null && (h.liveActive() || h.stage() == "record")) Bus.push("正在直播或录像，结束后再装")
+    }
+
+    /**
+     * 自动更新：待命开始 1 分钟后查一次，之后每 6 小时一次；云盘来了新安装包会马上查（updateHint）。
+     * 正在录像、直播时先不查（装新版本会打断），结束后再查。
      * 同一个新版本只装 / 弹一次安装界面，没人点也不反复弹；通知一直留着。
      */
     private fun maybeAutoUpdate(p: Prefs) {

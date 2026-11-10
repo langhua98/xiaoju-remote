@@ -44,4 +44,30 @@ class UpdateVersionTest {
         assertEquals("xiaoju-remote-android-0.19-build60.apk", UpdateVersion.newest(names)!!.name)
         assertNull(UpdateVersion.newest(listOf("readme.txt")))
     }
+
+    @Test fun anyApkCountsAsPackage() {
+        assertTrue(UpdateVersion.isApk("app-release.apk"))
+        assertTrue(UpdateVersion.isApk("法莉娅.APK"))
+        assertFalse(UpdateVersion.isApk("Vania-latest.ipa"))
+        assertFalse(UpdateVersion.isApk("a.apk.part"))
+    }
+
+    @Test fun comparesBuildsReadFromApk() {
+        assertTrue(UpdateVersion.isNewerBuild(23, 0, 22, 80))   // versionCode 大就新，不管构建号
+        assertFalse(UpdateVersion.isNewerBuild(21, 99, 22, 1))
+        assertTrue(UpdateVersion.isNewerBuild(22, 81, 22, 80))  // versionCode 一样比构建号
+        assertFalse(UpdateVersion.isNewerBuild(22, 80, 22, 80))
+        assertFalse(UpdateVersion.isNewerBuild(22, 0, 22, 80))  // 老包读不到构建号
+    }
+
+    @Test fun rootScriptInstallsThenRestarts() {
+        val s = UpdateVersion.rootScript("/data/data/x/files/falia-update.apk", "/data/data/x/files/falia-install.log", "x", restart = true)
+        assertTrue(s.contains("cat '/data/data/x/files/falia-update.apk' > /data/local/tmp/falia-update.apk"))
+        assertTrue(s.contains("pm install -r /data/local/tmp/falia-update.apk > '/data/data/x/files/falia-install.log' 2>&1"))
+        assertTrue(s.contains("echo \"exit=$?\""))
+        assertTrue(s.indexOf("*Success*") > s.indexOf("pm install"))
+        assertTrue(s.contains("am start-foreground-service -n x/.RemoteService"))
+        assertTrue(s.contains("am startservice -n x/.RemoteService"))
+        assertFalse(UpdateVersion.rootScript("/a.apk", "/l", "x", restart = false).contains("am "))
+    }
 }
