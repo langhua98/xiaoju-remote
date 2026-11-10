@@ -26,6 +26,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashLog.install(this)
+        CrashLog.take(this)?.let { Bus.push("上次闪退了，原因（截图发给 Claude）：\n$it") }
         setContentView(R.layout.activity_main)
         prefs = Prefs(this)
         token = findViewById(R.id.token)
