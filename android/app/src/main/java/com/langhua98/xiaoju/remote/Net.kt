@@ -7,6 +7,7 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.KeyStore
+import java.security.Security
 import java.security.cert.CertificateFactory
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLContext
@@ -27,7 +28,13 @@ object Net {
 
     fun init(ctx: Context) {
         if (factory != null) return
-        val provider = Conscrypt.newProvider()
+        // Conscrypt 自带验证证书链的 TrustManager（provideTrustManager），并且排到加密算法的第一位：
+        // 2026-11 云盘搬到 Tailscale 后证书是 Let's Encrypt 的 ECDSA 证书链（YE2 → Root YE → ISRG Root X2），
+        // Android 4.2 自带的证书验证算不了这种签名，握手失败；系统 HttpsURLConnection 接着退回 SSLv3 重试，
+        // 又被 Conscrypt 拒绝，界面上只看到「No enabled protocols; SSLv3 is no longer supported」，安卓端整个连不上云盘。
+        // 以前的 HF Space 是 RSA 证书，所以没出过问题。
+        val provider = Conscrypt.newProviderBuilder().provideTrustManager(true).build()
+        runCatching { if (Security.getProvider(provider.name) == null) Security.insertProviderAt(provider, 1) }
         val ks = KeyStore.getInstance(KeyStore.getDefaultType()).apply { load(null, null) }
         // 系统自带的根证书
         runCatching {
@@ -39,12 +46,39 @@ object Net {
         ctx.resources.openRawResource(R.raw.roots).use { input ->
             cf.generateCertificates(input).forEachIndexed { i, c -> ks.setCertificateEntry("app-$i", c) }
         }
-        val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(ks) }
+        // 先用 Conscrypt 的 TrustManager（签名都用 Conscrypt 算），不行再退回系统的
+        val tmf = runCatching { TrustManagerFactory.getInstance("PKIX", provider).apply { init(ks) } }.getOrNull()
+            ?: TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(ks) }
         val tm = tmf.trustManagers.first { it is X509TrustManager } as X509TrustManager
         val ssl = SSLContext.getInstance("TLS", provider)
         ssl.init(null, arrayOf(tm), null)
         trust = tm
         factory = ssl.socketFactory
+    }
+
+    /**
+     * Android 4.2 的 HttpsURLConnection 握手失败后会退回 SSLv3 再试，Conscrypt 不支持 SSLv3，
+     * 报错就变成「No enabled protocols; SSLv3 …」，把真正的原因盖住了。遇到这种报错时自己握手一次，拿到真正的原因。
+     */
+    private fun realTlsError(url: String, e: java.io.IOException): java.io.IOException {
+        if (e.message?.contains("SSLv3") != true) return e
+        val f = factory ?: return e
+        val u = URL(url)
+        val port = if (u.port > 0) u.port else 443
+        val why = try {
+            // 不用 use {}：Android 4.2 的 Socket 还没实现 Closeable
+            val raw = java.net.Socket()
+            try {
+                raw.connect(java.net.InetSocketAddress(u.host, port), 20_000)
+                val ssl = f.createSocket(raw, u.host, port, true) as javax.net.ssl.SSLSocket
+                ssl.soTimeout = 20_000
+                ssl.startHandshake()
+            } finally { runCatching { raw.close() } }
+            return e   // 自己握手是好的：不是证书 / 协议的问题，原样报
+        } catch (t: Exception) {
+            generateSequence(t as Throwable) { it.cause }.last().let { it.message ?: it.javaClass.simpleName }
+        }
+        return java.io.IOException("HTTPS 握手失败：$why", e)
     }
 
     /**
@@ -79,11 +113,15 @@ object Net {
                 contentType: String? = null, readTimeoutMs: Int = 60_000, throttleBps: Int = 0,
                 onConn: ((HttpURLConnection?) -> Unit)? = null, reuse: Boolean = false): ByteArray =
         try {
-            requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, reuse)
+            try {
+                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, reuse)
+            } catch (e: java.io.IOException) {
+                // 只重试 GET；等太久（读超时）不算连接坏了，不重试
+                if (method != "GET" || e is java.net.SocketTimeoutException || e.message?.contains("SSLv3") == true) throw e
+                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, false)
+            }
         } catch (e: java.io.IOException) {
-            // 只重试 GET；等太久（读超时）不算连接坏了，不重试
-            if (method != "GET" || e is java.net.SocketTimeoutException) throw e
-            requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, false)
+            throw realTlsError(url, e)
         }
 
     /** onConn：连接建好时交出来（别的线程可以 disconnect() 把卡住的请求断掉），结束时交 null。 */

@@ -67,6 +67,20 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 
 | `update` | `check`（只看不下载） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）。回执多 `version`、`build` |
 
+### 连新云盘（0.25）
+
+2026-11-10 云盘从 HF Space 搬到家里电脑（Tailscale，`https://node.tail823dbd.ts.net`），0.24 在 S4（Android 4.2）上整个连不上，
+日志是「No enabled protocols; SSLv3 is no longer supported and was filtered from the list」。
+
+- 原因：新地址的证书是 Let's Encrypt 的 ECDSA 证书链，Android 4.2 自带的证书验证算不了这种签名，握手失败；
+  系统 HttpsURLConnection 再退回 SSLv3 重试，被 Conscrypt 拒绝，真正的原因被盖住了。以前 HF Space 是 RSA 证书。
+- 修：Conscrypt 排到加密算法第一位，证书链用 Conscrypt 自己的 TrustManager 验证（签名都由 Conscrypt 算）。
+  以后再遇到 SSLv3 那种报错，会自己握手一次，把真正的原因写出来。
+- 常驻推送去重改成按控制端给指令起的 id：以前按服务端的消息编号，云盘一重启编号从 1 重新数，
+  新指令全被当成「重发的」扔掉（还把它们在服务端确认删掉），只有重开 App 才好。家里电脑重启、更新云盘都会遇到。
+
+0.24 连不上云盘，自动更新也就用不了：**这一版要手动装一次**（Release 下载 `xiaoju-remote-latest.apk` 覆盖安装）。
+
 ### 云盘一传新包就自动更新（0.23）
 
 - 往小橘云盘「软件包」文件夹传一个 `.apk`（workflow 自动传、自己手动传都行），服务端马上往待命手机的即时信箱放一条
