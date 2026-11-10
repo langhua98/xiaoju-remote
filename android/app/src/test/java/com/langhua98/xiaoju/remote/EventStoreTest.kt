@@ -37,4 +37,17 @@ class EventStoreTest {
         try { s.forgetMissing { throw java.io.IOException("断网") } } catch (e: java.io.IOException) {}
         assertEquals(0, s.pendingUpload().size)
     }
+
+    /** 备份好的删掉手机上的视频，信息留着；没备份的不动。 */
+    @Test fun dropBackedUpKeepsPendingVideos() {
+        val s = EventStore(Files.createTempDirectory("ev").toFile())
+        event(s, "20261109-100000", 1000, "/x/20261109-100000.mov")
+        event(s, "20261109-110000", 2000, "")
+        assertEquals(1, s.dropBackedUp())
+        assertEquals(false, s.mov("20261109-100000").exists())
+        assertEquals(true, s.mov("20261109-110000").exists())
+        assertEquals(2, s.list().size)
+        assertEquals(listOf("20261109-110000"), s.pendingUpload().map { it.name })
+        assertEquals(0, s.dropBackedUp())
+    }
 }
