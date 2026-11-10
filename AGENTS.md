@@ -48,6 +48,11 @@
 ```
 文件存在 Telegram 上，每次读写都要好几秒，所以很慢。被控端用即时信箱时，每 30 秒还会看一眼文件收件箱，兼容旧的发送端。
 
+### 备用通道：ntfy.sh（安卓 0.31，云盘停了才用）
+云盘（家里电脑）连不上时，指令和回执改走公共信箱 ntfy.sh，内容用手机生成的密钥加密（只用 HMAC-SHA256）。
+密钥在云盘 `/小橘推送/遥控/<设备名>/备用通道.json`，控制端云盘正常时取一份记下。指令要多带 `at`（Unix 秒）。
+细节见 `android/README.md`「0.31」和 `android/.../BackupChannel.kt`。iPhone 被控端还没有。
+
 ### 指令 JSON
 ```json
 {"id": "20261106-215311-698635", "pair": "配对口令", "do": "photo", "lens": "front"}
@@ -172,6 +177,8 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
   0.23 起：服务端看到「软件包」里传了新 `.apk`，马上往待命手机的信箱放 `{"do":"update_hint"}`（手机收信带 `&updates=android`），
   手机马上查、装（直播录像时等结束），root 装完脚本自己把待命拉起来。名字不规范的包下载后读 versionCode 和 meta-data `xiaoju.build` 判断新旧，
   但 workflow 的规范文件名最好别改（不用下载就能比）。
+  0.30 起：云盘（家里电脑）连不上时改从 GitHub Release「xiaoju-remote-android」里的规范名字安装包查、下载（workflow 两个地方都传）；
+  没有 root 时先试静默安装（`SilentInstall.kt`：设备所有者，或 Android 12+ 自己更新自己），不行再要人点。说明见 `android/README.md`「0.30」。
 - 界面（0.20）：云盘地址固定；令牌编译时从 secret `XIAOJU_TOKEN` 打进 App（`BuildConfig.CLOUD_TOKEN`，William 定的，知道 APK 里能拆出令牌）；
   设备名只能选 A～D（默认 A），配对口令默认 `0`。控制端口令空着时发 `0`。
 - 签名一律用固定密钥（小橘云盘私有文件夹 `/小橘推送/签名/android-signing.json`，别分享、别放进仓库），换了密钥手机上就不能覆盖安装。

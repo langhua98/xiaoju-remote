@@ -66,6 +66,8 @@ class RelayChannel(
     private val log: (String) -> Unit = {},
     /** 每次心跳醒来叫一下（连着常驻推送时收件循环停在 run() 里，定时的活儿靠它，比如查更新）。不能卡住。 */
     private val onTick: () -> Unit = {},
+    /** 连上了（true）/ 连不上、断了（false）。备用通道靠它知道云盘好不好（BackupChannel） */
+    private val onState: (Boolean) -> Unit = {},
 ) {
     enum class Outcome { FALLBACK, STOPPED }
 
@@ -89,17 +91,23 @@ class RelayChannel(
         var backoffMs = 2_000L
         while (running()) {
             if (!connectOnce()) {
+                onState(false)
                 if (!everConnected) return Outcome.FALLBACK   // 服务端没这个口 / 一开始就连不上：用长轮询
-                // 连过一次又断了：等一下重连（间隔退一档），别放弃
+                // 连过一次又断了：等一下重连（间隔退一档），别放弃。
+                // 云盘可能停很久（家里电脑关机）：真的等够再连（0.29 以前这里没等，断着时一直连、费电），
+                // 等的时候也叫一下 onTick（查更新会改从 GitHub 查）
                 tuner.died()
-                if (!sleepReleasing(backoffMs)) break
+                if (!sleepReleasing(backoffMs, untilDead = false)) break
+                try { onTick() } catch (e: Exception) { log("定时任务出错：${e.message}") }
                 backoffMs = (backoffMs * 2).coerceAtMost(30_000)
                 continue
             }
             everConnected = true
+            onState(true)
             backoffMs = 2_000L
             log("常驻连接：已连上（心跳约 ${tuner.intervalMs / 1000} 秒）")
             keepAlive()
+            if (running()) onState(false)   // 连接断了（心跳没回应 / 被掐了）
             closeWs()
             if (!running()) break
         }
@@ -176,14 +184,17 @@ class RelayChannel(
         return pongSeq >= n && alive
     }
 
-    /** 睡 ms 毫秒，期间放掉 CPU 锁（有消息/断线会被 wake 提前叫醒）。running 变 false 或被叫醒返回 false 表示别再睡了。 */
-    private fun sleepReleasing(ms: Long): Boolean {
+    /**
+     * 睡 ms 毫秒，期间放掉 CPU 锁（有消息/断线会被 wake 提前叫醒）。running 变 false 或被打断返回 false 表示别再睡了。
+     * untilDead：连接断了就不睡了（连着时用）；断着等重连时传 false，不管连接，睡够为止。
+     */
+    private fun sleepReleasing(ms: Long, untilDead: Boolean = true): Boolean {
         if (ms <= 0) return running()
         var ok = true
         Power.sleepWhile(0) {
             val end = System.currentTimeMillis() + ms
             synchronized(lock) {
-                while (running() && alive) {
+                while (running() && (alive || !untilDead)) {
                     val left = end - System.currentTimeMillis()
                     if (left <= 0) break
                     try { lock.wait(left) } catch (e: InterruptedException) { ok = false; break }

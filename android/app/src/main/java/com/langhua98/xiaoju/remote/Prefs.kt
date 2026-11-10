@@ -55,6 +55,21 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("standby", false)
         set(v) { sp.edit().putBoolean("standby", v).apply() }
 
+    /** 备用通道（ntfy.sh）的密钥，base64。第一次用时随机生成，见 BackupChannel */
+    var backupKey: String
+        get() = sp.getString("backupKey", "")!!
+        set(v) { sp.edit().putString("backupKey", v).apply() }
+
+    /** 备用通道的密钥已经存到云盘的哪一份（密钥 + 设备名的摘要；变了要重新存） */
+    var backupPublished: String
+        get() = sp.getString("backupPublished", "")!!
+        set(v) { sp.edit().putString("backupPublished", v).apply() }
+
+    /** 备用通道收到的最后一条 ntfy 消息 id（断了重连从这里接着收） */
+    var backupSince: String
+        get() = sp.getString("backupSince", "")!!
+        set(v) { sp.edit().putString("backupSince", v).apply() }
+
     /** 上次自动查更新的时间（毫秒） */
     var updateCheckedAt: Long
         get() = sp.getLong("updateCheckedAt", 0L)
