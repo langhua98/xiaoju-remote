@@ -66,6 +66,24 @@ class EventStore(val dir: File, var maxBytes: Long = 3L shl 30, var minFreeBytes
     /** 等着备份的（最旧的在前）。 */
     fun pendingUpload(): List<EventInfo> = list().filter { it.video && it.uploaded.isEmpty() && mov(it.name).exists() }.reversed()
 
+    /**
+     * 云盘上已经没有了的录像，把「已备份」去掉，让它重新排队备份。
+     * 2026-11 云盘搬家是从前一天的备份恢复的，那之后传上去的录像手机上记着「已备份」，云盘上却没有，
+     * 结果一直不再传，iPhone 去云盘下也下不到。
+     * names(文件夹)：云盘上这个文件夹里的文件名，文件夹不存在返回空集合，出错抛异常（出错时什么也不改）。
+     * 每个文件夹只问一次。返回去掉了几段。
+     */
+    fun forgetMissing(names: (String) -> Set<String>): Int {
+        val byFolder = list().filter { it.uploaded.isNotEmpty() && mov(it.name).exists() }
+            .groupBy { it.uploaded.substringBeforeLast('/') }
+        var n = 0
+        for ((folder, events) in byFolder) {
+            val there = names(folder)
+            for (e in events) if (e.uploaded.substringAfterLast('/') !in there) { markUploaded(e.name, ""); n++ }
+        }
+        return n
+    }
+
     @Synchronized fun markUploaded(name: String, path: String) {
         val e = get(name) ?: return
         e.uploaded = path
