@@ -36,12 +36,7 @@ class MotionDetector(val cols: Int = 32, val rows: Int = 24) {
      */
     @Synchronized fun setRegions(rects: List<FloatArray>, rot: Int) {
         regions = rects; regionRot = rot
-        mask = if (rects.isEmpty()) null else BooleanArray(cols * rows) { i ->
-            val sx = (i % cols + 0.5f) / cols
-            val sy = (i / cols + 0.5f) / rows
-            val (ux, uy) = upright(sx, sy, rot)
-            rects.any { r -> ux >= r[0] && ux <= r[0] + r[2] && uy >= r[1] && uy <= r[1] + r[3] }
-        }
+        mask = regionMask(cols, rows, rects, rot)
     }
 
     /** 重新开始（换镜头、调亮度以后），前 2 秒不报。 */
@@ -145,6 +140,15 @@ class MotionDetector(val cols: Int = 32, val rows: Int = 24) {
     companion object {
         /** 背景重新学的时候前几次不报（刚开始曝光还在变） */
         const val WARM = 10
+
+        /** 检测区域 → 哪些格子要看（相机原始方向）。空列表 = 全部（返回 null）。C++ 引擎（MotionNative）也用这个。 */
+        fun regionMask(cols: Int, rows: Int, rects: List<FloatArray>, rot: Int): BooleanArray? =
+            if (rects.isEmpty()) null else BooleanArray(cols * rows) { i ->
+                val sx = (i % cols + 0.5f) / cols
+                val sy = (i / cols + 0.5f) / rows
+                val (ux, uy) = upright(sx, sy, rot)
+                rects.any { r -> ux >= r[0] && ux <= r[0] + r[2] && uy >= r[1] && uy <= r[1] + r[3] }
+            }
 
         /** 相机原始画面上的点 (x, y)（0…1）→ 顺时针转 rot 度以后的位置。 */
         fun upright(x: Float, y: Float, rot: Int): Pair<Float, Float> = when ((rot % 360 + 360) % 360) {

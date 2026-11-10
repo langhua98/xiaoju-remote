@@ -161,6 +161,9 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
   实时画面走 xiaoju-cloud 的直播通道 `/api/agent/v1/stream`（WebSocket），帧格式见 `StreamClient.kt`。改协议几边要一起改。
   画面优先用手机硬件 H.264（类型 4，`H264Encoder.kt` / 小橘推送 `RemoteH264.swift`），编码器不行或看的一端开兼容模式就用 JPEG（类型 3）。
 - 移动侦测（`CameraHub.kt`）：录像先存手机，再慢慢备份到云盘（云盘后面是 Telegram，会限流）；提醒走云盘服务端的 `/api/agent/v1/notify`。指令见 `android/README.md`。
+- 移动侦测引擎（0.29）：Kotlin 版 `MotionDetector.kt` 是基准（默认），C++ 超低功耗版在 `app/src/main/cpp/motion/`（库 `libxjmotion.so`，不依赖 ncnn），
+  `MotionEngine.kt` 是两边的接口和实测统计，`monitor` 的 `engine` 选（kotlin / native / ab）。改算法先跑 `android/tests/motion/run.sh`，
+  模拟场景在 `tests/motion/scenes.h` 和 `app/src/test/.../MotionScenes.kt` 各一份，要一起改（`MotionBenchTest` 核对校验和）。
 - 联网用 Conscrypt 2.5.2 + App 自带根证书 `res/raw/roots.pem`；WebSocket 用 OkHttp 3.12。
 - 编译：`.github/workflows/android.yml`，只能手动触发。它先用 `scripts/build-ncnn-android.sh` 编 ncnn，跑 `android/tests/detector` 和 Kotlin 单元测试，再编 APK。
   只改 `android/` 不会触发 iPhone 的 ipa 编译（`build.yml` 只看 `App/`、`Robot/live2d/`、`Tests/`、`project.yml`）。

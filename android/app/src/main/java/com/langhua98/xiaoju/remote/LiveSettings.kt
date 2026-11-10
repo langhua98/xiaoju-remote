@@ -28,8 +28,10 @@ class LiveSettings(front: Boolean, width: Int, quality: Int, fps: Int, codec: St
     /** 省电侦测「守望」中（没动静）：相机能多慢就多慢 */
     @Volatile var watch = false; private set
     @Volatile var profile = 0; private set
-    /** 现在每秒要几帧（守望时只要 WATCH_FPS 帧，相机驱动里多出来的帧不拷给我们） */
-    val frameFps: Int get() = if (watch) WATCH_FPS else fps
+    /** 守望时每秒要几帧：Kotlin 侦测一直是 WATCH_FPS；C++ 侦测待命 2 帧、疑似 4 帧（MotionEngine.watchFps） */
+    @Volatile var watchFps = WATCH_FPS
+    /** 现在每秒要几帧（守望时只要 watchFps 帧，相机驱动里多出来的帧不拷给我们） */
+    val frameFps: Int get() = if (watch) watchFps else fps
     /** 最近一次在相机上设参数时，这台手机不支持的项（给回执用） */
     @Volatile var unsupported = ""
     /** 硬件 H.264 用不了、退回 JPEG 的原因（给回执用） */

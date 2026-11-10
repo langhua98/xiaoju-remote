@@ -22,8 +22,8 @@ android {
         // 最低 Android 4.2（API 17）
         minSdk = 17
         targetSdk = 35
-        versionCode = 28
-        versionName = "0.28"
+        versionCode = 29
+        versionName = "0.29"
         buildConfigField("int", "BUILD_NUMBER", "$buildNumber")
         // 构建号也写进安装包的 meta-data：云盘上名字不规范的安装包，下载后靠它判断新旧（Updater）
         manifestPlaceholders["xiaojuBuild"] = "$buildNumber"
@@ -74,6 +74,13 @@ android {
         abortOnError = false
         checkReleaseBuilds = false
     }
+}
+
+// 单元测试也测 C++ 移动侦测（MotionNativeTest）：tests/motion/run.sh 编一份电脑版 libxjmotion.so，目录放在 XJ_NATIVE_LIB。
+// 没给就跳过那几个测试。
+tasks.withType<Test>().configureEach {
+    System.getenv("XJ_NATIVE_LIB")?.takeIf { it.isNotBlank() }?.let { systemProperty("java.library.path", it) }
+    System.getenv("XJ_MOTION_TSV")?.let { environment("XJ_MOTION_TSV", it) }
 }
 
 dependencies {

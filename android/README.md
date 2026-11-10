@@ -55,7 +55,7 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 | `shell` | `cmd` | 在 App 沙盒里跑一条 shell（非 root，只有 App 自己的权限） |
 | `video` | `transport`=ws、`room`、`codec`=h264/jpeg、`lens`、`width`、`fps`、`quality`、`audio` | 实时画面（走云盘的直播通道） |
 | `video_set` | 同上加 `exposure`、`zoom`、`torch`、`flip`、`stamp` | 直播 / 侦测中调相机；`flip` 上下翻转（转 180°，手机倒装时用）、`stamp` 印日期时间（默认开），这两个记在手机上（0.17） |
-| `monitor` | `on`、`sensitivity` 1–100、`regions` [[x,y,w,h]…]、`pre`、`post`、`notify`、`people`（只在认出人时提醒，0.12）、`eco`（省电侦测，0.14，默认开）、`duty`、`duty_on`、`duty_off`（间歇守望，0.18，默认开，看 2 秒歇 4 秒）、`cooldown`、`audio`、`upload`、`lens`、`width`、`fps`、`quality` | 移动侦测设置（只改给了的字段），回执带状态 |
+| `monitor` | `on`、`sensitivity` 1–100、`regions` [[x,y,w,h]…]、`pre`、`post`、`notify`、`people`（只在认出人时提醒，0.12）、`eco`（省电侦测，0.14，默认开）、`duty`、`duty_on`、`duty_off`（间歇守望，0.18，默认开，看 2 秒歇 4 秒）、`engine`（kotlin / native / ab，0.29，默认 kotlin）、`standby_fps` 1–4、`confirm` 2–6、`cooldown`、`audio`、`upload`、`lens`、`width`、`fps`、`quality` | 移动侦测设置（只改给了的字段），回执带状态 |
 | `monitor_status` | — | 侦测状态：今天几段、占多少空间、待备份、Telegram；`objects` 是能认东西时用的模型（空 = 认不了） |
 | `events` | `limit`、`before` | 录好的事件（新的在前，带小图）；`labels` 是认出来在动的东西（「人×2、猫」） |
 | `event_get` | `name` | 取一段录像：备份过的给云盘路径（0.28 起先确认云盘上还在），5 MB 以内直接放回执，大的先传到云盘 |
@@ -212,6 +212,39 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 - `fps_ranges`（这台手机支持的帧率档）、`fps_now`（实际设上的档）、`preview`、`focus`、`callbacks`（预览回调次数）、`looks`（侦测看了几次）
 - `motion_to_rec_ms`（发现动静到开始录用了多久）、`battery_pct`、`battery_mv`、`battery_c`、`plugged`
 - 电脑上看：`python3 scripts/遥控.py 设备名 monitor_status`；改设置：`python3 scripts/遥控.py 设备名 monitor --set '{"duty": false}'`
+
+**超低功耗移动侦测引擎（0.29，C++，`monitor` 的 `engine`）**
+
+原来的 Kotlin 版（`MotionDetector`）留着当基准、还是默认；新加 C++ 版（`app/src/main/cpp/motion/`），可以随时切换、也可以两个同时跑来比：
+`{"do":"monitor","engine":"native"}`、`"ab"`、`"kotlin"`。安装包没带 C++ 库时一律用 Kotlin 版（回执里会写）。
+
+- 四个阶段（C++ 自己定下一帧什么时候看，相机只按这个节奏把帧交给 Java，别的帧在驱动里还回去）：
+  1. 待命：每秒看 `standby_fps` 帧（默认 2）；
+  2. 疑似：看到变化就升到每秒 4 帧，连续 `confirm` 帧（默认 3，包括待命那一帧）都有变化才算，连着两帧没变化就回待命（光线闪一下、噪点、飞虫）；
+  3. 确认：交给原来的流程（录像、FastestDet 认东西、Telegram 提醒），录像中每 200 毫秒看一帧，接着有变化就接着录；
+  4. 冷却：录完以后每秒 4 帧再看 10 秒，没动静回待命。疑似、冷却时间歇守望不歇。
+- 算法：只读 NV21 的 Y 平面；32×24 格，每格只采 4×4 个点（640×480 一帧读 1.2 万个点，只读检测区域里的格子）；
+  背景每格一个数，慢慢跟上画面；每格自己记噪点（电视、树叶这种一直在变的格子门槛自己升高）；
+  整体亮度补偿同时试「加」和「乘」（相机自动曝光是乘的），用中位数，有人占了画面三成也不会带偏，过曝的格子不算变化；
+  单独一格变了不算（要和旁边的格子连着）；疑似 / 录像时门槛降到 3/4（迟滞），不显眼的人也能确认得快；整个画面六成以上变了就当新背景。
+- 内存：所有数组在建引擎时一次分配好，`analyze` 里一次都不分配（电脑上的测试会数）；JNI 用 `GetPrimitiveArrayCritical` 直接读相机缓冲区，不复制画面，
+  结果打包成一个 int 返回。检测在相机线程上，AI 在自己的线程上，只有确认有动静才跑；录像中再认一次时用复用的缓冲区。
+- 电脑上测（`android/tests/motion/run.sh`，CI 每次跑）：15 个模拟场景（静止、夜里、自动曝光、开关灯、灯闪、电视、飞虫，各种人走过），
+  C++ 版和 Kotlin 版（`MotionBenchTest`）看同一套画面（两边逐句翻译，校验和对得上）。2026-11 的结果：
+  | | 漏检 | 没人时误报 | 没人时每秒看几帧 | 平均反应 |
+  |---|---|---|---|---|
+  | Kotlin 基准 | 8/62（都是「远处的小人」） | 6 次（自动曝光、电视） | 4.3 | 约 0.5 秒 |
+  | C++（默认：待命 2 帧/秒、连续 3 帧） | 8/62（同上） | 0 次 | 2.0 | 约 0.6 秒 |
+  | C++ 待命 1 帧/秒 | 10/62（还漏了很快跑过的） | 2 次 | 1.2 | 约 0.6 秒 |
+  模拟场景是我们自己编的，只能说明两个版本谁好谁差、调参数往哪边走；真的漏检率、误报率要在手机上实测。
+- 手机上实测（`monitor_status` 的 `status.engine`，`info` 里也有几行，换引擎、重新打开侦测时从头算）：
+  `standby_pct` / `suspect_pct` / `active_pct` / `cooldown_pct`（各阶段占的时间）、`standby_sensor_fps`（待命时相机实际每秒回调几次）和
+  `standby_looks_per_s`（我们看了几帧）、`kotlin_us` / `native_us`（每帧计算多少微秒）、`app_cpu_pct`（整个 App 用的 CPU，读 `/proc/self/stat`）、
+  `battery_pct_per_h`（没插电、开了半小时以上才算）、`events`、`suspects`、`filtered`（疑似后被过滤掉的）、`ab`（对比模式：两个都发现、只有 C++、只有 Kotlin 各几次）。
+- 硬件限制：每秒看 2 帧不代表相机睡了。S4 的老相机接口在预览开着时传感器照样按帧率档跑（`fps_now`），
+  `standby_sensor_fps` 远大于 `standby_looks_per_s` 就说明传感器没降下来，真正省电的是间歇守望把相机整个关掉（`duty`）。
+  建议实测：同样插着电 / 不插电各跑一晚，比 `kotlin` 和 `native`（再试试 `duty_off` 4 → 8、`standby_fps` 2 → 1）的 `app_cpu_pct`、`battery_pct_per_h`、
+  漏掉的人（看录像）和误报（看提醒）。
 
 **常驻推送、开机自启、保活（0.19）：一直休眠，一发命令就秒回**
 - 收指令默认挂一条常驻 WebSocket（`RelayChannel`，连云盘的 `/api/agent/v1/relay/ws`）：指令一到服务端马上推下来，

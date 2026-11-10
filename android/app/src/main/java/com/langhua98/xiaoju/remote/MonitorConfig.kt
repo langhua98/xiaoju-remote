@@ -34,12 +34,21 @@ class MonitorConfig(
     val duty: Boolean = true,
     val dutyOn: Int = 2,
     val dutyOff: Int = 4,
+    /**
+     * 侦测引擎（0.29）：kotlin = 原来的 Kotlin 版（基准，默认）；native = C++ 超低功耗版（待命 standbyFps 帧/秒，
+     * 疑似时 4 帧/秒连续 confirm 帧确认）；ab = 两个同时看同一帧，按 C++ 的结果录像，记下两个哪里不一样（对比用）。
+     * 安装包里没有 C++ 库时一律用 Kotlin 版。
+     */
+    val engine: String = KOTLIN,
+    val standbyFps: Int = 2,
+    val confirm: Int = 3,
 ) {
     fun toJson(): JSONObject = JSONObject().put("on", on).put("sensitivity", sensitivity)
         .put("regions", JSONArray().apply { regions.forEach { r -> put(JSONArray().apply { r.forEach { put(it.toDouble()) } }) } })
         .put("pre", preSec).put("post", postSec).put("notify", notify).put("people", personOnly).put("cooldown", cooldownMin)
         .put("audio", audio).put("upload", upload).put("lens", lens).put("width", width).put("fps", fps).put("quality", quality).put("eco", eco)
         .put("duty", duty).put("duty_on", dutyOn).put("duty_off", dutyOff)
+        .put("engine", engine).put("standby_fps", standbyFps).put("confirm", confirm)
 
     /** 省电侦测时动静前留几秒画面（守望时每秒 4 帧，最多 3 秒，内存另外有上限） */
     val ecoPreMs: Long get() = minOf(preSec, 3) * 1000L
@@ -68,12 +77,20 @@ class MonitorConfig(
         duty = if (c.has("duty")) c.optBoolean("duty") else duty,
         dutyOn = if (c.has("duty_on")) c.optInt("duty_on", dutyOn).coerceIn(1, 10) else dutyOn,
         dutyOff = if (c.has("duty_off")) c.optInt("duty_off", dutyOff).coerceIn(1, 60) else dutyOff,
+        engine = if (c.has("engine")) c.optString("engine").takeIf { it in ENGINES } ?: engine else engine,
+        standbyFps = if (c.has("standby_fps")) c.optInt("standby_fps", standbyFps).coerceIn(1, 4) else standbyFps,
+        confirm = if (c.has("confirm")) c.optInt("confirm", confirm).coerceIn(2, 6) else confirm,
     )
 
     /** 现在要不要间歇守望（只在省电侦测里才有） */
     val dutyActive: Boolean get() = on && eco && duty
 
     companion object {
+        const val KOTLIN = "kotlin"
+        const val NATIVE = "native"
+        const val AB = "ab"
+        val ENGINES = setOf(KOTLIN, NATIVE, AB)
+
         fun fromJson(s: String?): MonitorConfig = try {
             if (s.isNullOrBlank()) MonitorConfig() else MonitorConfig().merge(JSONObject(s))
         } catch (e: Exception) { MonitorConfig() }
