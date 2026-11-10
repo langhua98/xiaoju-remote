@@ -23,6 +23,29 @@ import java.util.concurrent.TimeUnit
  */
 @Suppress("DEPRECATION")
 object Camera {
+    /** 预览缓冲区几块（一直都放在相机手里，用完马上还） */
+    private const val BUFFERS = 3
+    /** 正在开相机（LegacyCamera.open 还没回来）从什么时候开始，0 = 没在开 */
+    @Volatile var openingSince = 0L
+        private set
+
+    /**
+     * 开相机，所有开相机的地方都走这里。S4 的系统相机服务卡住时，open 会一直不回来（不报错）：
+     * 这时再开新的只会多卡一个线程（0.20 每 5 秒开一次，越堆越多，手机很卡），所以上一次还没回来就直接报错。
+     */
+    fun open(id: Int): LegacyCamera {
+        val since = openingSince
+        if (since > 0) throw IllegalStateException(
+            "系统相机服务卡住了（上次开相机 ${(System.currentTimeMillis() - since) / 1000} 秒还没回来），重启手机就好")
+        openingSince = System.currentTimeMillis()
+        try { return LegacyCamera.open(id) } finally { openingSince = 0L }
+    }
+
+    /** 相机这么久没交一帧：补缓冲区 */
+    private const val STALL_REFILL_MS = 4_000L
+
+    /** 后置镜头的编号（手电用） */
+    fun backId(): Int = findCamera(false)
 
     private fun findCamera(front: Boolean): Int {
         val want = if (front) LegacyCamera.CameraInfo.CAMERA_FACING_FRONT else LegacyCamera.CameraInfo.CAMERA_FACING_BACK
@@ -75,7 +98,7 @@ object Camera {
                     try {
                         val t0 = System.currentTimeMillis()
                         val id = findCamera(front)
-                        val c = LegacyCamera.open(id)
+                        val c = open(id)
                         cam = c
                         val rot = LegacyCamera.CameraInfo().also { LegacyCamera.getCameraInfo(id, it) }.orientation
                         val p = c.parameters
@@ -86,8 +109,8 @@ object Camera {
                         // 传感器帧率：够用的最低一档（跑得越快越费电）
                         p.supportedPreviewFpsRange?.let { LiveSettings.pickFpsRange(it, s.fps, s.watch) }
                             ?.let { p.setPreviewFpsRange(it[0], it[1]) }
-                        // 对焦：守望时定住（对焦马达不来回找），录像、直播时连续对焦
-                        LiveSettings.pickFocus(p.supportedFocusModes ?: emptyList(), s.watch)?.let { p.focusMode = it }
+                        // 对焦：一直连续对焦（0.18 守望时定焦、直播时再换回来，S4 一换对焦预览就不出画面了，0.21 去掉）
+                        LiveSettings.pickFocus(p.supportedFocusModes ?: emptyList(), false)?.let { p.focusMode = it }
                         try { c.parameters = p } catch (e: RuntimeException) {
                             // 有的手机不接受这个帧率范围：去掉再试
                             val q = c.parameters
@@ -101,50 +124,62 @@ object Camera {
                         val t = SurfaceTexture(20); tex = t
                         c.setPreviewTexture(t)
                         val size = fw * fh * ImageFormat.getBitsPerPixel(ImageFormat.NV21) / 8
-                        // 缓冲区：两块轮着用，相机手里最多一块（下面这些变量只在相机线程 h 上碰）
-                        val pool = ArrayDeque<ByteArray>().apply { repeat(2) { add(ByteArray(size)) } }
-                        val st = Feed(c, pool)
+                        // 缓冲区：3 块一直放在相机手里，每帧用完马上还（见 Feed）
+                        val st = Feed(c, size)
                         feed = st
                         val pacer = FramePacer()
+                        var frameErrLogged = false
                         c.setPreviewCallbackWithBuffer { data, _ ->
                             if (data == null) return@setPreviewCallbackWithBuffer
-                            st.inCam = maxOf(0, st.inCam - 1)
+                            st.lastFrameAt = System.currentTimeMillis()
                             CamStats.callbacks++
                             val now = System.currentTimeMillis()
                             // 按节拍抽帧：平均下来正好是要的帧率（守望时每秒 4 帧）
                             if (running() && pacer.due(now, s.frameFps)) {
                                 val ts = StreamClient.now()   // 采集时间（和声音同一个时钟）
                                 val r = if (s.flip) (rot + 180) % 360 else rot   // 上下翻转 = 多转 180°
-                                try { onFrame(data, fw, fh, r, ts) } catch (e: Throwable) { /* 丢这一帧 */ }
+                                try { onFrame(data, fw, fh, r, ts) } catch (e: Throwable) {
+                                    // 丢这一帧；每次开相机只记第一次（以前一声不吭，出了错根本看不出来）
+                                    if (!frameErrLogged) { frameErrLogged = true; Bus.push("处理画面出错：${e.message ?: e.javaClass.simpleName}") }
+                                }
                             }
-                            pool.addLast(data)
-                            // 下一帧快该用了才把缓冲区给相机；这之间的帧相机自己丢掉，不拷贝
-                            h.removeCallbacks(st)
-                            val d = pacer.returnDelay(System.currentTimeMillis())
-                            if (d <= 0) st.run() else h.postDelayed(st, d)
+                            // 用完马上还给相机（不能让相机手里没有缓冲区，见 Feed）
+                            if (data.size >= st.size) st.give(data)
                         }
-                        st.run()
+                        st.fill()
                         c.startPreview()
+                        st.lastFrameAt = System.currentTimeMillis()
                         CamStats.opened(c.parameters, System.currentTimeMillis() - t0)
                     } catch (e: Throwable) { startErr = e } finally { ready.countDown() }
                 }
-                ready.await(8, TimeUnit.SECONDS)
+                // 8 秒还没开好：当打不开处理（以前会当成开好了，相机线程空转、一帧画面都没有）
+                if (!ready.await(8, TimeUnit.SECONDS) && startErr == null) startErr = IllegalStateException("8 秒还没打开")
                 startErr?.let { e ->
                     val done = CountDownLatch(1)
-                    h.post { feed?.let { it.open = false; h.removeCallbacks(it) }; cleanup(cam, tex); done.countDown() }
+                    h.post { feed?.open = false; cleanup(cam, tex); done.countDown() }
                     done.await(3, TimeUnit.SECONDS)
                     throw e
                 }
                 var tw = s.tweak
+                var refilled = false
                 while (running() && s.version == ver) {
                     if (s.tweak != tw) { tw = s.tweak; h.post { cam?.let { runCatching { tweak(it, s, front) } } } }
                     if (s.profile != pf) { pf = s.profile; h.post { cam?.let { runCatching { switchFps(it, s, feed) } } } }
+                    // 保险：相机好几秒没交一帧（缓冲区丢了、驱动卡住），先补缓冲区，还不行就关掉重开
+                    val f = feed
+                    val quiet = if (f == null) 0L else System.currentTimeMillis() - f.lastFrameAt
+                    if (quiet > STALL_REFILL_MS && !refilled) {
+                        refilled = true
+                        Bus.push("相机 ${quiet / 1000} 秒没出画面，重新给缓冲区")
+                        h.post { f?.refill() }
+                    } else if (quiet < STALL_REFILL_MS) refilled = false
+                    // 0.20 在这里 10 秒没画面就关掉相机重开，S4 上一直循环，手机很卡、手电录音都用不了，0.21 去掉
                     try { Thread.sleep(100) } catch (e: InterruptedException) { break }
                 }
                 // 关掉这台相机（换镜头/清晰度时接着开新的）
                 val closed = CountDownLatch(1)
                 h.post {
-                    feed?.let { it.open = false; h.removeCallbacks(it) }
+                    feed?.open = false
                     runCatching { cam?.setPreviewCallbackWithBuffer(null) }; cleanup(cam, tex); closed.countDown()
                 }
                 closed.await(3, TimeUnit.SECONDS)
@@ -155,16 +190,28 @@ object Camera {
         }
     }
 
-    /** 给相机一块空缓冲区（相机手里已经有了就不给）。只在相机线程上用。 */
-    private class Feed(val cam: LegacyCamera, val pool: ArrayDeque<ByteArray>) : Runnable {
-        var inCam = 0
+    /**
+     * 预览缓冲区：BUFFERS 块一直放在相机手里，每帧用完马上还，用不上的帧在 Java 这边丢掉（FramePacer.due）。
+     *
+     * 0.13～0.21 为了省电，相机手里最多放一块、快用到时才给。三星 S4（Android 4.2）受不了：
+     * 相机手里一没有缓冲区，系统就把预览回调关掉（日志「Callback buffer was too small! … got 0 bytes」），
+     * 预览也卡住（「BufferQueue: min undequeued buffer count exceeded」），之后再也不交画面：
+     * 直播没画面、侦测看不到东西、拍照「没截到画面」。0.22 改回最稳的做法。
+     */
+    private class Feed(val cam: LegacyCamera, val size: Int) {
         var open = true
-        override fun run() {
-            if (!open || inCam > 0) return
-            val b = pool.removeFirstOrNull() ?: return
-            try { cam.addCallbackBuffer(b); inCam++ } catch (e: RuntimeException) { pool.addLast(b) }
+        /** 上一帧回调的时间（开预览时也算一次） */
+        @Volatile var lastFrameAt = System.currentTimeMillis()
+        /** 一块缓冲区交给相机 */
+        fun give(b: ByteArray) {
+            if (!open) return
+            try { cam.addCallbackBuffer(b) } catch (e: RuntimeException) { }
         }
+        /** 给相机 BUFFERS 块新的缓冲区（开预览前、停过预览以后） */
+        fun fill() { repeat(BUFFERS) { give(ByteArray(size)) } }
+        fun refill() = fill()
     }
+
 
     /**
      * 相机开着时换传感器帧率档（进出守望）：大多数手机能直接设；不行就停一下预览再设（不用重开相机，大约 0.2 秒）。
@@ -176,9 +223,7 @@ object Camera {
         val r = p.supportedPreviewFpsRange?.let { LiveSettings.pickFpsRange(it, s.fps, s.watch) }
         val cur = IntArray(2).also { p.getPreviewFpsRange(it) }
         if (r != null && (cur[0] != r[0] || cur[1] != r[1])) { p.setPreviewFpsRange(r[0], r[1]); changed = true }
-        // 守望时对焦定住，录像、直播时连续对焦
-        val focus = LiveSettings.pickFocus(p.supportedFocusModes ?: emptyList(), s.watch)
-        if (focus != null && focus != p.focusMode) { p.focusMode = focus; changed = true }
+        // 对焦方式不在开着的相机上换（0.18 这么做，S4 一换预览就停了：直播没画面）
         if (!changed) return
         try {
             c.parameters = p
@@ -186,7 +231,7 @@ object Camera {
             runCatching { c.stopPreview() }
             runCatching { c.parameters = p }
             c.startPreview()
-            feed?.let { it.inCam = 0; it.run() }
+            feed?.refill()   // 停预览时相机手里的缓冲区收不回来了，补上
         }
         CamStats.update(c.parameters)
     }
@@ -232,7 +277,7 @@ object Camera {
         h.post {
             try {
                 val id = findCamera(front)
-                val c = LegacyCamera.open(id)
+                val c = open(id)
                 cam = c
                 val info = LegacyCamera.CameraInfo().also { LegacyCamera.getCameraInfo(id, it) }
                 val p = c.parameters
@@ -329,7 +374,8 @@ object Torch {
         if (Build.VERSION.SDK_INT >= 23) return Torch23.set(ctx, on)
         if (!on) { releaseLegacy(); return "手电筒已关闭" }
         if (legacy != null) return "手电筒已打开"
-        val c = LegacyCamera.open()  ?: return "这台手机没有后置摄像头"
+        if (LegacyCamera.getNumberOfCameras() == 0) return "这台手机没有摄像头"
+        val c = Camera.open(Camera.backId())
         val p = c.parameters
         val modes = p.supportedFlashModes ?: emptyList()
         if ("torch" !in modes) { c.release(); return "这台手机不支持手电筒常亮" }

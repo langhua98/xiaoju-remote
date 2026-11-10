@@ -6,20 +6,23 @@ import android.content.Context
 class Prefs(ctx: Context) {
     private val sp = ctx.getSharedPreferences("xiaoju-remote", Context.MODE_PRIVATE)
 
-    var base: String
-        get() = sp.getString("base", "")!!.ifBlank { DEFAULT_BASE }
-        set(v) { sp.edit().putString("base", v.trim().trimEnd('/')).apply() }
+    /** 云盘地址固定（0.20 起界面上不用填） */
+    val base: String get() = DEFAULT_BASE
 
+    /** 云盘令牌：编译时打进 App（BuildConfig.CLOUD_TOKEN，workflow 用 secret XIAOJU_TOKEN）。
+     *  本地编、没带令牌的包才用界面上填的。 */
     var token: String
-        get() = sp.getString("token", "")!!
+        get() = BuildConfig.CLOUD_TOKEN.ifBlank { sp.getString("token", "")!! }
         set(v) { sp.edit().putString("token", v.trim()).apply() }
 
+    /** 设备名只能是 A、B、C、D，默认 A（以前存的别的名字也当 A） */
     var device: String
-        get() = sp.getString("device", "")!!.ifBlank { android.os.Build.MODEL }
-        set(v) { sp.edit().putString("device", v.trim()).apply() }
+        get() = sp.getString("device", "")!!.takeIf { it in DEVICES } ?: DEVICES[0]
+        set(v) { sp.edit().putString("device", v.takeIf { it in DEVICES } ?: DEVICES[0]).apply() }
 
+    /** 配对口令，默认 0 */
     var pair: String
-        get() = sp.getString("pair", "")!!
+        get() = sp.getString("pair", DEFAULT_PAIR)!!
         set(v) { sp.edit().putString("pair", v.trim()).apply() }
 
     /** 移动侦测的设置（JSON，见 MonitorConfig） */
@@ -31,11 +34,6 @@ class Prefs(ctx: Context) {
     var flip: Boolean
         get() = sp.getBoolean("flip", false)
         set(v) { sp.edit().putBoolean("flip", v).apply() }
-
-    /** 用户开过「待命」（开机自启、被杀重启时据此决定要不要自动起来） */
-    var armed: Boolean
-        get() = sp.getBoolean("armed", false)
-        set(v) { sp.edit().putBoolean("armed", v).apply() }
 
     /** 有 root 时自动调系统设置保活（Wi-Fi 休眠策略、省电白名单） */
     var useRoot: Boolean
@@ -52,6 +50,26 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("tgChat", 0L)
         set(v) { sp.edit().putLong("tgChat", v).apply() }
 
+    /** 用户开着待命（更新完 App 被重启后，要接着待命）。用户点「停止」才变 false。 */
+    var standby: Boolean
+        get() = sp.getBoolean("standby", false)
+        set(v) { sp.edit().putBoolean("standby", v).apply() }
+
+    /** 上次自动查更新的时间（毫秒） */
+    var updateCheckedAt: Long
+        get() = sp.getLong("updateCheckedAt", 0L)
+        set(v) { sp.edit().putLong("updateCheckedAt", v).apply() }
+
+    /** 已经下好的安装包是云盘上哪个文件（同一个不再下） */
+    var updateFile: String
+        get() = sp.getString("updateFile", "")!!
+        set(v) { sp.edit().putString("updateFile", v).apply() }
+
+    /** 自动更新已经为哪个安装包装过 / 弹过安装界面（同一个只弹一次，不烦人） */
+    var updatePrompted: String
+        get() = sp.getString("updatePrompted", "")!!
+        set(v) { sp.edit().putString("updatePrompted", v).apply() }
+
     /** 处理过的文件信箱指令 id（避免重复执行），最多记 500 条 */
     fun isSeen(id: String) = seen().contains(id)
     fun markSeen(id: String) {
@@ -62,5 +80,7 @@ class Prefs(ctx: Context) {
 
     companion object {
         const val DEFAULT_BASE = "https://langhua1998-xiaoju-cloud.hf.space"
+        val DEVICES = listOf("A", "B", "C", "D")
+        const val DEFAULT_PAIR = "0"
     }
 }

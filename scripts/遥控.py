@@ -29,7 +29,7 @@ import argparse, base64, json, os, sys, time, urllib.error, urllib.parse, urllib
 
 BASE = os.environ.get("XIAOJU_BASE", "https://langhua1998-xiaoju-cloud.hf.space").rstrip("/")
 TOKEN = os.environ.get("XIAOJU_TOKEN", "")
-PAIR = os.environ.get("XIAOJU_PAIR", "")
+PAIR = os.environ.get("XIAOJU_PAIR", "0")  # 法莉娅（安卓）默认口令是 0
 
 
 def req(method, path, query=None, data=None, ctype="application/octet-stream"):
@@ -81,7 +81,7 @@ def main():
     ap = argparse.ArgumentParser(description="小橘遥控发送端")
     ap.add_argument("device", help="B 设备的名字，和 App 里填的一样")
     ap.add_argument("action", choices=["info", "photo", "audio", "location", "torch", "vibrate", "ring", "shell", "gimbal",
-                                       "monitor", "monitor_status"])
+                                       "monitor", "monitor_status", "update"])
     ap.add_argument("--lens", choices=["back", "front"], default="back")
     ap.add_argument("--seconds", type=int, default=5)
     ap.add_argument("--on", action="store_true")
@@ -95,6 +95,7 @@ def main():
     ap.add_argument("--pitch", type=float, help="gimbal：上下（度，或 move 时的度每秒）")
     ap.add_argument("--save", default=".", help="回执里的文件下载到哪个目录")
     ap.add_argument("--timeout", type=int, default=90, help="等回执最多多少秒")
+    ap.add_argument("--check", action="store_true", help="update：只看有没有新版本，不下载")
     ap.add_argument("--set", default="", help='monitor：要改的字段（JSON），例如 \'{"duty": false}\'')
     a = ap.parse_args()
 
@@ -111,6 +112,10 @@ def main():
         cmd["on"] = not a.off  # 默认开，--off 关
     elif a.action == "vibrate":
         cmd["ms"] = a.ms
+    elif a.action == "update":
+        if a.check:
+            cmd["check"] = True
+        a.timeout = max(a.timeout, 300)  # 要下载安装包，慢一点
     elif a.action == "monitor" and a.set:
         cmd.update({k: v for k, v in json.loads(a.set).items() if k not in ("id", "pair", "do")})
     elif a.action == "shell":

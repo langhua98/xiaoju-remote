@@ -7,14 +7,17 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Button
 import android.widget.EditText
+import android.widget.RadioGroup
 import android.widget.TextView
 
-/** 设置界面：云盘地址、令牌、设备名、配对口令、授权、待命开关、记录。只用系统自带控件，4.2 也能跑。 */
+/**
+ * 设置界面：设备名（A～D）、配对口令（默认 0）、授权、待命开关、检查更新、记录。只用系统自带控件，4.2 也能跑。
+ * 云盘地址固定，令牌编译时打进 App（本地编、没带令牌的包才显示令牌框）。自动更新一直开着。
+ */
 class MainActivity : Activity() {
 
-    private lateinit var base: EditText
     private lateinit var token: EditText
-    private lateinit var device: EditText
+    private lateinit var device: RadioGroup
     private lateinit var pair: EditText
     private lateinit var toggle: Button
     private lateinit var status: TextView
@@ -25,7 +28,6 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         prefs = Prefs(this)
-        base = findViewById(R.id.base)
         token = findViewById(R.id.token)
         device = findViewById(R.id.device)
         pair = findViewById(R.id.pair)
@@ -33,22 +35,19 @@ class MainActivity : Activity() {
         status = findViewById(R.id.status)
         log = findViewById(R.id.log)
 
-        base.setText(prefs.base)
-        token.setText(prefs.token)
-        device.setText(prefs.device)
+        if (BuildConfig.CLOUD_TOKEN.isBlank()) {
+            findViewById<android.view.View>(R.id.tokenRow).visibility = android.view.View.VISIBLE
+            token.setText(prefs.token)
+        }
+        device.check(DEVICE_IDS[Prefs.DEVICES.indexOf(prefs.device).coerceAtLeast(0)])
         pair.setText(prefs.pair)
 
         findViewById<Button>(R.id.perms).setOnClickListener { requestPerms() }
         toggle.setOnClickListener { onToggle() }
-        findViewById<Button>(R.id.bench).setOnClickListener { b ->
-            b.isEnabled = false
-            Bus.push("开始测模型速度，大约 1 分钟，测的时候手机会有点热…")
-            Thread({
-                val text = ModelBench(applicationContext, null).run { Bus.push(it) }
-                text.lineSequence().last().let { Bus.push(it) }
-                runOnUiThread { b.isEnabled = true }
-            }, "bench").start()
-        }
+        findViewById<TextView>(R.id.version).text =
+            "现在是 ${Updater.currentLabel(this)}。自动更新：待命时每 6 小时看一次云盘「软件包」，有新版本就下载；" +
+            "有 root 直接装，没有 root 要点一下「安装」。"
+        findViewById<Button>(R.id.update).setOnClickListener { b -> checkUpdate(b as Button) }
 
         Bus.onLog = { lines -> log.text = lines.takeLast(80).joinToString("\n"); refresh() }
         log.text = Bus.snapshot().takeLast(80).joinToString("\n")
@@ -59,10 +58,11 @@ class MainActivity : Activity() {
     override fun onDestroy() { Bus.onLog = null; super.onDestroy() }
 
     private fun save() {
-        prefs.base = base.text.toString()
-        prefs.token = token.text.toString()
-        prefs.device = device.text.toString()
-        prefs.pair = pair.text.toString()
+        if (BuildConfig.CLOUD_TOKEN.isBlank()) prefs.token = token.text.toString()
+        prefs.device = Prefs.DEVICES.getOrElse(DEVICE_IDS.indexOf(device.checkedRadioButtonId)) { Prefs.DEVICES[0] }
+        // 口令清空了就回到默认的 0
+        prefs.pair = pair.text.toString().trim().ifEmpty { Prefs.DEFAULT_PAIR }
+        pair.setText(prefs.pair)
     }
 
     private fun refresh() {
@@ -87,11 +87,38 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /** 用户点「检查更新」：查云盘，有新的就下载，弹安装界面（有 root 直接装）。 */
+    private fun checkUpdate(b: Button) {
+        save()
+        if (prefs.token.isBlank()) { Bus.push("先填云盘令牌"); return }
+        b.isEnabled = false
+        Bus.push("查更新…")
+        Thread({
+            try {
+                Net.init(this)
+                val u = Updater(applicationContext, prefs.base, prefs.token)
+                val r = u.prepare()
+                Bus.push(r.text)
+                if (r.file != null) {
+                    r.pkg?.let { prefs.updatePrompted = it.name }
+                    Bus.push(u.plan(fromUi = true))
+                    u.install(r, this)   // 用 root 装要等一会儿，留在后台线程（startActivity 在哪个线程都行）
+                }
+            } catch (e: Exception) {
+                Bus.push("查更新出错：${e.message ?: e.javaClass.simpleName}")
+            }
+            runOnUiThread { b.isEnabled = true }
+        }, "update").start()
+    }
+
     private fun requestPerms() {
         if (Build.VERSION.SDK_INT < 23) { Bus.push("这个系统版本装 App 时就授权了，不用再点"); return }
         PermsApi23.request(this)
     }
 }
+
+/** 设备名 A～D 对应的单选按钮 */
+private val DEVICE_IDS = listOf(R.id.devA, R.id.devB, R.id.devC, R.id.devD)
 
 @TargetApi(23)
 private object PermsApi23 {
