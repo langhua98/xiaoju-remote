@@ -125,6 +125,7 @@ class RemoteService : Service() {
         var useWs = true
         var lastFileCheck = 0L
         var lastError = ""
+        var pollFails = 0   // 长轮询连着失败几次：云盘停了就越等越久再试（最多 30 秒），省电
         // 常驻推送：挂一条 WebSocket，指令秒推、CPU 一直睡。连不上（服务端没这个口）就退回长轮询。
         val channel = RelayChannel(Net.okHttpQuiet(), cloud.relayWsUrl(RemoteBox.inbox(device), updates = true), Prefs(this).token,
             running = { running },
@@ -149,6 +150,7 @@ class RemoteService : Service() {
                     pollSince = SystemClock.elapsedRealtime()
                     val msgs = try { Power.sleepWhile { cloud.relayWait(RemoteBox.inbox(device), updates = true) } } finally { pollSince = 0L }
                     lastError = ""
+                    pollFails = 0
                     for (cmd in msgs) {
                         // 云盘「软件包」来了新安装包（服务端发的提醒，不是指令，没有口令也不回执）：下一圈马上查更新
                         if (cmd.optString("do") == "update_hint") { updateHint(p, cmd.optString("name")); continue }
@@ -163,14 +165,25 @@ class RemoteService : Service() {
                         val msg = e.message ?: e.javaClass.simpleName
                         if (msg != lastError) Bus.push("收件箱读不了：$msg")
                         lastError = msg
-                        sleep(2000)
+                        sleep(minOf(2000L shl minOf(pollFails, 4), 30_000L))
+                        pollFails++
                     }
                 }
                 // 旧的发送端还会写文件信箱，隔一会儿看一眼（省电：以前 30 秒一次，现在 10 分钟）
                 if (System.currentTimeMillis() - lastFileCheck < FILE_CHECK_MS) continue
             }
             lastFileCheck = System.currentTimeMillis()
-            val items = cloud.list(inbox).filter { !it.isFolder && it.name.endsWith(".json") }.sortedBy { it.name }
+            // 云盘连不上时这里会出错：0.29 以前没接住，收件线程直接退出，待命就停了（云盘回来了也不收指令）
+            val items = try {
+                cloud.list(inbox).filter { !it.isFolder && it.name.endsWith(".json") }.sortedBy { it.name }
+            } catch (e: Exception) {
+                if (!running) break
+                val msg = e.message ?: e.javaClass.simpleName
+                if (msg != lastError) Bus.push("文件收件箱读不了：$msg")
+                lastError = msg
+                sleep(if (useRelay) 2000 else 10_000)
+                continue
+            }
             for (it in items) {
                 if (!running) break
                 if (p.isSeen(it.id)) continue
@@ -483,6 +496,8 @@ class RemoteService : Service() {
      * 更新指令：
      *   {"do":"update"}               查云盘「软件包」，有新的就下载、安装（有 root 直接装，没有就弹安装界面要人点）
      *   {"do":"update","check":true}  只看有没有新的，不下载
+     *   {"do":"update","owner":"release"}  不再当设备所有者（静默安装用的，取消后才能正常卸载），见 SilentInstall
+     * 云盘查不了时自动改从 GitHub Release 查、下载（0.30）。
      * 自动更新一直开着（0.20 起不能关）。
      * 回执先回（用 root 装的话装完 App 就被系统杀了），再去装。
      */
@@ -495,11 +510,15 @@ class RemoteService : Service() {
             restoreText()
         }
         val note = ""
+        if (cmd.optString("owner") == "release") {
+            done(Build.VERSION.SDK_INT >= 21, if (Build.VERSION.SDK_INT >= 21) SilentInstall.releaseOwner(this) else "Android 5 以下没有设备所有者")
+            return
+        }
         if (!updating.compareAndSet(false, true)) { done(false, "正在查 / 下载更新，等一会儿再试$note"); return }
         try {
             val u = Updater(this, p.base, p.token)
             val r = u.prepare(download = !cmd.optBoolean("check", false))
-            if (r.file == null) { done(r.ok, r.text + note); return }
+            if (r.file == null) { done(r.ok, r.text + "\n更新方式：" + Updater.installWay(this) + note); return }
             r.pkg?.let { p.updatePrompted = it.name }
             done(true, r.text + "\n" + u.plan(fromUi = false) + note)
             u.install(r, null)
@@ -523,6 +542,7 @@ class RemoteService : Service() {
 
     /**
      * 自动更新：待命开始 1 分钟后查一次，之后每 6 小时一次；云盘来了新安装包会马上查（updateHint）。
+     * 云盘连不上时改从 GitHub 查，并且 1 小时查一次。
      * 正在录像、直播时先不查（装新版本会打断），结束后再查。
      * 同一个新版本只装 / 弹一次安装界面，没人点也不反复弹；通知一直留着。
      */
@@ -542,6 +562,8 @@ class RemoteService : Service() {
                     val u = Updater(this, p.base, p.token)
                     val r = u.prepare()
                     if (!r.ok) Bus.push("自动更新：" + r.text)
+                    // 云盘查不了、靠 GitHub 兜底：1 小时后再查（不等 6 小时；云盘断着时也收不到「来了新安装包」的提醒）
+                    if (r.source == Updater.SOURCE_GITHUB) p.updateCheckedAt = now - Updater.CHECK_EVERY_MS + Updater.RETRY_WHEN_DOWN_MS
                     val pkg = r.pkg
                     if (r.file != null && pkg != null && p.updatePrompted != pkg.name) {
                         p.updatePrompted = pkg.name

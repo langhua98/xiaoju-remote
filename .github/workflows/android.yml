@@ -140,15 +140,20 @@ jobs:
           path: android/out/xiaoju-remote-latest.apk
 
       - name: Publish to the xiaoju-remote-android release
+        # 同时放一份规范名字的（xiaoju-remote-android-<版本>-build<构建号>.apk）：
+        # 云盘（家里电脑）连不上时，手机改从这里查更新、下载（Updater 的 GitHub 兜底），看名字就能比新旧
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          ver=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' android/app/build.gradle.kts | head -1)
+          named="android/out/xiaoju-remote-android-$ver-build${{ github.run_number }}.apk"
+          cp android/out/xiaoju-remote-latest.apk "$named"
           gh release delete xiaoju-remote-android --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
           gh release create xiaoju-remote-android \
             -R "$GITHUB_REPOSITORY" \
             --title "小橘遥控 APK" \
-            --notes "被控端 APK。下载 xiaoju-remote-latest.apk 直接装（安卓设置里先允许「安装未知来源」）。" \
-            android/out/xiaoju-remote-latest.apk
+            --notes "被控端 APK。下载 xiaoju-remote-latest.apk 直接装（安卓设置里先允许「安装未知来源」）。带版本号的那个是给手机自动更新兜底用的，内容一样。" \
+            android/out/xiaoju-remote-latest.apk "$named"
 
       - name: Upload to 小橘云盘 /软件包/
         # 每次编出新的 APK 都传到小橘云盘「软件包」（文件名带版本号和构建号），旧的 xiaoju-remote-android- 包删掉

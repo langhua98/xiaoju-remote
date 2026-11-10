@@ -60,7 +60,7 @@ object Commands {
         }
         val temp = b?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1000) ?: -1000   // 0.1 ℃
         val tempText = if (temp > -1000) "，电池 ${temp / 10}.${temp % 10} ℃" else ""
-        return "型号：${Build.MANUFACTURER} ${Build.MODEL}\n法莉娅：${Updater.currentLabel(ctx)}\n系统：Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）\n电量：$pct$charging$tempText"
+        return "型号：${Build.MANUFACTURER} ${Build.MODEL}\n法莉娅：${Updater.currentLabel(ctx)}\n更新：${Updater.installWay(ctx)}\n系统：Android ${Build.VERSION.RELEASE}（API ${Build.VERSION.SDK_INT}）\n电量：$pct$charging$tempText"
     }
 
     private fun photo(ctx: Context, front: Boolean): CmdResult {

@@ -90,9 +90,12 @@ class RelayChannel(
         while (running()) {
             if (!connectOnce()) {
                 if (!everConnected) return Outcome.FALLBACK   // 服务端没这个口 / 一开始就连不上：用长轮询
-                // 连过一次又断了：等一下重连（间隔退一档），别放弃
+                // 连过一次又断了：等一下重连（间隔退一档），别放弃。
+                // 云盘可能停很久（家里电脑关机）：真的等够再连（0.29 以前这里没等，断着时一直连、费电），
+                // 等的时候也叫一下 onTick（查更新会改从 GitHub 查）
                 tuner.died()
-                if (!sleepReleasing(backoffMs)) break
+                if (!sleepReleasing(backoffMs, untilDead = false)) break
+                try { onTick() } catch (e: Exception) { log("定时任务出错：${e.message}") }
                 backoffMs = (backoffMs * 2).coerceAtMost(30_000)
                 continue
             }
@@ -176,14 +179,17 @@ class RelayChannel(
         return pongSeq >= n && alive
     }
 
-    /** 睡 ms 毫秒，期间放掉 CPU 锁（有消息/断线会被 wake 提前叫醒）。running 变 false 或被叫醒返回 false 表示别再睡了。 */
-    private fun sleepReleasing(ms: Long): Boolean {
+    /**
+     * 睡 ms 毫秒，期间放掉 CPU 锁（有消息/断线会被 wake 提前叫醒）。running 变 false 或被打断返回 false 表示别再睡了。
+     * untilDead：连接断了就不睡了（连着时用）；断着等重连时传 false，不管连接，睡够为止。
+     */
+    private fun sleepReleasing(ms: Long, untilDead: Boolean = true): Boolean {
         if (ms <= 0) return running()
         var ok = true
         Power.sleepWhile(0) {
             val end = System.currentTimeMillis() + ms
             synchronized(lock) {
-                while (running() && alive) {
+                while (running() && (alive || !untilDead)) {
                     val left = end - System.currentTimeMillis()
                     if (left <= 0) break
                     try { lock.wait(left) } catch (e: InterruptedException) { ok = false; break }

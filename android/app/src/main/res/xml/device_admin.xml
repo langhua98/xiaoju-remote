@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 不要任何管理权限：设备管理员只是为了能当设备所有者，用来静默安装新版本（SilentInstall） -->
+<device-admin>
+    <uses-policies />
+</device-admin>

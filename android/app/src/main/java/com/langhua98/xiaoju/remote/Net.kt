@@ -117,7 +117,7 @@ object Net {
      * 几十秒后被运营商的 NAT 悄悄掐掉，再拿来发回执就一直等到超时（拍照回执要等一分钟），0.15 改回来。
      * 复用的旧连接坏了时，GET 马上用新连接再试一次。
      */
-    fun request(method: String, url: String, token: String, body: ByteArray? = null,
+    fun request(method: String, url: String, token: String?, body: ByteArray? = null,
                 contentType: String? = null, readTimeoutMs: Int = 60_000, throttleBps: Int = 0,
                 onConn: ((HttpURLConnection?) -> Unit)? = null, reuse: Boolean = false): ByteArray =
         try {
@@ -132,8 +132,11 @@ object Net {
             throw realTlsError(url, e)
         }
 
-    /** onConn：连接建好时交出来（别的线程可以 disconnect() 把卡住的请求断掉），结束时交 null。 */
-    private fun requestOnce(method: String, url: String, token: String, body: ByteArray?,
+    /**
+     * onConn：连接建好时交出来（别的线程可以 disconnect() 把卡住的请求断掉），结束时交 null。
+     * token 是 null：不是云盘（比如 GitHub），不带令牌。
+     */
+    private fun requestOnce(method: String, url: String, token: String?, body: ByteArray?,
                             contentType: String?, readTimeoutMs: Int, throttleBps: Int,
                             onConn: ((HttpURLConnection?) -> Unit)?, reuse: Boolean): ByteArray {
         val conn = URL(url).openConnection() as HttpURLConnection
@@ -145,7 +148,7 @@ object Net {
             conn.connectTimeout = 20_000
             conn.readTimeout = readTimeoutMs
             conn.useCaches = false
-            conn.setRequestProperty("Authorization", "Bearer $token")
+            if (token != null) conn.setRequestProperty("Authorization", "Bearer $token")
             conn.setRequestProperty("Accept", "application/json")
             if (!reuse) conn.setRequestProperty("Connection", "close")
             if (body != null) {
@@ -176,7 +179,7 @@ object Net {
                 val msg = runCatching { org.json.JSONObject(String(data, Charsets.UTF_8)) }.getOrNull()
                     ?.let { j -> j.optString("message").ifBlank { j.optString("error") } +
                         j.optString("hint").let { if (it.isBlank()) "" else "（$it）" } }.orEmpty()
-                throw HttpError(code, "云盘 $code" + if (msg.isBlank()) "" else "：$msg")
+                throw HttpError(code, who(url, token) + " $code" + if (msg.isBlank()) "" else "：$msg")
             }
             keep = reuse
             return data
@@ -190,41 +193,65 @@ object Net {
     /**
      * 下载一个大文件（安装包）直接写到 dest，不整个放进内存。返回写了多少字节。非 2xx 抛 HttpError。
      * 服务器说了长度而没下完整，抛 IOException。
+     * token 是 null：不是云盘（GitHub Release），不带令牌。跳转（GitHub 会 302 到存文件的服务器）自己跟，
+     * 每一跳都用自己的 TLS（Conscrypt + 自带根证书），令牌不带到别的网站。
      */
-    fun download(url: String, token: String, dest: java.io.File): Long {
-        val conn = URL(url).openConnection() as HttpURLConnection
-        try {
-            if (conn is HttpsURLConnection) factory?.let { conn.sslSocketFactory = it }
-            conn.connectTimeout = 20_000
-            conn.readTimeout = 60_000
-            conn.useCaches = false
-            conn.setRequestProperty("Authorization", "Bearer $token")
-            conn.setRequestProperty("Connection", "close")
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                conn.errorStream?.use { readAll(it) }
-                throw HttpError(code, "云盘 $code")
-            }
-            val expect = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
-            var total = 0L
-            conn.inputStream.use { input ->
-                java.io.FileOutputStream(dest).use { out ->
-                    val buf = ByteArray(64 * 1024)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                        total += n
-                    }
-                    out.fd.sync()
+    fun download(url: String, token: String?, dest: java.io.File): Long {
+        var at = url
+        val home = URL(url).host
+        for (hop in 0..5) {
+            // 令牌只带给原来的网站（云盘跳到自己别的地址还带着，跳到别的网站就不带）
+            val auth = token?.takeIf { URL(at).host == home }
+            val conn = URL(at).openConnection() as HttpURLConnection
+            try {
+                if (conn is HttpsURLConnection) factory?.let { conn.sslSocketFactory = it }
+                conn.instanceFollowRedirects = false
+                conn.connectTimeout = 20_000
+                conn.readTimeout = 60_000
+                conn.useCaches = false
+                if (auth != null) conn.setRequestProperty("Authorization", "Bearer $auth")
+                conn.setRequestProperty("Connection", "close")
+                val code = conn.responseCode
+                if (code in 300..399) {
+                    val loc = conn.getHeaderField("Location") ?: throw HttpError(code, who(at, auth) + " $code（跳转没给地址）")
+                    val next = URL(URL(at), loc)
+                    // 只跟 https 的跳转（原地址本来就是 http 的，比如本地测试的假云盘，才跟 http）
+                    if (next.protocol != "https" && next.protocol != URL(url).protocol) throw HttpError(code, who(at, auth) + " $code（跳到了不是 https 的地址）")
+                    at = next.toString()
+                    continue
                 }
+                if (code !in 200..299) {
+                    conn.errorStream?.use { readAll(it) }
+                    throw HttpError(code, who(at, auth) + " $code")
+                }
+                val expect = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
+                var total = 0L
+                conn.inputStream.use { input ->
+                    java.io.FileOutputStream(dest).use { out ->
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            total += n
+                        }
+                        out.fd.sync()
+                    }
+                }
+                if (expect >= 0 && total != expect) throw java.io.IOException("只下了 $total / $expect 字节")
+                return total
+            } catch (e: java.io.IOException) {
+                throw realTlsError(at, e)
+            } finally {
+                conn.disconnect()
             }
-            if (expect >= 0 && total != expect) throw java.io.IOException("只下了 $total / $expect 字节")
-            return total
-        } finally {
-            conn.disconnect()
         }
+        throw java.io.IOException("跳转太多次")
     }
+
+    /** 报错时说是谁：云盘（带令牌的）还是别的网站。 */
+    private fun who(url: String, token: String?) =
+        if (token != null) "云盘" else runCatching { URL(url).host }.getOrDefault("服务器")
 
     private fun readAll(input: InputStream): ByteArray {
         val out = ByteArrayOutputStream()
