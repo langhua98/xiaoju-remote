@@ -119,14 +119,15 @@ object Net {
      */
     fun request(method: String, url: String, token: String?, body: ByteArray? = null,
                 contentType: String? = null, readTimeoutMs: Int = 60_000, throttleBps: Int = 0,
-                onConn: ((HttpURLConnection?) -> Unit)? = null, reuse: Boolean = false): ByteArray =
+                onConn: ((HttpURLConnection?) -> Unit)? = null, reuse: Boolean = false,
+                headers: Map<String, String> = emptyMap()): ByteArray =
         try {
             try {
-                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, reuse)
+                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, reuse, headers)
             } catch (e: java.io.IOException) {
                 // 只重试 GET；等太久（读超时）不算连接坏了，不重试
                 if (method != "GET" || e is java.net.SocketTimeoutException || e.message?.contains("SSLv3") == true) throw e
-                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, false)
+                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, false, headers)
             }
         } catch (e: java.io.IOException) {
             throw realTlsError(url, e)
@@ -138,7 +139,8 @@ object Net {
      */
     private fun requestOnce(method: String, url: String, token: String?, body: ByteArray?,
                             contentType: String?, readTimeoutMs: Int, throttleBps: Int,
-                            onConn: ((HttpURLConnection?) -> Unit)?, reuse: Boolean): ByteArray {
+                            onConn: ((HttpURLConnection?) -> Unit)?, reuse: Boolean,
+                            headers: Map<String, String> = emptyMap()): ByteArray {
         val conn = URL(url).openConnection() as HttpURLConnection
         onConn?.invoke(conn)
         var keep = false
@@ -151,6 +153,7 @@ object Net {
             if (token != null) conn.setRequestProperty("Authorization", "Bearer $token")
             conn.setRequestProperty("Accept", "application/json")
             if (!reuse) conn.setRequestProperty("Connection", "close")
+            for ((k, v) in headers) conn.setRequestProperty(k, v)
             if (body != null) {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", contentType ?: "application/octet-stream")
@@ -247,6 +250,32 @@ object Net {
             }
         }
         throw java.io.IOException("跳转太多次")
+    }
+
+    /**
+     * 打开一条一直读的 GET（备用通道 ntfy 的消息流，一行一条 JSON），TLS 一样走 Conscrypt + 自带根证书。
+     * 非 2xx 抛 HttpError。用完调用方自己 disconnect()。
+     */
+    fun openStream(url: String, readTimeoutMs: Int): HttpURLConnection {
+        val conn = URL(url).openConnection() as HttpURLConnection
+        try {
+            if (conn is HttpsURLConnection) factory?.let { conn.sslSocketFactory = it }
+            conn.connectTimeout = 20_000
+            conn.readTimeout = readTimeoutMs
+            conn.useCaches = false
+            val code = conn.responseCode
+            if (code !in 200..299) {
+                conn.errorStream?.use { readAll(it) }
+                throw HttpError(code, who(url, null) + " $code")
+            }
+            return conn
+        } catch (e: java.io.IOException) {
+            conn.disconnect()
+            throw realTlsError(url, e)
+        } catch (e: HttpError) {
+            conn.disconnect()
+            throw e
+        }
     }
 
     /** 报错时说是谁：云盘（带令牌的）还是别的网站。 */

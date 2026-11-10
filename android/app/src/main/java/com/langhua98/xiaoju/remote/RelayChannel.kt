@@ -66,6 +66,8 @@ class RelayChannel(
     private val log: (String) -> Unit = {},
     /** 每次心跳醒来叫一下（连着常驻推送时收件循环停在 run() 里，定时的活儿靠它，比如查更新）。不能卡住。 */
     private val onTick: () -> Unit = {},
+    /** 连上了（true）/ 连不上、断了（false）。备用通道靠它知道云盘好不好（BackupChannel） */
+    private val onState: (Boolean) -> Unit = {},
 ) {
     enum class Outcome { FALLBACK, STOPPED }
 
@@ -89,6 +91,7 @@ class RelayChannel(
         var backoffMs = 2_000L
         while (running()) {
             if (!connectOnce()) {
+                onState(false)
                 if (!everConnected) return Outcome.FALLBACK   // 服务端没这个口 / 一开始就连不上：用长轮询
                 // 连过一次又断了：等一下重连（间隔退一档），别放弃。
                 // 云盘可能停很久（家里电脑关机）：真的等够再连（0.29 以前这里没等，断着时一直连、费电），
@@ -100,9 +103,11 @@ class RelayChannel(
                 continue
             }
             everConnected = true
+            onState(true)
             backoffMs = 2_000L
             log("常驻连接：已连上（心跳约 ${tuner.intervalMs / 1000} 秒）")
             keepAlive()
+            if (running()) onState(false)   // 连接断了（心跳没回应 / 被掐了）
             closeWs()
             if (!running()) break
         }

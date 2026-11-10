@@ -42,6 +42,8 @@ class RemoteService : Service() {
     /** 长轮询从什么时候开始等（elapsedRealtime，睡着的时间也算），0 = 没在等 */
     @Volatile private var pollSince = 0L
     @Volatile private var cloudRef: Cloud? = null
+    /** 备用通道（云盘停了走 ntfy.sh），见 BackupChannel */
+    @Volatile private var backup: BackupChannel? = null
     /** 开始待命的时间：开始后先等一会儿再查更新 */
     @Volatile private var startedAt = 0L
     /** 正在查 / 下载更新（同一时间只有一个） */
@@ -118,7 +120,14 @@ class RemoteService : Service() {
         val inbox = "/小橘推送/遥控/$device/收件"
         val filesDir = "/小橘推送/遥控/$device/文件"
 
-        try { Bus.push("云盘：${cloud.me()}") } catch (e: Exception) { Bus.push("连不上云盘：${e.message}") }
+        // 备用通道：云盘连不上时指令改走 ntfy.sh（加密），云盘正常时把密钥存到云盘给控制端
+        val bk = BackupChannel(p, device, running = { running },
+            onCommand = { cmd -> dispatch(cloud, cmd, device, viaRelay = true, filesDir = filesDir) },
+            log = { Bus.push(it) })
+        backup = bk
+        try { Bus.push("云盘：${cloud.me()}"); bk.cloudUp(); bk.publishIfNeeded(cloud) }
+        catch (e: Exception) { Bus.push("连不上云盘：${e.message}"); bk.cloudDown() }
+        bk.start()
         hub = CameraHub(this, p, cloud, device, serviceRunning = { running }, status = ::notifyText).also { it.resume() }
 
         var useRelay = true
@@ -134,8 +143,9 @@ class RemoteService : Service() {
                 else dispatch(cloud, cmd, device, viaRelay = true, filesDir = filesDir)
             },
             log = { Bus.push(it) },
-            onTick = { maybeAutoUpdate(p) })   // 常驻连接挂着时，6 小时一次的查更新、录完再装都靠心跳顺带叫
-        while (running) {
+            onTick = { maybeAutoUpdate(p) },   // 常驻连接挂着时，6 小时一次的查更新、录完再装都靠心跳顺带叫
+            onState = { up -> if (up) { bk.cloudUp(); bk.publishIfNeeded(cloud) } else bk.cloudDown() })
+        try { while (running) {
             maybeAutoUpdate(p)
             if (useRelay && useWs) {
                 when (channel.run()) {
@@ -151,6 +161,7 @@ class RemoteService : Service() {
                     val msgs = try { Power.sleepWhile { cloud.relayWait(RemoteBox.inbox(device), updates = true) } } finally { pollSince = 0L }
                     lastError = ""
                     pollFails = 0
+                    bk.cloudUp()
                     for (cmd in msgs) {
                         // 云盘「软件包」来了新安装包（服务端发的提醒，不是指令，没有口令也不回执）：下一圈马上查更新
                         if (cmd.optString("do") == "update_hint") { updateHint(p, cmd.optString("name")); continue }
@@ -162,6 +173,7 @@ class RemoteService : Service() {
                         useRelay = false
                         Bus.push("云盘服务端还没有即时信箱，改用文件信箱（会慢几秒）")
                     } else {
+                        bk.cloudDown()
                         val msg = e.message ?: e.javaClass.simpleName
                         if (msg != lastError) Bus.push("收件箱读不了：$msg")
                         lastError = msg
@@ -178,6 +190,7 @@ class RemoteService : Service() {
                 cloud.list(inbox).filter { !it.isFolder && it.name.endsWith(".json") }.sortedBy { it.name }
             } catch (e: Exception) {
                 if (!running) break
+                bk.cloudDown()
                 val msg = e.message ?: e.javaClass.simpleName
                 if (msg != lastError) Bus.push("文件收件箱读不了：$msg")
                 lastError = msg
@@ -195,7 +208,7 @@ class RemoteService : Service() {
                 dispatch(cloud, cmd, device, viaRelay = false, filesDir = filesDir)
             }
             if (!useRelay) sleep(2000)
-        }
+        } } finally { bk.stop(); backup = null }
     }
 
     /** 现在电耗在哪（info 指令最后几行）：实时电流、屏幕、开着的费电的东西。 */
@@ -244,7 +257,13 @@ class RemoteService : Service() {
         val id = cmd.optString("id").ifBlank { java.util.UUID.randomUUID().toString() }
         val outbox = "/小橘推送/遥控/$device/回执"
 
+        val viaBackup = cmd.optString("via") == "backup"
         fun replyTo(to: String, r: JSONObject) {
+            if (viaBackup) {
+                // 从备用通道来的指令，回执也走备用通道（云盘停着）
+                val b = backup
+                if (b != null) { b.reply(r); return }
+            }
             try {
                 if (viaRelay) cloud.relaySend(RemoteBox.receipt(device, to), r)
                 else cloud.upload("$outbox/$to.json", r.toString().toByteArray(Charsets.UTF_8), "application/json; charset=utf-8")
