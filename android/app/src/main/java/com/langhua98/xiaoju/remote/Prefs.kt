@@ -86,7 +86,7 @@ class Prefs(ctx: Context) {
     private fun seen(): List<String> = sp.getString("seen", "")!!.split("\n").filter { it.isNotBlank() }
 
     companion object {
-        const val DEFAULT_BASE = "https://langhua1998-xiaoju-cloud.hf.space"
+        const val DEFAULT_BASE = "https://node.tail823dbd.ts.net"
         val DEVICES = listOf("A", "B", "C", "D")
         const val DEFAULT_PAIR = "0"
     }

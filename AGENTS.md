@@ -12,7 +12,7 @@
 控制端 A（小橘推送 iOS 17 / scripts/遥控.py）
    │  指令 JSON
    ▼
-小橘云盘服务端（langhua98/xiaoju-cloud，Go，部署在 https://langhua1998-xiaoju-cloud.hf.space）
+小橘云盘服务端（langhua98/xiaoju-cloud，Go，部署在 https://node.tail823dbd.ts.net）
    │
    ▼
 被控端 B（本仓库，iOS 15+）── 执行 → 回执 JSON（可带照片、录音）→ 原路回到 A

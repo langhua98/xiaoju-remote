@@ -10,7 +10,7 @@
 """
 import base64, hashlib, json, os, re, shutil, subprocess, sys, tempfile, urllib.parse, urllib.request, zipfile
 
-BASE = (os.environ.get("XIAOJU_URL") or "https://langhua1998-xiaoju-cloud.hf.space").rstrip("/") + "/api/agent/v1"
+BASE = (os.environ.get("XIAOJU_URL") or "https://node.tail823dbd.ts.net").rstrip("/") + "/api/agent/v1"
 KEY_PATH = "/小橘推送/签名/android-signing.json"
 SIG_FILE = re.compile(r"^META-INF/([^/]+\.(SF|RSA|DSA|EC)|MANIFEST\.MF)$", re.I)
 
