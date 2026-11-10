@@ -67,6 +67,15 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 
 | `update` | `check`（只看不下载） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）。回执多 `version`、`build` |
 
+### 0.26、0.27
+
+- 0.26：0.25 在 S4 上一打开就闪退（把 Conscrypt 排到全局加密算法第一位影响面太大）。改成先用系统验证证书，验不过再用
+  `ChainCheck` 单独验证书链（只在这里点名用 Conscrypt）。加闪退记录（`CrashLog`）：崩了下次打开时日志里写原因。
+- 0.27：
+  - 「检查更新」不再把云盘「软件包」里别的软件的安装包都下载一遍：名字不规范的包只看名字像法莉娅的
+    （含 `xiaoju-remote`、`falia`、`法莉娅`、`小橘遥控`），别的不下载。
+  - 收指令的常驻连接去掉 OkHttp 每 20 秒一次的心跳（`Net.okHttpQuiet`），只留 `HeartbeatTuner` 的 1～9 分钟一次。
+
 ### 连新云盘（0.25）
 
 2026-11-10 云盘从 HF Space 搬到家里电脑（Tailscale，`https://node.tail823dbd.ts.net`），0.24 在 S4（Android 4.2）上整个连不上，
@@ -87,7 +96,7 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
   `{"do":"update_hint","name":…}`（xiaoju-cloud 的 `package_hint.go`）。手机收信时带 `&updates=android` 才会收到，iPhone 被控端不带。
 - 这条只是提醒，不是指令：没有口令，也不回执。手机收到后马上查更新（不再等 6 小时），装之前照样核对包名、版本和签名。
   正在直播或录像时先不装，结束后马上装。6 小时一次的定时检查留着兜底（手机离线时传的包，上线 1 分钟后会查到）。
-- 名字不规范的包（比如手动传的 `app-release.apk`）也认：先按规范名字比；没有更新的，再把没看过的包下载下来，
+- 名字不规范但像法莉娅的包（比如手动传的 `xiaoju-remote-latest.apk`、`法莉娅.apk`；0.27 起别的名字不下载）也认：先按规范名字比；没有更新的，再把没看过的包下载下来，
   让系统读里面的 versionCode 和构建号（0.23 起写在 meta-data `xiaoju.build` 里）。不比手机上新的按云盘文件 id 记下，下次不再下。
   同一个版本号想再推一次：手动编的包要把 versionCode 加 1（本地编的构建号是 0）；workflow 编的构建号会自己变大。
 - root 安装改成脚本在后台跑：先复制到 `/data/local/tmp`（新系统 pm 读不了 App 自己的目录），`pm install -r`，

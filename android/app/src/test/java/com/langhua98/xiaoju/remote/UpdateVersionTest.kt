@@ -70,4 +70,15 @@ class UpdateVersionTest {
         assertTrue(s.contains("am startservice -n x/.RemoteService"))
         assertFalse(UpdateVersion.rootScript("/a.apk", "/l", "x", restart = false).contains("am "))
     }
+
+    /** 「软件包」里别的软件的安装包不下载（0.27） */
+    @Test fun onlyDownloadsPackagesThatLookLikeFalia() {
+        assertTrue(UpdateVersion.maybeMine("xiaoju-remote-latest.apk"))
+        assertTrue(UpdateVersion.maybeMine("法莉娅.APK"))
+        assertTrue(UpdateVersion.maybeMine("Falia-test.apk"))
+        assertFalse(UpdateVersion.maybeMine("app-release.apk"))
+        assertFalse(UpdateVersion.maybeMine("XiaojuPush-latest.ipa"))
+        assertFalse(UpdateVersion.maybeMine("wechat_8.0.apk"))
+        assertFalse(UpdateVersion.maybeMine("xiaoju-remote-notes.txt"))
+    }
 }

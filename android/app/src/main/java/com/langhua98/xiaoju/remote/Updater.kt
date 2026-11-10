@@ -73,7 +73,7 @@ class Updater(private val ctx: Context, base: String, private val token: String)
      * 返回的 file 不是 null 就是可以装的安装包。
      *
      * 先看 workflow 传的规范名字（`xiaoju-remote-android-<版本>-build<构建号>.apk`），文件名就能比新旧，不用下载。
-     * 没有更新的，再看名字不规范的（比如手动传的 app-release.apk）：只能下载下来让系统读版本号和构建号，
+     * 没有更新的，再看名字不规范但像法莉娅的（比如手动传的 法莉娅.apk、xiaoju-remote-latest.apk）：只能下载下来让系统读版本号和构建号，
      * 不比手机上新的记下来（Prefs.updateSkipped），下次不再下。
      */
     fun prepare(download: Boolean = true): Prepared {
@@ -98,7 +98,9 @@ class Updater(private val ctx: Context, base: String, private val token: String)
         }
 
         // 名字不规范的：新传的先看，一次最多看 3 个
-        val others = all.filter { UpdateVersion.parse(it.name) == null && !prefs.updateSkipped(it.id) }
+        // 只看名字像法莉娅的（UpdateVersion.maybeMine）：「软件包」里还有别的软件的安装包，
+        // 0.26 以前点一次「检查更新」会把它们一个个下载下来看是不是自己的，白费流量和电。
+        val others = all.filter { UpdateVersion.parse(it.name) == null && UpdateVersion.maybeMine(it.name) && !prefs.updateSkipped(it.id) }
             .sortedByDescending { it.updated }.take(3)
         for (r in others) {
             if (!download) return Prepared(true, "云盘上有个没看过的安装包 ${r.name}，要下载下来才知道是不是新版本（现在是 $now）")
