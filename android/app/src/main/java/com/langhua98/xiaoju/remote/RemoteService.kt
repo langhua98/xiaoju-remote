@@ -144,7 +144,7 @@ class RemoteService : Service() {
             },
             log = { Bus.push(it) },
             onTick = { maybeAutoUpdate(p) },   // 常驻连接挂着时，6 小时一次的查更新、录完再装都靠心跳顺带叫
-            onState = { up -> if (up) { bk.cloudUp(); bk.publishIfNeeded(cloud) } else bk.cloudDown() })
+            onState = { up -> if (up) { bk.cloudUp(); bk.publishIfNeeded(cloud); hub?.uploader?.cloudBack() } else bk.cloudDown() })
         try { while (running) {
             maybeAutoUpdate(p)
             if (useRelay && useWs) {
@@ -162,6 +162,7 @@ class RemoteService : Service() {
                     lastError = ""
                     pollFails = 0
                     bk.cloudUp()
+                    hub?.uploader?.cloudBack()   // 云盘断过：等着重试的录像备份马上接着传
                     for (cmd in msgs) {
                         // 云盘「软件包」来了新安装包（服务端发的提醒，不是指令，没有口令也不回执）：下一圈马上查更新
                         if (cmd.optString("do") == "update_hint") { updateHint(p, cmd.optString("name")); continue }
@@ -651,6 +652,8 @@ class RemoteService : Service() {
         override fun onReceive(c: Context, i: Intent) {
             Power.acquire()   // 给收件循环几秒钟醒着的时间
             Handler(Looper.getMainLooper()).postDelayed({ Power.release() }, 3_000)
+            // 录像备份线程在 CPU 睡着时等不到点，顺便叫醒它看一眼（0.32）
+            hub?.uploader?.kick()
             val since = pollSince
             if (since > 0 && SystemClock.elapsedRealtime() - since > 70_000) {
                 Bus.push("收指令的连接卡住了，重新连")
