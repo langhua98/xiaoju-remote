@@ -17,8 +17,10 @@ class Cloud(base: String, private val token: String) {
     private val api = "$root/api/agent/v1"
 
     /** 常驻推送的 WebSocket 地址：https://… → wss://…/api/agent/v1/relay/ws?box=… */
-    fun relayWsUrl(box: String): String =
-        root.replaceFirst(Regex("^http"), "ws") + "/api/agent/v1/relay/ws?box=${q(box)}"
+    /** updates：和 relayWait 一样，请服务端在「软件包」来了新 APK 时往信箱放一条 update_hint。 */
+    fun relayWsUrl(box: String, updates: Boolean = false): String =
+        root.replaceFirst(Regex("^http"), "ws") + "/api/agent/v1/relay/ws?box=${q(box)}" +
+            (if (updates) "&updates=android" else "")
 
     private fun q(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
@@ -80,8 +82,10 @@ class Cloud(base: String, private val token: String) {
     /** 把正在等的长轮询断掉（看门狗发现它卡住了：手机睡着时连接断了没收到）。 */
     fun abortPoll() { runCatching { pollConn?.disconnect() } }
 
-    fun relayWait(box: String, seconds: Int = 25): List<JSONObject> {
-        val data = Net.request("GET", "$api/relay?box=${q(box)}&wait=$seconds", token,
+    fun relayWait(box: String, seconds: Int = 25, updates: Boolean = false): List<JSONObject> {
+        // updates：顺便告诉服务端「软件包里来了新 APK 请往这个信箱放一条 update_hint」（旧服务端不认，没影响）
+        val extra = if (updates) "&updates=android" else ""
+        val data = Net.request("GET", "$api/relay?box=${q(box)}&wait=$seconds$extra", token,
             readTimeoutMs = (seconds + 20) * 1000, onConn = { pollConn = it }, reuse = true)
         val arr = JSONObject(String(data, Charsets.UTF_8)).optJSONArray("messages") ?: JSONArray()
         val out = ArrayList<JSONObject>()

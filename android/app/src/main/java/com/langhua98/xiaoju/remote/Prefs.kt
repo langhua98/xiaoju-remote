@@ -71,6 +71,13 @@ class Prefs(ctx: Context) {
         set(v) { sp.edit().putString("updatePrompted", v).apply() }
 
     /** 处理过的文件信箱指令 id（避免重复执行），最多记 500 条 */
+    /** 云盘「软件包」里名字不规范、下载看过不比手机上新的安装包（按云盘文件 id 记），不再下载。 */
+    fun updateSkipped(id: String) = sp.getString("updateSkipped", "")!!.split("\n").contains(id)
+    fun markUpdateSkipped(id: String) {
+        val list = sp.getString("updateSkipped", "")!!.split("\n").filter { it.isNotBlank() } + id
+        sp.edit().putString("updateSkipped", list.takeLast(50).joinToString("\n")).apply()
+    }
+
     fun isSeen(id: String) = seen().contains(id)
     fun markSeen(id: String) {
         val list = seen().toMutableList().apply { add(id) }

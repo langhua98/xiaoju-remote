@@ -64,6 +64,8 @@ class RelayChannel(
     private val running: () -> Boolean,
     private val onCommand: (JSONObject) -> Unit,
     private val log: (String) -> Unit = {},
+    /** 每次心跳醒来叫一下（连着常驻推送时收件循环停在 run() 里，定时的活儿靠它，比如查更新）。不能卡住。 */
+    private val onTick: () -> Unit = {},
 ) {
     enum class Outcome { FALLBACK, STOPPED }
 
@@ -135,6 +137,7 @@ class RelayChannel(
         while (running() && alive) {
             if (!sleepReleasing(tuner.intervalMs)) return      // 睡一个间隔（CPU 可以睡）
             if (!running() || !alive) return
+            try { onTick() } catch (e: Exception) { log("定时任务出错：${e.message}") }
             // 到点：发心跳，等回应
             val n = ++pingSeq
             if (!trySend(JSONObject().put("ping", n).toString())) return
