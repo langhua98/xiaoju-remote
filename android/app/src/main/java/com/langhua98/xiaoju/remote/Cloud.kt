@@ -13,7 +13,14 @@ data class CloudItem(val id: String, val name: String, val type: String) {
  * 快路是即时信箱 /relay（长轮询），服务端太旧没有时退回文件信箱。
  */
 class Cloud(base: String, private val token: String) {
-    private val api = base.trimEnd('/') + "/api/agent/v1"
+    private val root = base.trimEnd('/')
+    private val api = "$root/api/agent/v1"
+
+    /** 常驻推送的 WebSocket 地址：https://… → wss://…/api/agent/v1/relay/ws?box=… */
+    /** updates：和 relayWait 一样，请服务端在「软件包」来了新 APK 时往信箱放一条 update_hint。 */
+    fun relayWsUrl(box: String, updates: Boolean = false): String =
+        root.replaceFirst(Regex("^http"), "ws") + "/api/agent/v1/relay/ws?box=${q(box)}" +
+            (if (updates) "&updates=android" else "")
 
     private fun q(s: String) = URLEncoder.encode(s, "UTF-8").replace("+", "%20")
 
