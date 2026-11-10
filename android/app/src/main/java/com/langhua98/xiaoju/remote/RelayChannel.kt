@@ -78,10 +78,7 @@ class RelayChannel(
     @Volatile private var alive = false
     @Volatile private var pingSeq = 0L
     @Volatile private var pongSeq = -1L
-    @Volatile private var deliveredMax = 0L      // 已交给 onCommand 的最大 id（用来 ack）
-    private val seen = object : LinkedHashMap<Long, Boolean>(64, 0.75f, false) {
-        override fun removeEldestEntry(e: Map.Entry<Long, Boolean>) = size > 500
-    }
+    private val inbox = RelayDedup()
 
     /**
      * 一直维持这条连接，直到 running 变 false。第一次就连不上则返回 FALLBACK。
@@ -113,6 +110,7 @@ class RelayChannel(
     /** 连一次。成功 true；失败时 failCode 是 HTTP 状态码（能拿到的话）。 */
     private fun connectOnce(): Boolean {
         closedCode = 0; closedReason = ""; failCode = -1; alive = false; pongSeq = -1L
+        inbox.newConnection()
         val opened = java.util.concurrent.CountDownLatch(1)
         val req = Request.Builder().url(wsUrl).header("Authorization", "Bearer $token").build()
         ws = client.newWebSocket(req, object : WebSocketListener() {
@@ -157,12 +155,12 @@ class RelayChannel(
                 val m = arr.optJSONObject(i) ?: continue
                 val id = m.optLong("id", 0L)
                 if (id > maxId) maxId = id
-                if (id > 0 && seen.put(id, true) != null) continue   // 重发的，去重
                 val body = m.optJSONObject("body") ?: continue
+                if (!inbox.fresh(id, body.optString("id"))) continue   // 重发的，去重
                 try { onCommand(body) } catch (e: Exception) { log("处理指令出错：${e.message}") }
             }
-            if (maxId > deliveredMax) deliveredMax = maxId
-            trySend(JSONObject().put("ack", deliveredMax).toString())   // 确认收到，服务端删掉
+            // 只确认这一批收到的编号：服务端重启后编号从 1 重新数，确认旧的大编号会把新指令全删掉
+            if (maxId > 0) trySend(JSONObject().put("ack", maxId).toString())
         }
     }
 
@@ -207,5 +205,29 @@ class RelayChannel(
 
     companion object {
         const val PONG_TIMEOUT_MS = 10_000L
+    }
+}
+
+/**
+ * 常驻推送收到的指令去重。不碰安卓的类，可以在电脑上跑测试。
+ *
+ * 服务端的消息编号只在它这次运行里递增，云盘一重启（家里电脑重启、更新）就从 1 重新数。
+ * 以前按服务端编号去重：重启后新指令的编号和以前的撞上，全被当成「重发的」扔掉，
+ * 再确认一个旧的大编号，服务端把新指令也删了，直播和别的指令全都收不到，只能重开 App。
+ * 现在按控制端给每条指令起的 id（时间 + 随机串，全局唯一）去重；没有 id 的指令只在同一条连接里按服务端编号去重。
+ */
+class RelayDedup(private val keep: Int = 500) {
+    private val cmdIds = object : LinkedHashMap<String, Boolean>(64, 0.75f, false) {
+        override fun removeEldestEntry(e: Map.Entry<String, Boolean>) = size > keep
+    }
+    private val seqs = HashSet<Long>()
+
+    /** 连上了新的一条（服务端可能重启过，编号不再可信）。 */
+    @Synchronized fun newConnection() { seqs.clear() }
+
+    /** 这条要不要执行：第一次见到返回 true，重发的返回 false。 */
+    @Synchronized fun fresh(seq: Long, cmdId: String?): Boolean {
+        if (!cmdId.isNullOrBlank()) return cmdIds.put(cmdId, true) == null
+        return seq <= 0 || seqs.add(seq)
     }
 }
