@@ -67,7 +67,7 @@
    douyin-proxy   │  langhua1998-douyin-proxy.hf.space/tts            │
                   │                                                   │
    HF Space ◀─────┤  小橘云盘：即时信箱（遥控指令和回执）              │
-   xiaoju-cloud   │  langhua1998-xiaoju-cloud.hf.space                │
+   xiaoju-cloud   │  node.tail823dbd.ts.net                │
                   └───────────────────────────────────────────────────┘
                                    ▲
                                    │ HTTPS
@@ -249,7 +249,7 @@ App 调 `window.YunlaiFace.apply({...})`；网页调试时也可以走 WebSocket
 
 | 设置 | 默认 | 存在哪 |
 |---|---|---|
-| 云盘地址 | `https://langhua1998-xiaoju-cloud.hf.space` | UserDefaults + 钥匙串备份 |
+| 云盘地址 | `https://node.tail823dbd.ts.net` | UserDefaults + 钥匙串备份 |
 | 云盘令牌 `xa_…` | — | 钥匙串 |
 | 设备名 | 手机名字 | UserDefaults + 钥匙串备份 |
 | 配对口令 | — | 钥匙串 |
@@ -370,7 +370,7 @@ Live2D：默认 30 FPS。
 | 小橘遥控仓库 | https://github.com/langhua98/xiaoju-remote |
 | 语音服务 | https://langhua1998-douyin-proxy.hf.space/tts/tts?text=你好 |
 | 语音服务源码 | https://github.com/langhua98/xiaoju-video/tree/main/streamer （私有） |
-| 小橘云盘 | https://langhua1998-xiaoju-cloud.hf.space |
+| 小橘云盘 | https://node.tail823dbd.ts.net |
 | Kokoro 中文模型 | https://huggingface.co/hexgrad/Kokoro-82M-v1.1-zh |
 | MeloTTS | https://github.com/myshell-ai/MeloTTS |
 | pixi-live2d-display（lipsync 分支） | https://github.com/RaSan147/pixi-live2d-display |

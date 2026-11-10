@@ -76,7 +76,7 @@ final class Store: ObservableObject {
 
     init() {
         let load = Store.load
-        base = load("base") ?? "https://langhua1998-xiaoju-cloud.hf.space"
+        base = load("base") ?? "https://node.tail823dbd.ts.net"
         device = load("device") ?? UIDeviceName()
         pair = Keychain.get("pair") ?? ""
         token = Keychain.get("token") ?? ""
