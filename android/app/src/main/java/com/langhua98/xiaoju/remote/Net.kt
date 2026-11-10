@@ -99,6 +99,15 @@ object Net {
     }
 
     /**
+     * 收指令的常驻连接用的客户端：不要 OkHttp 每 20 秒一次的心跳。
+     * 这条连接的心跳由 RelayChannel 自己管（HeartbeatTuner，1～9 分钟一次），再叠一层 20 秒的，
+     * 手机醒着（插着电、刚执行完指令）时每 20 秒就要发一次数据，白费电。
+     */
+    @Volatile private var quiet: okhttp3.OkHttpClient? = null
+    @Synchronized fun okHttpQuiet(): okhttp3.OkHttpClient =
+        quiet ?: okHttp().newBuilder().pingInterval(0, java.util.concurrent.TimeUnit.MILLISECONDS).build().also { quiet = it }
+
+    /**
      * 发一个请求，返回响应体。非 2xx 抛 HttpError。
      * throttleBps > 0：上传时限速（字节/秒），慢慢传，不占满老手机的上行。
      *

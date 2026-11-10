@@ -43,6 +43,15 @@ object UpdateVersion {
     fun isApk(name: String) = name.endsWith(".apk", ignoreCase = true)
 
     /**
+     * 名字不规范的安装包，看名字像不像法莉娅的（手动传的 xiaoju-remote-latest.apk、法莉娅.apk、falia-0.3.apk）。
+     * 不像的（别的软件的安装包）不下载。
+     */
+    fun maybeMine(name: String): Boolean {
+        val n = name.lowercase()
+        return isApk(n) && (n.contains("xiaoju-remote") || n.contains("falia") || n.contains("法莉娅") || n.contains("小橘遥控"))
+    }
+
+    /**
      * 安装包里读出来的版本比手机上的新吗？先比 versionCode，一样再比构建号
      * （构建号写在安装包的 meta-data `xiaoju.build` 里，0.23 起才有；读不到当 0）。
      */

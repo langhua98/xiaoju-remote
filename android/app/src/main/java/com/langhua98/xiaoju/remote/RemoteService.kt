@@ -126,7 +126,7 @@ class RemoteService : Service() {
         var lastFileCheck = 0L
         var lastError = ""
         // 常驻推送：挂一条 WebSocket，指令秒推、CPU 一直睡。连不上（服务端没这个口）就退回长轮询。
-        val channel = RelayChannel(Net.okHttp(), cloud.relayWsUrl(RemoteBox.inbox(device), updates = true), Prefs(this).token,
+        val channel = RelayChannel(Net.okHttpQuiet(), cloud.relayWsUrl(RemoteBox.inbox(device), updates = true), Prefs(this).token,
             running = { running },
             onCommand = { cmd ->
                 if (cmd.optString("do") == "update_hint") { updateHint(p, cmd.optString("name")); maybeAutoUpdate(p) }
