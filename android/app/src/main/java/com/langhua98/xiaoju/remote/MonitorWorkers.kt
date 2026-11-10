@@ -57,7 +57,7 @@ class Notifier(private val cloud: Cloud, private val prefs: Prefs, private val d
 }
 
 /**
- * 录像慢慢备份到云盘：一次传一个，传完歇 1 分钟再传下一个，限速 bps；有人在看实时画面时不传（不抢网速）。
+ * 录像慢慢备份到云盘：一次传一个（传好、确认云盘上有了就删掉手机上的视频，0.32），传完歇 1 分钟再传下一个，限速 bps；有人在看实时画面时不传（不抢网速）。
  * 云盘存储后面是 Telegram，传太快会被限流，所以宁可慢。路径 /小橘推送/遥控/<设备>/录像/<日期>/<时间>.mov。
  *
  * 0.32：老系统（Android 4.2，CPU 能睡）上，Object.wait 的计时只在 CPU 醒着时走，CPU 睡着就停了。
@@ -95,7 +95,13 @@ class Uploader(
         val p = pathFor(e)
         cloud.uploadSlow(p, store.mov(e.name).readBytes(), FAST_BPS)
         store.markUploaded(e.name, p)
+        dropLocal(e, p)
         return p
+    }
+
+    /** 传完了：再问一下云盘确实有了，才删手机上的视频（问不到就先留着，下次待命核对时再删）。 */
+    private fun dropLocal(e: EventInfo, path: String) {
+        if (runCatching { cloud.exists(path) }.getOrDefault(false)) store.mov(e.name).delete()
     }
 
     private fun loop() {
@@ -125,6 +131,9 @@ class Uploader(
                 val lost = store.forgetMissing { cloud.names(it) }
                 verified = true
                 if (lost > 0) { status = "云盘上少了 $lost 段（云盘搬家时丢的），重新备份"; Bus.push(status) }
+                // 剩下记着「已备份」的刚核对过云盘上都在：手机上的视频删掉
+                val dropped = store.dropBackedUp()
+                if (dropped > 0) Bus.push("云盘上已经有备份的 $dropped 段，手机上的视频删掉了")
             } catch (ex: Exception) {
                 status = "核对云盘备份出错，5 分钟后再试：${ex.message}"
                 Bus.push(status)
@@ -143,6 +152,7 @@ class Uploader(
             cloud.uploadSlow(p, f.readBytes(), SLOW_BPS)
             store.markUploaded(e.name, p)
             plan.done()
+            dropLocal(e, p)
             val left = store.pendingUpload().size
             status = "已备份 ${e.name}" + if (left > 0) "，还有 $left 段等着" else ""
             Bus.push(status)

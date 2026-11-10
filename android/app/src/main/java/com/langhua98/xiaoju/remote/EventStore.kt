@@ -84,6 +84,16 @@ class EventStore(val dir: File, var maxBytes: Long = 3L shl 30, var minFreeBytes
         return n
     }
 
+    /**
+     * 已经备份到云盘的，把手机上的视频删掉（0.32，省空间）；截图、小图、信息留着，录像列表照样能看。
+     * 只删记着「已备份」的。返回删了几段。
+     */
+    @Synchronized fun dropBackedUp(): Int {
+        var n = 0
+        for (e in list()) if (e.video && e.uploaded.isNotEmpty() && mov(e.name).delete()) n++
+        return n
+    }
+
     @Synchronized fun markUploaded(name: String, path: String) {
         val e = get(name) ?: return
         e.uploaded = path

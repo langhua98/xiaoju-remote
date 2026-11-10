@@ -290,7 +290,8 @@ class CameraHub(
             val o = e.toJson()
             val t = store.thumb(e.name)
             if (t.exists() && t.length() < 64 * 1024) o.put("thumb", Base64.encodeToString(t.readBytes(), Base64.NO_WRAP))
-            o.put("size", store.mov(e.name).length())
+            val mov = store.mov(e.name)
+            o.put("size", mov.length()).put("local", mov.exists())   // local=false：手机上的视频删了（备份好了，去云盘看）
             a.put(o)
         }
         return a

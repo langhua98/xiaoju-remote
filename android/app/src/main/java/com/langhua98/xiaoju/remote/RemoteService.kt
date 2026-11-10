@@ -488,18 +488,21 @@ class RemoteService : Service() {
                     val name = cmd.optString("name")
                     val e = h.store.get(name) ?: run { done(false, "手机上没有 $name（可能已经满了被删掉，看云盘备份）"); return }
                     val f = h.store.mov(name)
-                    // 记着「已备份」，但云盘上已经没有了（云盘搬家、在云盘里删了）：去掉记号，下面重新传
-                    if (e.video && f.exists() && e.uploaded.isNotEmpty() &&
+                    // 记着「已备份」，但云盘上已经没有了（云盘搬家、在云盘里删了）：手机上还有就去掉记号，下面重新传
+                    var lost = false
+                    if (e.video && e.uploaded.isNotEmpty() &&
                         runCatching { !cloud.exists(e.uploaded) }.getOrDefault(false)) {
-                        h.store.markUploaded(name, ""); e.uploaded = ""
+                        if (f.exists()) { h.store.markUploaded(name, ""); e.uploaded = "" } else lost = true
                     }
                     val files = JSONArray()
                     when {
+                        // 0.32 起备份好的视频手机上不留了：给云盘路径
+                        e.video && e.uploaded.isNotEmpty() && !lost -> files.put(e.uploaded)
                         !e.video || !f.exists() -> {
                             val j = h.store.jpg(name)
                             if (j.exists()) files.put(JSONObject().put("name", "$name.jpg").put("data", Base64.encodeToString(j.readBytes(), Base64.NO_WRAP)))
+                            if (lost) { done(true, "$name：云盘上的备份没有了，手机上也已经删了，只剩截图") { it.put("files", files).put("event", e.toJson()) }; return }
                         }
-                        e.uploaded.isNotEmpty() -> files.put(e.uploaded)
                         viaRelay && f.length() <= RemoteBox.INLINE_LIMIT ->
                             files.put(JSONObject().put("name", "$name.mov").put("data", Base64.encodeToString(f.readBytes(), Base64.NO_WRAP)))
                         else -> files.put(h.uploader.uploadNow(e))
