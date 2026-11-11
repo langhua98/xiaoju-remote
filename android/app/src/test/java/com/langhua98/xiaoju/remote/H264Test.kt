@@ -38,9 +38,18 @@ class H264Test {
         assertTrue("流畅 should use less than 高清: $smooth vs $hd", smooth < hd)
         assertTrue(H264.bitrate(640, 10, 85) > hd)
         assertTrue(H264.bitrate(640, 15, 50) > hd)
-        assertEquals(150_000, H264.bitrate(240, 1, 20))          // 下限
+        assertEquals(H264.MIN_BITRATE, H264.bitrate(240, 1, 20))          // 下限
         assertEquals(4_000_000, H264.bitrate(1280, 30, 90))      // 上限
-        assertTrue(hd in 300_000..700_000)                       // 640×480 10 帧 中等画质：几百 kbps（JPEG 要 2 Mbps 上下）
+        assertTrue("$hd", hd in 600_000..1_000_000)              // 640×480 10 帧 中等画质：不到 1 Mbps（JPEG 要 2 Mbps 上下）
+    }
+
+    @Test fun boostWhenEncoderUnderDelivers() {
+        assertEquals(1.0, H264.boost(1.0, 450_000, 400_000), 0.0)      // 差不多：不动
+        assertEquals(1.0, H264.boost(1.0, 450_000, 0), 0.0)            // 没量到：不动
+        assertEquals(2.0, H264.boost(1.0, 450_000, 42_000), 0.0)       // 差很多：一次最多翻倍
+        assertEquals(1.5, H264.boost(1.0, 450_000, 300_000), 1e-9)     // 差 1.5 倍：调 1.5 倍
+        assertEquals(H264.MAX_BOOST, H264.boost(4.0, 450_000, 42_000), 0.0)
+        assertEquals(H264.MAX_BOOST, H264.boost(H264.MAX_BOOST, 450_000, 42_000), 0.0)
     }
 
     @Test fun encoderSafeSizes() {

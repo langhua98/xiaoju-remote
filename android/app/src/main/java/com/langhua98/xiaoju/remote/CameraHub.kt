@@ -439,7 +439,7 @@ class CameraHub(
         val wantH264 = !h264Broken && (rec || liveH264)
         if (wantH264) {
             if (enc == null && eco && rec) prerollPending = true
-            h264(nv21, w, h, ts)
+            h264(nv21, w, h, ts, liveH264)
         } else if (enc != null) {
             closeEncoder()
             if (eco) recorder.dropBuffered()   // 回到守望：内存里的旧录像不要了（下次从新留的几帧开始）
@@ -449,11 +449,13 @@ class CameraHub(
         if (l != null && sinks.isNotEmpty() && (settings.codec == LiveSettings.JPEG || h264Broken)) jpegLive(l, sinks, nv21, w, h, r, ts)
     }
 
-    private fun h264(nv21: ByteArray, w: Int, h: Int, ts: Long) {
+    private fun h264(nv21: ByteArray, w: Int, h: Int, ts: Long, liveNow: Boolean) {
         if (!H264.sizeOk(w, h)) {
             giveUp("这个镜头没有硬件编码合适的尺寸（${w}×$h）"); brokenBySize = true; brokenVersion = settings.version; return
         }
-        val rate = maxOf(150_000, (H264.bitrate(settings.width, settings.fps, settings.quality) * rateScale).toInt())
+        val want = maxOf(H264.MIN_BITRATE / 2, (H264.bitrate(settings.width, settings.fps, settings.quality) * rateScale).toInt())
+        // 有人看时：编码器实际出得太少就多要一些（见 H264.boost）
+        val rate = if (liveNow) (want * encBoost).toLong().coerceAtMost(8_000_000L).toInt() else want
         val conf = "${w}x$h/${settings.fps}/$rate"
         try {
             if (restartEnc) { restartEnc = false; closeEncoder() }   // 重开：第一帧就是关键帧
@@ -462,6 +464,7 @@ class CameraHub(
                 encW = w; encH = h
                 val e = H264Encoder(w, h, settings.fps, rate) { data, key, t -> onEncoded(data, key, t) }
                 enc = e; encConf = conf; encSince = System.currentTimeMillis(); fed = 0; encRate = rate
+                measAt = 0L
                 if (conf != encLogged) { encLogged = conf; Bus.push("H.264 硬件编码：${e.name}，${w}×$h，${rate / 1000} kbps") }
                 // 省电侦测刚开始录：先喂守望时留的几帧（动静前一两秒），录像从那里开始
                 if (prerollPending) {
@@ -476,7 +479,9 @@ class CameraHub(
                 }
             }
             val e = enc ?: return
-            if (e.feed(nv21, ts)) fed++
+            // 有人看时等编码器一小会儿（以前它一忙这一帧就丢了，帧率上不去）
+            if (e.feed(nv21, ts, if (liveNow) 15_000 else 0)) fed++
+            if (liveNow) measure(want)
             if (motionAt > 0) { lastMotionToRecMs = System.currentTimeMillis() - motionAt; motionAt = 0L }
             if (e.produced == 0 && fed > 5 && System.currentTimeMillis() - encSince > 3000) giveUp("硬件编码器不出画面")
         } catch (t: Throwable) {
@@ -484,15 +489,39 @@ class CameraHub(
         }
     }
 
+    // 量编码器实际出的码率（相机线程上用；outBytes 在编码器线程上加）
+    private val outBytes = java.util.concurrent.atomic.AtomicLong()
+    private var measAt = 0L
+    private var measFed = 0
+    @Volatile private var encBoost = 1.0
+
+    /** 每 4 秒看一次编码器实际出了多少：比要的少很多就把倍数调高（下一帧按新码率重开编码器）。 */
+    private fun measure(want: Int) {
+        val now = System.currentTimeMillis()
+        if (measAt == 0L) { measAt = now; measFed = fed; outBytes.set(0); return }
+        if (now - measAt < 4_000) return
+        val actual = outBytes.getAndSet(0) * 8000 / (now - measAt)
+        val fedN = fed - measFed
+        measAt = now; measFed = fed
+        if (fedN < 12) return   // 帧太少，量不准
+        val b = H264.boost(encBoost, want, actual)
+        if (b != encBoost) {
+            Bus.push("编码器要 ${want / 1000} kbps 只出 ${actual / 1000} kbps，给它的码率调到 ${String.format(java.util.Locale.US, "%.1f", b)} 倍")
+            encBoost = b
+        }
+    }
+
     /** 编码器线程上：编好的一帧发给每个在看的（云盘 / 直连），交给录像。 */
     private fun onEncoded(data: ByteArray, key: Boolean, ts: Long) {
+        outBytes.addAndGet(data.size.toLong())
         val l = live
         if (l != null && settings.codec == LiveSettings.H264) {
             val sinks = l.watched()
             if (sinks.isNotEmpty()) {
                 val msg = StreamClient.h264(data, rot, ts, key)
-                // 积压超过大约 0.3 秒的数据就丢（延迟不越拖越长），丢了马上要关键帧
-                val limit = maxOf(24L * 1024, encRate / 8L * 3 / 10)
+                // 积压超过大约 0.4 秒的数据就丢（延迟不越拖越长），丢了等关键帧。
+                // 最少 64 KB：以前是 24 KB，一个关键帧就有二三十 KB，刚发完关键帧后面的帧就被当成积压丢掉，帧率上不去、码率还被降
+                val limit = maxOf(64L * 1024, encRate / 8L * 4 / 10)
                 var dropped = false
                 for (s in sinks) if (!s.sendH264(msg, key, limit) && s.watchers > 0) dropped = true
                 if (!dropped) framesOut.incrementAndGet()

@@ -62,13 +62,29 @@ object H264 {
 
     /**
      * 码率（比特/秒）：按看的一端选的「清晰度」（宽度，4:3）和画质算，和相机实际分辨率无关——
-     * 清晰度选「流畅」就是要少用流量。画质 20…90 对应每像素 0.06…0.30 比特。
+     * 清晰度选「流畅」就是要少用流量。画质 20…90 对应每像素 0.12…0.45 比特。
+     * 0.33 以前是 0.06…0.30、最低 150 kbps：相机实际出的是 640×480，「标准」档算下来不到 300 kbps，画面全是马赛克。
      */
     fun bitrate(targetWidth: Int, fps: Int, quality: Int): Int {
         val px = targetWidth.toLong() * targetWidth * 3 / 4
-        val bpp = 0.06 + (quality.coerceIn(20, 90) - 20) / 70.0 * 0.24
-        return (px * fps.coerceIn(1, 30) * bpp).toLong().coerceIn(150_000L, 4_000_000L).toInt()
+        val bpp = 0.12 + (quality.coerceIn(20, 90) - 20) / 70.0 * 0.33
+        return (px * fps.coerceIn(1, 30) * bpp).toLong().coerceIn(MIN_BITRATE.toLong(), 4_000_000L).toInt()
     }
+
+    const val MIN_BITRATE = 300_000
+
+    /**
+     * 编码器实际出的码率比要的低很多时，把给它的码率调高多少倍（返回新的倍数，最多 MAX_BOOST）。
+     * 有的老硬件编码器（S4）不管我们一秒喂几帧，都按每秒 30 帧来分码率：要 300 kbps、一秒喂 6 帧，实际只出 40 kbps，
+     * 画面糊成一片。所以量实际出了多少，差得多（不到要的 60%）就多要一些，一次最多翻倍。
+     * 画面本来就简单（对着白墙）时编码器也用不完码率，调高了也没坏处：它还是用不完。
+     */
+    fun boost(now: Double, wantBps: Int, actualBps: Long): Double {
+        if (actualBps <= 0 || actualBps >= wantBps * 0.6 || now >= MAX_BOOST) return now
+        return minOf(MAX_BOOST, now * minOf(2.0, wantBps.toDouble() / actualBps))
+    }
+
+    const val MAX_BOOST = 6.0
 
     /**
      * 硬件编码器肯定能吃的尺寸：宽高都是 16 的倍数，而且 Y 平面大小是 2048 的倍数

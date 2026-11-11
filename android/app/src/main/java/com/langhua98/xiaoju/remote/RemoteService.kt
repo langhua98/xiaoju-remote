@@ -443,9 +443,9 @@ class RemoteService : Service() {
         val before = s.version
         val changed = h.adjust(c)
         // 等相机设好：换镜头 / 清晰度 / 编码要重开相机，等它真的开好（S4 换镜头有时要好几秒，以前固定等 1.2 秒），
-        // 最多 10 秒；手电、亮度、变焦一下就好
+        // 最多 6 秒（看的一端等回执 15 秒）；手电、亮度、变焦一下就好
         if (s.version != before) {
-            val end = System.currentTimeMillis() + 10_000
+            val end = System.currentTimeMillis() + 6_000
             while (System.currentTimeMillis() < end && s.openedVersion < s.version && h.cameraOn) {
                 try { Thread.sleep(100) } catch (e: InterruptedException) { break }
             }
