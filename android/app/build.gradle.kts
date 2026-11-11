@@ -22,8 +22,8 @@ android {
         // 最低 Android 4.2（API 17）
         minSdk = 17
         targetSdk = 35
-        versionCode = 33
-        versionName = "0.33"
+        versionCode = 34
+        versionName = "0.34"
         buildConfigField("int", "BUILD_NUMBER", "$buildNumber")
         // 构建号也写进安装包的 meta-data：云盘上名字不规范的安装包，下载后靠它判断新旧（Updater）
         manifestPlaceholders["xiaojuBuild"] = "$buildNumber"
