@@ -95,6 +95,8 @@ class CameraHub(
     private var encLogged = ""
     private var fed = 0
     @Volatile private var h264Broken = false
+    private var brokenBySize = false   // 退回 JPEG 只是因为这个镜头的尺寸不合适（换镜头后再试）
+    private var brokenVersion = -1
     @Volatile private var rot = 0
     @Volatile private var encW = 0
     @Volatile private var encH = 0
@@ -319,6 +321,8 @@ class CameraHub(
     private fun cameraLoop() = Power.hold { cameraLoopInner() }   // 相机开着时 CPU 一直醒着
 
     @Volatile private var lastOpenErr = ""
+    /** 直播中连着几次开不了相机 */
+    private var liveOpenFails = 0
 
     private fun cameraLoopInner() {
         try {
@@ -337,10 +341,13 @@ class CameraHub(
                 } catch (e: Exception) {
                     // 同样的错只记一次（相机服务卡住时每 5 秒一条，以前会刷满日志）
                     val msg = "相机打不开：${e.message}"
-                    if (msg != lastOpenErr) { lastOpenErr = msg; Bus.push("$msg，5 秒后再试") }
-                    live?.let { endLive() }
+                    // 直播中：先不断直播，1 秒后再开（换清晰度时偶尔开一次失败，以前直播马上就断了）；连着 3 次都不行才结束
+                    val inLive = live != null && ++liveOpenFails < 3
+                    if (msg != lastOpenErr) { lastOpenErr = msg; Bus.push("$msg，${if (inLive) 1 else 5} 秒后再试") }
+                    if (!inLive) { live?.let { endLive() }; liveOpenFails = 0 }
+                    val pause = if (inLive) 1_000 else 5_000
                     var waited = 0
-                    while (wanted() && waited < 5_000) { try { Thread.sleep(200) } catch (ie: InterruptedException) { return }; waited += 200 }
+                    while (wanted() && waited < pause) { try { Thread.sleep(200) } catch (ie: InterruptedException) { return }; waited += 200 }
                 }
             }
         } finally {
@@ -404,10 +411,13 @@ class CameraHub(
         val sinks = l?.watched().orEmpty()
         val m = monitor
         val now = System.currentTimeMillis()
+        // 上次是因为尺寸不合适才退回 JPEG：换了镜头 / 清晰度，新的尺寸可能可以，再试硬件编码
+        if (h264Broken && brokenBySize && settings.version != brokenVersion) { h264Broken = false; brokenBySize = false; settings.codecNote = "" }
         // 刚开相机的第一帧：这一轮从这里算；头几帧曝光还在变，不看（间歇守望每轮都重开相机）
         if (sessionAt == 0L) {
             sessionAt = now; settleUntil = now + SETTLE_MS
             lastOpenErr = ""   // 相机又好了：下次再打不开要再记
+            liveOpenFails = 0
             engine.pause()
             preroll.clear()   // 上一轮留的帧隔着一段空白，不要了
         }
@@ -440,7 +450,9 @@ class CameraHub(
     }
 
     private fun h264(nv21: ByteArray, w: Int, h: Int, ts: Long) {
-        if (!H264.sizeOk(w, h)) { giveUp("这台手机的相机没有硬件编码合适的尺寸（${w}×$h）"); return }
+        if (!H264.sizeOk(w, h)) {
+            giveUp("这个镜头没有硬件编码合适的尺寸（${w}×$h）"); brokenBySize = true; brokenVersion = settings.version; return
+        }
         val rate = maxOf(150_000, (H264.bitrate(settings.width, settings.fps, settings.quality) * rateScale).toInt())
         val conf = "${w}x$h/${settings.fps}/$rate"
         try {
@@ -512,15 +524,19 @@ class CameraHub(
             rateScale = maxOf(0.3, rateScale * 0.7); rateChangedAt = now; drops.clear()
             Bus.push("网络跟不上，码率降到 ${(rateScale * 100).toInt()}%")
         }
-        forceKey()
+        forceKey(restartOld = false)
     }
 
-    /** 马上出一个关键帧：4.4+ 直接要，更老的重开编码器（一秒最多一次）。 */
-    private fun forceKey() {
+    /**
+     * 马上出一个关键帧：4.4+ 直接要。更老的（S4 是 4.2）只能重开编码器，restartOld = true 才重开（一秒最多一次）。
+     * 网络跟不上丢帧时不重开：重开编码器要在相机线程上卡几百毫秒，丢帧越多重开越多，画面一顿一顿的；
+     * 编码器每秒本来就出一个关键帧，等它就行（最多 1 秒）。
+     */
+    private fun forceKey(restartOld: Boolean = true) {
         val now = System.currentTimeMillis()
         if (now - keyAt < 1_000) return
-        keyAt = now
-        if (android.os.Build.VERSION.SDK_INT >= 19) enc?.requestKeyframe() else if (enc != null) restartEnc = true
+        if (android.os.Build.VERSION.SDK_INT >= 19) { keyAt = now; enc?.requestKeyframe() }
+        else if (restartOld && enc != null) { keyAt = now; restartEnc = true }
     }
 
     private fun giveUp(why: String) {

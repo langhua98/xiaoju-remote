@@ -77,6 +77,7 @@ class LanServer(private val roomOk: (String) -> Boolean, private val onViewer: (
         try {
             c.soTimeout = 5_000
             c.tcpNoDelay = true
+            runCatching { c.sendBufferSize = Net.STREAM_SNDBUF }   // 画面别堆在系统缓冲区里（见 Net.okHttpStream）
             val input = BufferedInputStream(c.getInputStream())
             val lines = readHead(input) ?: run { c.close(); return }
             val parts = lines.first().split(" ")
