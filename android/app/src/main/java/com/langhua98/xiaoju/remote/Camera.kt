@@ -158,7 +158,7 @@ object Camera {
                             CamStats.callbacks++
                             val now = System.currentTimeMillis()
                             // 按节拍抽帧：平均下来正好是要的帧率（守望时每秒 4 帧）
-                            if (running() && pacer.due(now, s.frameFps)) {
+                            if (running() && (if (s.watch) pacer.due(now, s.frameFps) else pacer.dueEven(now, s.frameFps))) {
                                 val ts = StreamClient.now()   // 采集时间（和声音同一个时钟）
                                 val r = if (s.flip) (rot + 180) % 360 else rot   // 上下翻转 = 多转 180°
                                 try { onFrame(data, fw, fh, r, ts) } catch (e: Throwable) {

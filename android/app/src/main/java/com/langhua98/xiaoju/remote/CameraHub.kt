@@ -382,6 +382,7 @@ class CameraHub(
             Bus.push("网络好了，码率升到 ${(rateScale * 100).toInt()}%")
         }
         // 侦测录声音：省电侦测时只在录像时开麦克风（守望时关着）
+        liveStats(now)
         setMic((watching() && live?.audio == true) || (monitor.on && monitor.audio && (!monitor.eco || recorder.recording)))
         if (!monitor.on && recorder.recording) recorder.close()
         recorder.tick()
@@ -406,6 +407,78 @@ class CameraHub(
      * 不省电时编码器一直开着（录像能从动静前 pre 秒开始）。
      */
     private fun frame(nv21: ByteArray, w: Int, h: Int, r: Int, ts: Long) {
+        val t0 = System.nanoTime()
+        try { frameInner(nv21, w, h, r, ts) } finally {
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            statWork.addAndGet(ms); statFrames.incrementAndGet()
+            if (ms > statWorkMax) statWorkMax = ms
+        }
+    }
+
+    // ---- 直播实测（每秒一次，发给直连的看的一端，也记到日志）：哪一步慢一眼看得出来 ----
+    private val statFrames = java.util.concurrent.atomic.AtomicInteger()   // 相机线程处理了几帧
+    private val statWork = java.util.concurrent.atomic.AtomicLong()        // 一共花了多少毫秒
+    @Volatile private var statWorkMax = 0L
+    private val statTry = java.util.concurrent.atomic.AtomicInteger()      // 想喂编码器几帧
+    private val statFed = java.util.concurrent.atomic.AtomicInteger()      // 喂进去几帧
+    private val statOut = java.util.concurrent.atomic.AtomicInteger()      // 编出来 / 发出去几帧
+    private val statLat = java.util.concurrent.atomic.AtomicLong()         // 从相机交帧到编好，一共多少毫秒
+    private val statBytes = java.util.concurrent.atomic.AtomicLong()
+    private var statAt = 0L
+    private var statCb = 0L
+    private var statDrops = 0
+    private var statLogAt = 0L
+    private var slowSecs = 0
+    @Volatile private var slowEncoder = ""
+    @Volatile var lastStats = ""; private set
+
+    /** 相机线程管家里每秒算一次。 */
+    private fun liveStats(now: Long) {
+        val l = live
+        if (l == null || l.watched().isEmpty()) { statAt = 0L; return }
+        val drops = l.sinks().sumOf { it.droppedFrames }
+        if (statAt == 0L) {
+            statAt = now; statCb = CamStats.callbacks; statDrops = drops; statLogAt = now; slowSecs = 0
+            for (a in listOf(statFrames, statTry, statFed, statOut)) a.set(0)
+            statWork.set(0); statLat.set(0); statBytes.set(0); statWorkMax = 0
+            return
+        }
+        val dt = now - statAt
+        if (dt < 1000) return
+        fun per(n: Int) = Math.round(n * 1000.0 / dt).toInt()
+        val cam = Math.round((CamStats.callbacks - statCb) * 1000.0 / dt).toInt()
+        val frames = statFrames.getAndSet(0)
+        val work = statWork.getAndSet(0)
+        val workMax = statWorkMax; statWorkMax = 0
+        val tries = statTry.getAndSet(0); val fed = statFed.getAndSet(0)
+        val out = statOut.getAndSet(0); val lat = statLat.getAndSet(0)
+        val kbps = statBytes.getAndSet(0) * 8 / dt
+        val h = settings.codec == LiveSettings.H264 && !h264Broken
+        val dropN = drops - statDrops
+        val j = JSONObject().put("v", Updater.versionName(ctx)).put("codec", if (h) "h264" else "jpeg")
+            .put("cam", cam).put("used", per(frames)).put("fed", per(fed)).put("out", per(out)).put("want", settings.fps)
+            .put("lat", if (out > 0) lat / out else -1).put("work", if (frames > 0) work / frames else 0).put("work_max", workMax)
+            .put("drop", dropN).put("kbps", kbps).put("target", encRate / 1000)
+            .put("boost", Math.round(encBoost * 10) / 10.0).put("scale", Math.round(rateScale * 100))
+            .put("enc", if (h) enc?.name ?: "" else "").put("size", "${encW}x$encH").put("range", CamStats.fpsNow)
+        statAt = now; statCb = CamStats.callbacks; statDrops = drops
+        val text = j.toString()
+        lastStats = text
+        val b = text.toByteArray(Charsets.UTF_8)
+        val msg = ByteArray(b.size + 1); msg[0] = 5; System.arraycopy(b, 0, msg, 1, b.size)
+        for (s in l.lan) s.sendStats(msg)
+        if (now - statLogAt >= 10_000) {
+            statLogAt = now
+            Bus.push("直播实测：相机 $cam 帧/秒，用 ${per(frames)}，喂 ${per(fed)}，出 ${per(out)}；编码延迟 ${if (out > 0) lat / out else -1} ms；" +
+                "每帧处理 ${if (frames > 0) work / frames else 0}（最长 $workMax）ms；$kbps kbps；丢 $dropN")
+        }
+        // 硬件编码器跟不上（喂 10 帧只出五六帧）连着 6 秒：这台手机的编码器太慢，改用 JPEG（同一个 Wi-Fi 里 JPEG 反而又快又清楚）
+        if (h && tries >= 5 && out * 10 < tries * 6) {
+            if (++slowSecs >= 6) { slowSecs = 0; slowEncoder = "硬件编码器太慢（每秒要 ${per(tries)} 帧只出 ${per(out)} 帧）" }
+        } else slowSecs = 0
+    }
+
+    private fun frameInner(nv21: ByteArray, w: Int, h: Int, r: Int, ts: Long) {
         rot = r
         val l = live
         val sinks = l?.watched().orEmpty()
@@ -458,6 +531,7 @@ class CameraHub(
         val rate = if (liveNow) (want * encBoost).toLong().coerceAtMost(8_000_000L).toInt() else want
         val conf = "${w}x$h/${settings.fps}/$rate"
         try {
+            if (liveNow && slowEncoder.isNotEmpty()) { val why = slowEncoder; slowEncoder = ""; giveUp(why); return }
             if (restartEnc) { restartEnc = false; closeEncoder() }   // 重开：第一帧就是关键帧
             if (enc == null || conf != encConf) {
                 closeEncoder()
@@ -480,7 +554,8 @@ class CameraHub(
             }
             val e = enc ?: return
             // 有人看时等编码器一小会儿（以前它一忙这一帧就丢了，帧率上不去）
-            if (e.feed(nv21, ts, if (liveNow) 15_000 else 0)) fed++
+            if (liveNow) statTry.incrementAndGet()
+            if (e.feed(nv21, ts, if (liveNow) 15_000 else 0)) { fed++; if (liveNow) statFed.incrementAndGet() }
             if (liveNow) measure(want)
             if (motionAt > 0) { lastMotionToRecMs = System.currentTimeMillis() - motionAt; motionAt = 0L }
             if (e.produced == 0 && fed > 5 && System.currentTimeMillis() - encSince > 3000) giveUp("硬件编码器不出画面")
@@ -525,6 +600,7 @@ class CameraHub(
                 var dropped = false
                 for (s in sinks) if (!s.sendH264(msg, key, limit) && s.watchers > 0) dropped = true
                 if (!dropped) framesOut.incrementAndGet()
+                statOut.incrementAndGet(); statLat.addAndGet(StreamClient.now() - ts); statBytes.addAndGet(data.size.toLong())
                 if (dropped) onDrop()
             }
         }
@@ -585,6 +661,7 @@ class CameraHub(
             val msg = if (l.av) StreamClient.frameTs(b, r, ts) else StreamClient.frame(b, r)
             for (s in sinks) s.send(msg)
             framesOut.incrementAndGet()
+            statOut.incrementAndGet(); statLat.addAndGet(StreamClient.now() - ts); statBytes.addAndGet(b.size.toLong())
         } catch (e: Throwable) { /* 丢这一帧 */ }
     }
 
@@ -621,7 +698,8 @@ class CameraHub(
             return
         }
         // 事件进行中：每 1.5 秒再认一次（新进来的人、刚才没认出来的）。画面拷到复用的缓冲区，不每次分配
-        if (recorder.recording && !detBusy && now - lastDetect > 1_500 && objectsOn()) {
+        // 有人在看实时画面时不认（跑模型很吃 CPU，这台老手机上会把直播拖卡）
+        if (recorder.recording && !detBusy && now - lastDetect > 1_500 && objectsOn() && !watching()) {
             lastDetect = now
             detBusy = true
             if (aiBuf.size != nv21.size) aiBuf = ByteArray(nv21.size)
@@ -690,7 +768,8 @@ class CameraHub(
         val m = monitor
         detect.execute { Power.hold {
             try {
-                val ds = if (objectsOn()) recognize(nv21, w, h) else emptyList()
+                val skipAi = watching()   // 有人在看实时画面：不跑模型，直播要紧
+                val ds = if (objectsOn() && !skipAi) recognize(nv21, w, h) else emptyList()
                 val labels = merge(ds)
                 e.labels = labels
                 if (labels.isNotEmpty()) Bus.push("认出来：$labels")
@@ -698,7 +777,7 @@ class CameraHub(
                 store.jpg(e.name).writeBytes(big)
                 store.thumb(e.name).writeBytes(Snapshot.jpeg(nv21, w, h, r, 60, 200, ds))
                 // 「只在有人时提醒」：认出人才发；认不了（没带模型）就照常发
-                if (m.notify && (!m.personOnly || !ObjectDetector.ready(ctx) || ds.any { it.isPerson })) {
+                if (m.notify && (!m.personOnly || skipAi || !ObjectDetector.ready(ctx) || ds.any { it.isPerson })) {
                     notifier.event(e.at, big, m.cooldownMin, labels)
                     evNotified = true
                 }
