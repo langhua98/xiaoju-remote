@@ -47,7 +47,7 @@ class H264Test {
         assertEquals(1.0, H264.boost(1.0, 450_000, 400_000), 0.0)      // 差不多：不动
         assertEquals(1.0, H264.boost(1.0, 450_000, 0), 0.0)            // 没量到：不动
         assertEquals(2.0, H264.boost(1.0, 450_000, 42_000), 0.0)       // 差很多：一次最多翻倍
-        assertEquals(1.5, H264.boost(1.0, 450_000, 300_000), 1e-9)     // 差 1.5 倍：调 1.5 倍
+        assertEquals(1.8, H264.boost(1.0, 450_000, 250_000), 1e-9)     // 差 1.8 倍：调 1.8 倍
         assertEquals(H264.MAX_BOOST, H264.boost(4.0, 450_000, 42_000), 0.0)
         assertEquals(H264.MAX_BOOST, H264.boost(H264.MAX_BOOST, 450_000, 42_000), 0.0)
     }
