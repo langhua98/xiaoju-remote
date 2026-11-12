@@ -154,6 +154,7 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 
 ## 安装包
 
+- William 的要求：**每次出新版 ipa，都要改版本号**：`project.yml` 里的 `MARKETING_VERSION`（0.2 → 0.3 …），和改动放在同一次提交里。构建号不用管，workflow 会自动用运行编号。回复里说清楚这次是哪个版本。
 - William 的要求：**每次有新的 ipa，都在回复里把直接下载链接发给他**：
   https://github.com/langhua98/xiaoju-remote/releases/download/latest/Vania-latest.ipa
 - 安卓 APK：https://github.com/langhua98/xiaoju-remote/releases/download/xiaoju-remote-android/xiaoju-remote-latest.apk
