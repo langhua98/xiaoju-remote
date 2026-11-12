@@ -16,7 +16,7 @@ final class Store: ObservableObject {
     @Published var geminiKey: String { didSet { Keychain.set("geminiKey", geminiKey) } }
     /// 打开 App 时自动连大疆云台
     @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
-    /// 机器人穿哪套衣服（default = Yuki_outfit1.glb，outfit2 = Yuki_outfit2.glb，见 Robot/live2d/src/avatar.js 的 OUTFITS）
+    /// 机器人穿哪套衣服（default = Yuki_outfit1.glb，outfit2 = Yuki_outfit2.glb，sporty = Yuki_sporty.glb，见 Robot/live2d/src/avatar.js 的 OUTFITS）
     @Published var outfit: String { didSet { save("outfit", outfit) } }
     /// 打开 App 时自动开始待命（令牌填了才会开）
     @Published var autoStandby: Bool { didSet { save("autoStandby", autoStandby ? "1" : "") } }
@@ -31,7 +31,8 @@ final class Store: ObservableObject {
     /// 衣服列表：id、名字、对她说话时认的叫法。新加衣服时这里和 Robot/live2d/src/avatar.js 的 OUTFITS、fetch-assets.sh 一起加
     static let outfits: [(id: String, name: String, words: [String])] = [
         ("default", "校服", ["校服", "原版", "原来", "第一套", "一号"]),
-        ("outfit2", "洋装", ["洋装", "裙子", "婚纱", "第二套", "二号"]),
+        ("outfit2", "洋装", ["洋装", "婚纱", "第二套", "二号"]),
+        ("sporty", "运动装", ["运动装", "运动", "外套", "夹克", "第三套", "三号"]),
     ]
 
     /// 「换上洋装」「穿黑色的」「换回原来的」→ 衣服 id；不是换装的话返回 nil

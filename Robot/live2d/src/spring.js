@@ -220,7 +220,9 @@ export class SpringSystem {
           const c = this.colliders[i], r = c.radius + j.p.radius;
           // 裙子：动画摆出来的位置本身就在碰撞体里（裙腰贴着身体、裙摆贴着腿），就不和它算碰撞，
           // 不然会被一直往外顶，整条裙子撑开、往上翻。只有物理把裙摆甩进腿里时才推出来。
-          if (j.followAnim && (c.b ? closestOnSegment(_rest, c.pa, c.pb, _a) : _a.copy(c.pa)).distanceTo(_rest) < r) continue;
+          // 但如果只是末端插进了腿里、这一节的根还在外面，就照样推出来（不然抬腿时大腿会从裙子里穿出来）
+          if (j.followAnim && (c.b ? closestOnSegment(_rest, c.pa, c.pb, _a) : _a.copy(c.pa)).distanceTo(_rest) < r
+            && (c.b ? closestOnSegment(_center, c.pa, c.pb, _a) : _a.copy(c.pa)).distanceTo(_center) < r) continue;
           if (c.b ? pushOutCapsule(_next, c.pa, c.pb, r) : pushOutSphere(_next, c.pa, r)) hit = true;
         }
         if (hit) constrainLength(_next, _center, len, _dir);

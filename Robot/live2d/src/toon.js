@@ -85,6 +85,7 @@ void main() {
 
 const FRAG = /* glsl */`
 uniform sampler2D map;
+uniform vec3 uColor;   // 材质的底色系数（没有贴图的材质全靠它，比如运动装的外套、袜子）
 uniform sampler2D aoMap;
 uniform vec3 uShade;
 uniform vec3 uTint;
@@ -115,6 +116,7 @@ void main() {
     gl_FragColor = vec4(uFlat, 1.0);
   #else
   vec4 tex = texture2D(map, vUv);
+  tex.rgb *= uColor;
   #ifdef CUTOUT
     if (tex.a < 0.5) discard;
   #endif
@@ -199,7 +201,7 @@ function makeMaterial(src, kind, mode) {
     name: src.name + '_' + (mode || 'toon'),
     defines, vertexShader: VERT, fragmentShader: FRAG,
     uniforms: {
-      map: { value: src.map || white() }, aoMap: { value: src.aoMap || white() },
+      map: { value: src.map || white() }, uColor: { value: src.color ? src.color.clone() : new THREE.Color(1, 1, 1) }, aoMap: { value: src.aoMap || white() },
       uShade: { value: new THREE.Vector3(...k.shade) }, uTint: { value: new THREE.Vector3(...k.tint) },
       uLineCol: { value: new THREE.Vector3(...k.lineCol) },
       uLight: { value: TOON.light }, uRimDir: { value: TOON.rimDir }, uRimCol: { value: TOON.rimColor }, uGrade: { value: TOON.grade },

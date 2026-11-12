@@ -1,7 +1,7 @@
 # Yunlai Robot 角色（Yuki，3D）
 
 手机是机器人的身体和脸。角色是 **Yuki**（3D，GLB 格式，模型放在公开数据集 [langhua1998/yuki-model](https://huggingface.co/datasets/langhua1998/yuki-model)）：
-- `Yuki_outfit1.glb`（校服，默认）和 `Yuki_outfit2.glb`（洋装）是同一个角色的两套衣服，各是一个完整模型。
+- `Yuki_outfit1.glb`（校服，默认）、`Yuki_outfit2.glb`（洋装）、`Yuki_sporty.glb`（运动装）是同一个角色的三套衣服，各是一个完整模型。
 - 带 ARKit 的 52 个表情形变（`eyeBlinkLeft`、`jawOpen`、`mouthSmileLeft`…）、几百根骨骼，和 30 个自带动画（用其中 25 个，见下面「动作」）。动画里带道具：手机、报纸、手柄、爆米花，平时缩到 0 看不见。
 - 数据集里的 `Yuki_手机模型_含骨骼动画.glb`（280 MB）不用。
 

@@ -257,7 +257,8 @@ function frame(dt) {
   if (a.foot) a.foot.update();
   if (a.twist) a.twist.update();
   if (a.fix) a.fix.update();
-  for (const p of a.props) { const on = p.node.scale.x > 0.01; for (const m of p.meshes) m.visible = on; }
+  const nowClip = a.motion.one ? a.motion.one.getClip().name : '';
+  for (const p of a.props) { const on = p.clips ? p.clips.includes(nowClip) : p.node.scale.x > 0.01; for (const m of p.meshes) m.visible = on; }
 
   // 3. 嘴：有真实音频用它；有 mouth_level 用它；都没有时用合成的音节节奏
   let mouth = 0, bands = null;
