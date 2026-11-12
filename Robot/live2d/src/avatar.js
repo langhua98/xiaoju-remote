@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { applyToon, setChin } from './toon.js';
-import { TwistHelpers, Correctives, Gaze } from './rig.js';
+import { TwistHelpers, Correctives, Gaze, FootFix } from './rig.js';
 import { SpringSystem, findSpringBones } from './spring.js';
 import { Motion, BANNED } from './motion.js';
 
@@ -15,8 +15,12 @@ export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yu
 // outfit2（洋装）：身体、外套、裙子的顶点整体比骨架高 6.25 厘米（和第一套比：同一双手的手腕顶点 1.115 对 1.053，
 // 手指、脚、腰都差这么多），头、脸、头发、头纱却在骨架的高度。结果头陷进衣服里，像缩着脖子。
 // 应该是这套衣服穿高跟鞋，导出时身体按踩高跟的高度放了，骨架和头没有跟着抬。这里把身体和衣服往下挪回骨架上。
+// 同一套的高跟靴：靴子是按踮脚的样子做的，鞋底往前倾，
+// 动画是平底鞋的（脚掌贴地），直接播就成了踮着脚尖、鞋跟悬空、脚是歪的。
+// 原作应该是运行时把脚往后掰平。这里每帧把两只脚踝绕左右的轴往回转 15°（ankle，度，负 = 脚尖往上；在侧面截图里对着鞋跟竖直、前掌放平试出来的），
+// 再按掰平以后的鞋底高度让她站到地上。
 const MESH_FIX = {
-  outfit2: [{ match: /Outfit_02_(Body|ClothingTop|ClothingBott)(?!_Transp)/, dy: -0.0625 }],
+  outfit2: { meshes: [{ match: /Outfit_02_(Body|ClothingTop|ClothingBott)(?!_Transp)/, dy: -0.0625 }], ankle: -15 },
 };
 
 const loader = new GLTFLoader();
@@ -88,7 +92,8 @@ export function loadAvatar(id, cfg) {
       try {
         const root = gltf.scene;
         shrinkTextures(root, cfg.tex);
-        for (const fix of MESH_FIX[id] || []) {
+        const meshFix = MESH_FIX[id] || { meshes: [] };
+        for (const fix of meshFix.meshes) {
           const seen = new Set();
           root.traverse((o) => { if (o.isMesh && fix.match.test(o.name) && !seen.has(o.geometry)) { seen.add(o.geometry); o.geometry.translate(0, fix.dy, 0); } });
         }
@@ -111,6 +116,13 @@ export function loadAvatar(id, cfg) {
           o.geometry.computeBoundingBox();
           box.union(o.geometry.boundingBox);
         });
+        // 高跟靴掰平以后鞋底在哪里：把脚踝、脚趾上的顶点绕脚踝转过去，取最低的那个当地面
+        let foot = null;
+        const ankleDeg = Number.isFinite(cfg.ankle) ? cfg.ankle : meshFix.ankle;   // 网址参数 ankle= 可以临时改（调试用）
+        if (ankleDeg && byName.Ankle_L) {
+          foot = new FootFix([byName.Ankle_L, byName.Ankle_R], ankleDeg);
+          box.min.y = foot.soleY(root);
+        }
         const head = byName.Head_M;
         // 头的中心（给脸的球面法线用）：脸部网格包围盒的后沿中点，换算到头骨的局部坐标
         const headLocal = new THREE.Vector3(0, 0.08, 0);
@@ -177,7 +189,7 @@ export function loadAvatar(id, cfg) {
         ok({
           id, root, mixer, clips, faces, box, byName, bones, headLocal, headY, head,
           toonHead: { bone: head, center: headLocal, up: headUp, fwd: headFwd },
-          twist, fix, gaze, spring, motion, props, outlines: toon.outlines,
+          twist, fix, foot, gaze, spring, motion, props, outlines: toon.outlines,
           stats: { bones: bones.length, tracks: `${trim.after}/${trim.before}`, springs: spring ? spring.joints.length : 0, twists: twist ? twist.items.length : 0 },
         });
       } catch (e) { fail(e); }

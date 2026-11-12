@@ -27,6 +27,7 @@ const CFG = {
   cam: flag('cam', 1),         // 自动机位
   fidget: flag('fidget', 1),   // 待机时自己做小动作
   debug: flag('debug', 0),     // 调试面板
+  ankle: Q.has('ankle') ? Number(Q.get('ankle')) : NaN,   // 高跟鞋脚踝掰多少度（调试用，默认按 avatar.js 的 MESH_FIX）
 };
 
 const S = {
@@ -250,7 +251,8 @@ function frame(dt) {
   a.mixer.update(dt);
   let t1 = dbg ? performance.now() : 0;
 
-  // 2. 辅助骨骼；没拿在手上的道具不画
+  // 2. 高跟鞋掰平、辅助骨骼；没拿在手上的道具不画
+  if (a.foot) a.foot.update();
   if (a.twist) a.twist.update();
   if (a.fix) a.fix.update();
   for (const p of a.props) { const on = p.node.scale.x > 0.01; for (const m of p.meshes) m.visible = on; }

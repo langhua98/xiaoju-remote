@@ -83,6 +83,48 @@ export class Correctives {
   }
 }
 
+// ───────── 高跟鞋：把脚掰平 ─────────
+// 模型的鞋是按踮脚做的，动画是平底鞋的，见 avatar.js 的 MESH_FIX。每帧在动画之后给脚踝加一个固定的转动：
+// 绕绑定姿势下世界的左右轴（X）转 deg 度（负 = 脚尖往上、鞋跟往下）。换算成脚踝自己的坐标，所以走路、踢腿时也跟着脚走。
+export class FootFix {
+  constructor(ankles, deg) {
+    const rx = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), deg * Math.PI / 180);
+    this.rx = rx;
+    this.items = ankles.filter(Boolean).map((b) => {
+      const qw = b.getWorldQuaternion(new Quaternion());
+      return { bone: b, pos: b.getWorldPosition(new Vector3()), q: qw.clone().invert().multiply(rx).multiply(qw) };
+    });
+  }
+
+  /// 每帧在 mixer.update 之后调用（脚踝有动画，每帧都会被动画重新写，所以不会越转越多）
+  update() {
+    for (const it of this.items) it.bone.quaternion.multiply(it.q);
+  }
+
+  /// 绑定姿势下，掰平以后鞋底最低点的高度（root 要在绑定姿势、世界矩阵是新的）
+  soleY(root) {
+    let min = Infinity;
+    const v = new Vector3(), names = new Set();
+    for (const it of this.items) { names.add(it.bone.name); for (const c of it.bone.children) if (c.isBone) names.add(c.name); }
+    root.traverse((o) => {
+      if (!o.isSkinnedMesh) return;
+      const P = o.geometry.attributes.position, SI = o.geometry.attributes.skinIndex, SW = o.geometry.attributes.skinWeight, bones = o.skeleton.bones;
+      for (let i = 0; i < P.count; i++) {
+        let w = 0, which = null;
+        for (let c = 0; c < 4; c++) {
+          const b = bones[SI.getComponent(i, c)];
+          if (b && names.has(b.name)) { w += SW.getComponent(i, c); which = which || b; }
+        }
+        if (w < 0.5) continue;
+        const it = this.items.find((x) => x.bone === which || x.bone === which.parent) || this.items[0];
+        v.fromBufferAttribute(P, i).sub(it.pos).applyQuaternion(this.rx).add(it.pos);
+        if (v.y < min) min = v.y;
+      }
+    });
+    return Number.isFinite(min) ? min : 0;
+  }
+}
+
 // ───────── 视线分配 ─────────
 // 目标角度先由眼睛到位，头、脖子、胸慢慢跟上各自的份额，眼睛再把多转的让回来。
 export const GAZE = {
