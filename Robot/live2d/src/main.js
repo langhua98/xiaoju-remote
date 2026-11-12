@@ -22,6 +22,7 @@ const CFG = {
   toon: flag('toon', 1),       // 卡通材质；0 回到标准材质
   outline: flag('outline', 1), // 描边；2 = 连顶点特别多的裙子也描
   spring: flag('spring', 1),   // 悬挂物物理
+  hair: flag('hair', 1),       // 头发物理（在动画上面加惯性和碰撞；要先开 spring）
   helpers: flag('helpers', 1), // 辅助骨骼
   cam: flag('cam', 1),         // 自动机位
   fidget: flag('fidget', 1),   // 待机时自己做小动作
@@ -220,6 +221,7 @@ function frame(dt) {
   a.motion.setBase(baseClip());
   a.motion.update(t, dt, idle && CFG.fidget && t - S.lastInput > 6);
   a.gaze.resetBones();
+  if (a.spring) a.spring.restore();
   a.mixer.update(dt);
   let t1 = dbg ? performance.now() : 0;
 

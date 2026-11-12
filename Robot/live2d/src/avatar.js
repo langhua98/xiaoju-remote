@@ -9,59 +9,7 @@ import { SpringSystem, findSpringBones } from './spring.js';
 import { Motion, BANNED } from './motion.js';
 
 // 衣服 id → 模型文件。default 是第一套；以前存的旧 id（heibai、yeye）也回到第一套
-export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yuki_outfit2.glb', sport: 'models/Yuki_outfit1.glb' };
-// 只换贴图的衣服：模型还是上面那个文件，加载后把这几个材质的底色贴图换掉（材质名 → 图片）。
-// sport（运动套装：黑外套、黑百褶裙、灰色条纹中筒袜、白鞋）的三张图由 ../tools/build_sport.py 画出来。
-const RETEX = {
-  sport: {
-    Yuki_Outfit_01_ClothingUpper: 'outfits/sport_upper.png',
-    Yuki_Outfit_01_ClothingLower: 'outfits/sport_lower.png',
-    Yuki_Body_mat: 'outfits/sport_body.png',
-  },
-};
-// 换贴图的同时要拿掉的零件：网格名 → 高度范围（米，绑定姿势）。整个三角形都在范围里的才拿掉。
-// sport：原来过膝袜的袜口是大腿上两圈独立的小网格（y 0.708～0.742），换成中筒袜以后不要了。
-const CUT = { sport: { ClothingLower: [0.70, 0.75] } };
-
-function cutParts(root, id) {
-  const table = CUT[id];
-  if (!table) return;
-  root.traverse((o) => {
-    const range = o.isMesh && table[o.name];
-    if (!range || !o.geometry.index) return;
-    const pos = o.geometry.attributes.position, idx = o.geometry.index.array, keep = [];
-    const inside = (i) => { const y = pos.getY(i); return y >= range[0] && y <= range[1]; };
-    for (let i = 0; i < idx.length; i += 3) {
-      if (inside(idx[i]) && inside(idx[i + 1]) && inside(idx[i + 2])) continue;
-      keep.push(idx[i], idx[i + 1], idx[i + 2]);
-    }
-    o.geometry.setIndex(keep);
-  });
-}
-function retexture(root, id) {
-  cutParts(root, id);
-  const table = RETEX[id];
-  if (!table) return Promise.resolve();
-  const jobs = [], done = new Map();
-  root.traverse((o) => {
-    if (!o.isMesh) return;
-    for (const m of [].concat(o.material)) {
-      const file = table[m.name];
-      if (!file || !m.map || done.has(m)) continue;
-      done.set(m, 1);
-      jobs.push(new Promise((ok) => {
-        new THREE.TextureLoader().load(file, (t) => {
-          const old = m.map;
-          t.flipY = old.flipY; t.colorSpace = old.colorSpace; t.wrapS = old.wrapS; t.wrapT = old.wrapT;
-          t.name = old.name; t.needsUpdate = true;
-          m.map = t; m.needsUpdate = true; old.dispose();
-          ok();
-        }, undefined, () => ok());   // 图片没有就算了，穿原来的
-      }));
-    }
-  });
-  return Promise.all(jobs);
-}
+export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yuki_outfit2.glb' };
 
 const loader = new GLTFLoader();
 
@@ -124,11 +72,11 @@ function trimTracks(root, clips) {
   return { still, before, after };
 }
 
-/// 加载一套衣服。cfg：{ tex, toon, outline, spring, helpers }
+/// 加载一套衣服。cfg：{ tex, toon, outline, spring, hair, helpers }
 export function loadAvatar(id, cfg) {
   const file = OUTFITS[id] || OUTFITS.default;
   return new Promise((ok, fail) => {
-    loader.load(file, (gltf) => retexture(gltf.scene, id).then(() => {
+    loader.load(file, (gltf) => {
       try {
         const root = gltf.scene;
         shrinkTextures(root, cfg.tex);
@@ -180,13 +128,25 @@ export function loadAvatar(id, cfg) {
         let spring = null;
         if (cfg.spring) {
           const list = findSpringBones(bones, (b) => trim.still.has(b.name));
+          // 头发：有动画的也加弹簧（跟随式，见 spring.js 开头的说明）。按离根骨骼的层数排，保证父在前子在后
+          const hair = new Set();
+          if (cfg.hair) {
+            const have = new Set(list), depth = (b) => { let d = 0; for (let p = b.parent; p; p = p.parent) d++; return d; };
+            const extra = bones.filter((b) => /hair|bang/i.test(b.name) && !have.has(b) && b.parent && b.parent.isBone);
+            extra.sort((a, b) => depth(a) - depth(b));
+            for (const b of extra) { hair.add(b); list.push(b); }
+          }
           const C = (a, b, radius, offset) => (byName[a] && (!b || byName[b]) ? [{ a: byName[a], b: b ? byName[b] : null, radius, offset }] : []);
           const colliders = [
             ...C('Head_M', null, 0.105, headLocal.clone()),
             ...C('Chest_M', 'Root_M', 0.105), ...C('Hip_L', 'Knee_L', 0.075), ...C('Hip_R', 'Knee_R', 0.075),
             ...C('Knee_L', 'Ankle_L', 0.055), ...C('Knee_R', 'Ankle_R', 0.055),
+            // 头发会碰到的：脖子、肩膀、上臂
+            ...C('Neck_M', 'Head_M', 0.048),
+            ...C('Scapula_L', 'Shoulder_L', 0.05), ...C('Scapula_R', 'Shoulder_R', 0.05),
+            ...C('Shoulder_L', 'Elbow_L', 0.045), ...C('Shoulder_R', 'Elbow_R', 0.045),
           ];
-          spring = new SpringSystem(list, colliders);
+          spring = new SpringSystem(list, colliders, hair);
         }
         // 道具（手柄、手机、报纸、爆米花）：动画用把它们的父节点缩到 0 的办法藏起来。缩到 0 时干脆不画，省绘制调用。
         const props = [];
@@ -202,10 +162,10 @@ export function loadAvatar(id, cfg) {
         ok({
           id, root, mixer, clips, faces, box, byName, bones, headLocal, headY, head,
           twist, gaze, spring, motion, props, outlines: toon.outlines,
-          stats: { bones: bones.length, tracks: `${trim.after}/${trim.before}`, springs: spring ? spring.joints.length : 0, twists: twist ? twist.items.length : 0 },
+          stats: { bones: bones.length, tracks: `${trim.after}/${trim.before}`, springs: spring ? spring.joints.length : 0, hair: spring ? spring.joints.filter((j) => j.anim).length : 0, twists: twist ? twist.items.length : 0 },
         });
       } catch (e) { fail(e); }
-    }), undefined, fail);
+    }, undefined, fail);
   });
 }
 

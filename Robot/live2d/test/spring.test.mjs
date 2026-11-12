@@ -100,3 +100,40 @@ test('原姿势就在碰撞体里的骨骼，不和那个碰撞体算碰撞', ()
   assert.ok(a.quaternion.angleTo(rest) < 0.2);
   assert.ok(new Quaternion().copy(a.quaternion).length() > 0.99);
 });
+
+test('头发（有动画的骨骼）：跟着动画走，头一甩有滞后，偏离不超过圆锥，动画不动时不会越叠越歪', () => {
+  const head = new Bone(); head.name = 'Head_M'; head.position.set(0, 1.5, 0);
+  const bones = chain(['Emi_hair_B_1_0', 'Emi_hair_B_1_1', 'Emi_hair_B_1_2', 'Emi_hair_B_1_3'], head);
+  head.updateMatrixWorld(true);
+  const sys = new SpringSystem(bones, [], new Set(bones));
+  assert.ok(sys.joints.every((j) => j.anim));
+  assert.ok(sys.joints[0].follow > sys.joints[3].follow, '发根跟得紧，发梢跟得松');
+  // 「动画」把第二节转到一个新姿势，然后一直保持（模拟动画系统数值不变时不重写骨骼）
+  const pose = new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), 0.3);
+  const anim = bones.map((b, i) => (i === 1 ? b.quaternion.clone().multiply(pose) : b.quaternion.clone()));
+  const frame = (move) => {
+    sys.restore();
+    if (move) bones.forEach((b, i) => b.quaternion.copy(anim[i]));   // 动画这一帧写了骨骼
+    head.updateMatrixWorld(true);
+    sys.update(1 / 60);
+  };
+  frame(true);
+  for (let i = 0; i < 240; i++) frame(false);
+  assert.ok(bones[1].quaternion.angleTo(anim[1]) < 0.12, `停下来以后应该贴着动画姿势，实际差 ${bones[1].quaternion.angleTo(anim[1])}`);
+  for (const j of sys.joints) assert.ok(j.restQ.angleTo(anim[sys.joints.indexOf(j)]) < 1e-6, '原姿势一直是动画给的，不能被弹簧的结果带歪');
+  // 头突然横移：发梢落在后面，但不超过圆锥
+  head.position.x = 0.3;
+  frame(false);
+  const tip = sys.joints[3];
+  assert.ok(bones[3].quaternion.angleTo(anim[3]) > 0.02, '应该有滞后');
+  for (let i = 0; i < 30; i++) {
+    head.position.x += 0.05; frame(false);
+    for (const j of sys.joints) {
+      const k = sys.joints.indexOf(j);
+      const cone = Math.acos(Math.max(-1, j.cosCone));
+      assert.ok(bones[k].quaternion.angleTo(anim[k]) <= cone + 1e-3, '偏离不能超过圆锥');
+    }
+  }
+  assert.ok(tip.cosCone < sys.joints[0].cosCone, '发梢的圆锥比发根大');
+  for (const b of bones) for (const v of b.quaternion.toArray()) assert.ok(Number.isFinite(v));
+});
