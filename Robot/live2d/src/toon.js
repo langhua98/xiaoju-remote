@@ -135,7 +135,8 @@ function makeMaterial(src, kind, outline) {
   const defines = {};
   if (outline) defines.OUTLINE = 1;
   if (src.alphaTest > 0) defines.CUTOUT = 1;
-  if (kind === 'eye') defines.UNLIT = 1;
+  // 眼睛不受光；半透明的薄纱也不算明暗，不然盖在皮肤上的那层会把胸口染成蓝灰色
+  if (kind === 'eye' || (blend && !outline)) defines.UNLIT = 1;
   if (kind === 'face') defines.FACE = 1;
   if (kind === 'hair') defines.HAIR = 1;
   const m = new THREE.ShaderMaterial({
