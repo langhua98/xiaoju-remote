@@ -83,45 +83,79 @@ export class Correctives {
   }
 }
 
-// ───────── 高跟鞋：把脚掰平 ─────────
-// 模型的鞋是按踮脚做的，动画是平底鞋的，见 avatar.js 的 MESH_FIX。每帧在动画之后给脚踝加一个固定的转动：
-// 绕绑定姿势下世界的左右轴（X）转 deg 度（负 = 脚尖往上、鞋跟往下）。换算成脚踝自己的坐标，所以走路、踢腿时也跟着脚走。
+// ───────── 高跟鞋：让脚踩实 ─────────
+// 洋装的靴子是在「平底姿势」的脚下面加了一根高跟：绑定姿势下鞋跟尖着地，前脚掌悬空约 6 厘米。
+// 动画又是平底鞋的，直接播就成了鞋跟戳地、脚掌翘在半空，看起来是歪的。
+// 真人穿高跟的姿势：脚踝往下压（脚尖朝下），脚趾反向掰回水平。这里就这么做：
+//   脚踝绕左右轴转 +θ（脚尖朝下），脚趾转 −θ（保持水平），θ 取「鞋跟尖和前脚掌一样高」的那个角度（按顶点算出来）。
+// 转动换算到骨骼自己的坐标里，每帧在动画之后叠加，走路、踢腿时也跟着脚走。
+const X_AXIS = new Vector3(1, 0, 0);
 export class FootFix {
-  constructor(ankles, deg) {
-    const rx = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), deg * Math.PI / 180);
-    this.rx = rx;
-    this.items = ankles.filter(Boolean).map((b) => {
-      const qw = b.getWorldQuaternion(new Quaternion());
-      return { bone: b, pos: b.getWorldPosition(new Vector3()), q: qw.clone().invert().multiply(rx).multiply(qw) };
-    });
+  /// feet：[{ ankle, toes }]（骨骼）。在绑定姿势、世界矩阵是新的时候创建，然后调 solve(root)
+  constructor(feet) {
+    this.feet = feet.filter((f) => f.ankle && f.toes).map((f) => ({
+      ankle: f.ankle, toes: f.toes,
+      aPos: f.ankle.getWorldPosition(new Vector3()), tPos: f.toes.getWorldPosition(new Vector3()),
+      aW: f.ankle.getWorldQuaternion(new Quaternion()), tW: f.toes.getWorldQuaternion(new Quaternion()),
+      qa: new Quaternion(), qt: new Quaternion(),
+    }));
+    this.deg = 0; this.sole = 0;
   }
 
-  /// 每帧在 mixer.update 之后调用（脚踝有动画，每帧都会被动画重新写，所以不会越转越多）
-  update() {
-    for (const it of this.items) it.bone.quaternion.multiply(it.q);
-  }
-
-  /// 绑定姿势下，掰平以后鞋底最低点的高度（root 要在绑定姿势、世界矩阵是新的）
-  soleY(root) {
-    let min = Infinity;
-    const v = new Vector3(), names = new Set();
-    for (const it of this.items) { names.add(it.bone.name); for (const c of it.bone.children) if (c.isBone) names.add(c.name); }
+  /// 按顶点算出角度和踩实以后鞋底的高度。forceDeg：不算，直接用这个角度（调试）
+  solve(root, forceDeg) {
+    // 收集每只脚上「主要跟脚踝」和「主要跟脚趾」的顶点
+    const pts = this.feet.map(() => ({ a: [], t: [] }));
+    const v = new Vector3();
     root.traverse((o) => {
       if (!o.isSkinnedMesh) return;
       const P = o.geometry.attributes.position, SI = o.geometry.attributes.skinIndex, SW = o.geometry.attributes.skinWeight, bones = o.skeleton.bones;
       for (let i = 0; i < P.count; i++) {
-        let w = 0, which = null;
         for (let c = 0; c < 4; c++) {
+          const w = SW.getComponent(i, c);
+          if (w < 0.6) continue;
           const b = bones[SI.getComponent(i, c)];
-          if (b && names.has(b.name)) { w += SW.getComponent(i, c); which = which || b; }
+          const k = this.feet.findIndex((f) => f.ankle === b || f.toes === b);
+          if (k >= 0) (this.feet[k].ankle === b ? pts[k].a : pts[k].t).push(v.fromBufferAttribute(P, i).clone());
         }
-        if (w < 0.5) continue;
-        const it = this.items.find((x) => x.bone === which || x.bone === which.parent) || this.items[0];
-        v.fromBufferAttribute(P, i).sub(it.pos).applyQuaternion(this.rx).add(it.pos);
-        if (v.y < min) min = v.y;
       }
     });
-    return Number.isFinite(min) ? min : 0;
+    // 转 θ 以后：脚踝上的点绕脚踝转；脚趾上的点先反转再跟着转，合起来只是跟着脚趾关节平移
+    const lows = (k, rad) => {
+      const f = this.feet[k], c = Math.cos(rad), s = Math.sin(rad);
+      const rotY = (p) => f.aPos.y + (p.y - f.aPos.y) * c - (p.z - f.aPos.z) * s;
+      let la = Infinity, lt = Infinity;
+      for (const p of pts[k].a) la = Math.min(la, rotY(p));
+      const shift = rotY(f.tPos) - f.tPos.y;
+      for (const p of pts[k].t) lt = Math.min(lt, p.y + shift);
+      return [la, lt];
+    };
+    let best = 0, bestErr = Infinity;
+    if (Number.isFinite(forceDeg)) best = forceDeg;
+    else if (pts.every((p) => p.a.length && p.t.length)) {
+      for (let d = 0; d <= 50; d += 0.5) {
+        let err = 0;
+        for (let k = 0; k < this.feet.length; k++) { const [la, lt] = lows(k, d * Math.PI / 180); err += Math.abs(la - lt); }
+        if (err < bestErr - 1e-6) { bestErr = err; best = d; }
+      }
+    }
+    this.deg = best;
+    const rad = best * Math.PI / 180;
+    let sole = Infinity;
+    for (let k = 0; k < this.feet.length; k++) { const [la, lt] = lows(k, rad); sole = Math.min(sole, la, lt); }
+    this.sole = Number.isFinite(sole) ? sole : 0;
+    const rx = new Quaternion().setFromAxisAngle(X_AXIS, rad), rxInv = rx.clone().invert();
+    for (const f of this.feet) {
+      f.qa.copy(f.aW).invert().multiply(rx).multiply(f.aW);
+      f.qt.copy(f.tW).invert().multiply(rxInv).multiply(f.tW);
+    }
+    return this;
+  }
+
+  /// 每帧在 mixer.update 之后调用（脚踝、脚趾每帧都会被动画或下面的 reset 重新写，所以不会越转越多）
+  update() {
+    if (!this.deg) return;
+    for (const f of this.feet) { f.ankle.quaternion.multiply(f.qa); f.toes.quaternion.multiply(f.qt); }
   }
 }
 

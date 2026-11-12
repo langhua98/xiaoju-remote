@@ -12,7 +12,7 @@ import { Vector3, Quaternion, Matrix4 } from 'three';
 export const SPRING_PRESETS = [
   [/skirt/i, { stiffness: 1.1, drag: 0.45, gravity: 0.12, radius: 0.02 }],
   // 裙子跟着动画走时用这一组：回弹要强一点，不然会离动画的样子太远；重力小一点，动画里已经是垂着的
-  [/^follow:/, { stiffness: 2.6, drag: 0.35, gravity: 0.05, radius: 0.012 }],
+  [/^follow:/, { stiffness: 5.0, drag: 0.55, gravity: 0.05, radius: 0.012 }],
   [/cape/i, { stiffness: 1.0, drag: 0.45, gravity: 0.1, radius: 0.02 }],
   [/ribbon/i, { stiffness: 2.2, drag: 0.6, gravity: 0.25, radius: 0.012 }],   // 长丝带太软会甩到身前，收紧一些
   [/bow/i, { stiffness: 1.6, drag: 0.4, gravity: 0.05, radius: 0.012 }],
