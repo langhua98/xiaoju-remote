@@ -11,6 +11,8 @@ import Foundation
 final class LiveTalk: NSObject, ObservableObject {
     enum Phase { case off, connecting, listening, speaking }
     @Published private(set) var phase: Phase = .off
+    /// 她正在说的话（Gemini 给的文字稿），聊天框上面当字幕
+    @Published private(set) var caption = ""
 
     /// 连不上时调用（参数是原因），Talk 用它退回 DeepSeek + 语音合成的普通模式
     var onFail: ((String) -> Void)?
@@ -211,7 +213,7 @@ final class LiveTalk: NSObject, ObservableObject {
             heard += t
             lastActivity = Date()
         }
-        if let t = (sc["outputTranscription"] as? [String: Any])?["text"] as? String { said += t }
+        if let t = (sc["outputTranscription"] as? [String: Any])?["text"] as? String { said += t; caption = Self.tidy(said) }
         if let parts = (sc["modelTurn"] as? [String: Any])?["parts"] as? [[String: Any]] {
             for p in parts {
                 guard let inline = p["inlineData"] as? [String: Any], let b64 = inline["data"] as? String,
@@ -305,6 +307,17 @@ final class LiveTalk: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    /// 聊天框里打的字：当成你说的一句话发给 Gemini（她用声音回答）。没连上返回 false
+    @discardableResult
+    func sendText(_ text: String) -> Bool {
+        guard phase == .listening || phase == .speaking else { return false }
+        heard += text
+        caption = ""
+        lastActivity = Date()
+        send(["clientContent": ["turns": [["role": "user", "parts": [["text": text]]]], "turnComplete": true]])
+        return true
     }
 
     private func turnComplete() {

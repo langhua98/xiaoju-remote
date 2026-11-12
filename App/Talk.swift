@@ -11,6 +11,10 @@ final class Talk: NSObject, ObservableObject {
     @Published private(set) var phase: Phase = .idle
     /// 连续对话：点一下开始，之后她说完自动接着听；说「再见」或者 8 秒不说话就结束
     @Published private(set) var conversing = false
+    /// 字幕：你刚说的（打字或者语音识别出来的）和她正在说的。闲下来 10 秒后清掉
+    @Published private(set) var userLine = ""
+    @Published private(set) var subtitle = ""
+    private var captionGen = 0
     private static let byeWords = ["再见", "拜拜", "不聊了", "晚安", "先这样", "退下"]
 
     private let store: Store
@@ -217,12 +221,53 @@ final class Talk: NSObject, ObservableObject {
         log("听到：\(text)")
         // 说「再见」：这一句还是让她回答（道个别），回答完不再接着听
         if Self.byeWords.contains(where: { text.contains($0) }) { conversing = false }
+        respond(to: text)
+    }
+
+    /// 聊天框里打了一句话。短指令（「跳舞」「特写」「转身 左 90」…）直接做；
+    /// 实时语音进行中就发给 Gemini；其余交给大模型，她用声音回答，字幕显示在聊天框上面。
+    func typed(_ raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        captionGen += 1
+        userLine = text
+        if let q = Body.quickCommand(text) {
+            face.send(q.msg)
+            log("打字指令：\(q.label)")
+            scheduleClearCaptions()
+            return
+        }
+        subtitle = ""
+        if live.phase != .off {
+            if live.sendText(text) { log("打字：\(text)") } else { log("实时语音还没连上，这句没发出去") }
+            return
+        }
+        log("打字：\(text)")
+        conversing = false
+        llmTask?.cancel()
+        llmTask = nil
+        stopAudio()
+        stopSpeaking()
+        phase = .idle
+        respond(to: text)
+    }
+
+    /// 回答一句话（听到的或者打的）：换装直接办，其余问大模型
+    private func respond(to text: String) {
+        userLine = text
+        subtitle = ""
+        captionGen += 1
         phase = .thinking
         // 换装直接办，不问大模型
         if let id = Store.outfitCommand(text, current: store.outfit) {
             store.outfit = id
             log("换装：\(Store.outfitName(id))")
             say(id == "default" ? "好，换回原来的衣服啦。" : "好呀，换上\(Store.outfitName(id))啦，好看吗？", emotion: "happy")
+            return
+        }
+        guard !store.llmBase.isEmpty, !store.llmModel.isEmpty, !store.llmKey.isEmpty else {
+            conversing = false
+            say("请先在设置里填好大模型的密钥，我才能回答你。", emotion: "confused")
             return
         }
         face.send(["type": "robot_state", "state": "thinking", "emotion": "neutral"])
@@ -384,6 +429,7 @@ final class Talk: NSObject, ObservableObject {
         let text = Chat.clean(Body.strip(raw))
         guard text.rangeOfCharacter(from: .letters) != nil || text.rangeOfCharacter(from: .decimalDigits) != nil else { return }
         reply += text
+        subtitle = reply
         let fetch = Task.detached { await Voice.fetchWithBackup(text: text) }
         queue.append((text, fetch))
         wakeQueue()
@@ -490,6 +536,16 @@ final class Talk: NSObject, ObservableObject {
         synthDone = nil
     }
 
+    /// 闲下来 10 秒后清掉字幕（这期间又有新的对话就不清）
+    private func scheduleClearCaptions() {
+        let gen = captionGen
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in
+            guard let self = self, self.captionGen == gen, self.phase == .idle else { return }
+            self.userLine = ""
+            self.subtitle = ""
+        }
+    }
+
     private func doneSpeaking() {
         playLoop = nil
         guard phase == .speaking || phase == .thinking else { return }
@@ -503,6 +559,7 @@ final class Talk: NSObject, ObservableObject {
             return
         }
         face.send(["type": "robot_state", "state": "idle"])
+        scheduleClearCaptions()
         // 说完保持一会儿情绪，再回到平静
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
             guard let self = self, self.phase == .idle else { return }

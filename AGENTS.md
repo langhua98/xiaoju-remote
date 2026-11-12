@@ -132,6 +132,7 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 - `App/XiaojuRemoteApp.swift`：入口。
 - `App/ContentView.swift`：主界面 `MainView`（打开 App 就是机器人，左上角齿轮或连点三下打开设置；第一次用时自动打开设置）和设置页 `SettingsView`（云盘地址、令牌、设备名、口令、授权、待命开关、对话、云台、机器人的衣服和画质、运行记录）。
 - `App/RobotCommand.swift`：`robot` 遥控指令。
+- `App/RobotFace.swift`：机器人画面 `RobotModeView`，下面是聊天框 `ChatBar`（打字聊天、快捷动作菜单、麦克风）和字幕 `Captions`；`FaceBridge` 给页面发消息、取状态。
 - `App/Store.swift`：设置。令牌和口令存在钥匙串，其他存 UserDefaults；处理过的指令 id 也记在这里，防止重复执行。
 - `App/Cloud.swift`：云盘客户端，包括文件接口和即时信箱（`relayWait` / `relaySend` / `relayMissing`）。
 - `App/RemoteEngine.swift`：待命循环（先走即时信箱，没有就退回文件信箱）、`execute` 执行指令并原路回执、`RemoteBox` 信箱名。

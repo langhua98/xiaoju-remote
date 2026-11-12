@@ -95,17 +95,27 @@ struct RobotModeView: View {
     var onSettings: () -> Void
     @State private var taps: [Date] = []
     @State private var tapGen = 0
+    @State private var draft = ""
+    @FocusState private var typing: Bool
 
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.black.ignoresSafeArea()
+            // 画面不跟着键盘缩：键盘弹出来时只有下面的聊天框往上走
             FaceWebView(face: engine.face, outfit: store.outfit, quality: store.faceQuality,
                         onMessage: handle, onCrash: crashed).ignoresSafeArea()
-            StatusLine(talk: engine.talk, live: engine.talk.live, prefix: engine.running ? "● 待命中 · \(store.device)" : "○ 未待命")
-                .font(.caption2)
-                .foregroundColor(.white.opacity(0.35))
-                .padding(.bottom, 6)
-                .allowsHitTesting(false)
+            VStack(spacing: 8) {
+                Captions(talk: engine.talk, live: engine.talk.live)
+                    .padding(.horizontal, 18)
+                    .allowsHitTesting(false)
+                ChatBar(talk: engine.talk, live: engine.talk.live, draft: $draft, typing: $typing, onSend: submit)
+                    .padding(.horizontal, 12)
+                StatusLine(talk: engine.talk, live: engine.talk.live, prefix: engine.running ? "● 待命中 · \(store.device)" : "○ 未待命")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.35))
+                    .allowsHitTesting(false)
+            }
+            .padding(.bottom, 4)
         }
         .overlay(alignment: .topLeading) {
             Button(action: onSettings) {
@@ -132,14 +142,23 @@ struct RobotModeView: View {
         .onChange(of: store.faceQuality) { _ in engine.record("画质改成：\(store.faceQuality == "low" ? "省电" : "高")，重新加载画面") }
     }
 
+    /// 聊天框发送：短指令直接做，其余的话交给她回答（见 Talk.typed）
+    private func submit() {
+        let text = draft
+        draft = ""
+        typing = false
+        engine.talk.typed(text)
+    }
+
     /// 网页进程被系统关掉（多半是内存不够）后已经用省电画质重新打开：记一笔，把衣服再发一次
     private func crashed() {
         engine.record("画面进程被系统关掉了（多半是内存不够），已用省电画质重新打开")
         engine.face.send(["type": "outfit", "id": store.outfit])
     }
 
-    /// 点一下：说话 / 打断；连点三下：打开设置。等 0.45 秒看还有没有下一下，避免两种操作打架。
-    /// 闲着的时候点到她的头或手（消息里的 part），她自己会有反应，这一下不算「开始聊天」。
+    /// 点一下：正在打字就收起键盘；她在想、在说、在实时聊天时打断 / 结束；闲着时什么都不做（开始聊天用麦克风按钮）。
+    /// 连点三下：打开设置。等 0.45 秒看还有没有下一下，避免两种操作打架。
+    /// 闲着的时候点到她的头或手，页面自己会让她做反应。
     private func handle(_ msg: [String: Any]) {
         if (msg["type"] as? String) == "outfit_done" {
             let id = msg["id"] as? String ?? ""
@@ -148,8 +167,7 @@ struct RobotModeView: View {
             return
         }
         guard (msg["type"] as? String) == "touch" else { return }
-        let part = msg["part"] as? String ?? ""
-        let petting = ["head", "hand_l", "hand_r"].contains(part) && engine.talk.phase == .idle && engine.talk.live.phase == .off
+        if typing { typing = false; return }
         let now = Date()
         taps = taps.filter { now.timeIntervalSince($0) < 1.2 } + [now]
         if taps.count >= 3 {
@@ -163,7 +181,8 @@ struct RobotModeView: View {
         let gen = tapGen
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             guard gen == tapGen else { return }
-            if taps.count == 1 && !petting { engine.talk.tap() }
+            let talk = engine.talk
+            if taps.count == 1 && (talk.phase != .idle || talk.live.phase != .off) { talk.tap() }
             taps = []
         }
     }
@@ -182,16 +201,122 @@ private struct StatusLine: View {
     private var hint: String {
         switch live.phase {
         case .connecting: return "正在连实时语音"
-        case .listening: return "实时对话中，直接说话，点一下结束"
+        case .listening: return "实时对话中，直接说话或打字"
         case .speaking: return "直接说话就能打断她"
         case .off: break
         }
         switch talk.phase {
-        case .idle: return "点一下开始聊天"
+        case .idle: return "打字或点麦克风聊天"
         case .listening: return talk.conversing ? "在听，说「再见」结束" : "正在听"
         case .thinking: return "在想"
         case .speaking: return "点一下打断"
         }
+    }
+}
+
+/// 在 SwiftUI 的 View 里写 Body 指的是 View 自己的 Body 类型，所以给 Body.swift 的 Body 起个别名
+private typealias RobotBody = Body
+
+/// 聊天框上面的字幕：你刚说的（靠右、淡一点）和她正在说的
+private struct Captions: View {
+    @ObservedObject var talk: Talk
+    @ObservedObject var live: LiveTalk
+
+    var body: some View {
+        let her = live.phase != .off ? live.caption : talk.subtitle
+        VStack(spacing: 6) {
+            if !talk.userLine.isEmpty {
+                HStack {
+                    Spacer(minLength: 60)
+                    Text(talk.userLine)
+                        .font(.footnote)
+                        .foregroundColor(.white.opacity(0.85))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.16)))
+                }
+            }
+            if !her.isEmpty {
+                HStack {
+                    Text(her)
+                        .font(.subheadline)
+                        .foregroundColor(.white)
+                        .lineLimit(4)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color.black.opacity(0.42)))
+                    Spacer(minLength: 40)
+                }
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: talk.userLine)
+    }
+}
+
+/// 最下面的聊天框：左边是快捷动作菜单，中间打字，右边有字时是发送、没字时是麦克风（语音聊天）。
+private struct ChatBar: View {
+    @ObservedObject var talk: Talk
+    @ObservedObject var live: LiveTalk
+    @Binding var draft: String
+    var typing: FocusState<Bool>.Binding
+    var onSend: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Menu {
+                Section("动作") {
+                    ForEach(RobotBody.actions, id: \.id) { a in Button(a.name) { talk.typed(a.name) } }
+                }
+                Section("镜头") {
+                    ForEach(RobotBody.shots, id: \.id) { s in Button(s.name) { talk.typed(s.name) } }
+                }
+                Section("转身") {
+                    Button("向左转") { talk.typed("转身 左 90") }
+                    Button("向右转") { talk.typed("转身 右 90") }
+                    Button("背对") { talk.typed("背对") }
+                    Button("转回来") { talk.typed("转回来") }
+                }
+                Button("全部回到默认") { talk.typed("重置") }
+            } label: {
+                icon("sparkles")
+            }
+
+            TextField("输入消息……", text: $draft)
+                .focused(typing)
+                .submitLabel(.send)
+                .onSubmit(onSend)
+                .disableAutocorrection(true)
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .frame(height: 42)
+                .background(Capsule().fill(Color.black.opacity(0.38)))
+                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
+
+            if draft.trimmingCharacters(in: .whitespaces).isEmpty {
+                Button { talk.tap() } label: { icon(micIcon, active: micActive) }
+            } else {
+                Button(action: onSend) { icon("paperplane.fill", active: true) }
+            }
+        }
+        .colorScheme(.dark)
+    }
+
+    /// 麦克风按钮：闲着是麦克风（点了开始语音聊天）；在听、在想、在说、实时聊天中是停止（点了结束 / 打断）
+    private var micActive: Bool { talk.phase != .idle || live.phase != .off }
+    private var micIcon: String {
+        if live.phase != .off { return "phone.down.fill" }
+        switch talk.phase {
+        case .idle: return "mic.fill"
+        case .listening: return "waveform"
+        case .thinking, .speaking: return "stop.fill"
+        }
+    }
+
+    private func icon(_ name: String, active: Bool = false) -> some View {
+        Image(systemName: name)
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundColor(active ? .white : .white.opacity(0.8))
+            .frame(width: 42, height: 42)
+            .background(Circle().fill(active ? brandOrange.opacity(0.85) : Color.black.opacity(0.38)))
+            .overlay(Circle().stroke(Color.white.opacity(0.18), lineWidth: 1))
     }
 }
 

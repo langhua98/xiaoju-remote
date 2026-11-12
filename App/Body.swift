@@ -60,6 +60,32 @@ enum Body {
         }
     }
 
+    /// 聊天框里打的短指令，直接做、不问大模型（没填密钥也能用）：
+    /// 「跳舞」「挥手」（动作名）、「特写」「全身」（镜头）、「转身 左 90」「背对」「转回来」、「重置」；前面加 / 也行。
+    /// 返回发给脸的消息和记在记录里的说明；普通的话返回 nil，交给大模型。
+    static func quickCommand(_ raw: String) -> (msg: [String: Any], label: String)? {
+        var t = Store.simplified(raw)
+        if t.hasPrefix("/") || t.hasPrefix("／") { t.removeFirst() }
+        if ["重置", "复位", "回到默认"].contains(t) { return (["type": "reset"], "回到默认") }
+        if let a = actions.first(where: { $0.name == t || $0.id == t.lowercased() }) {
+            return (["type": "action", "name": a.id], "动作：\(a.name)")
+        }
+        if t.hasPrefix("动作"), let id = actionID(named: String(t.dropFirst(2))) {
+            return (["type": "action", "name": id], "动作：\(t.dropFirst(2))")
+        }
+        if let s = shots.first(where: { $0.name == t || "镜头" + $0.name == t || $0.name + "镜头" == t }) {
+            return (["type": "view", "shot": s.id], "镜头：\(s.name)")
+        }
+        if t.hasPrefix("镜头"), let id = shotID(named: String(t.dropFirst(2))) {
+            return (["type": "view", "shot": id], "镜头：\(t.dropFirst(2))")
+        }
+        let turnWords = ["背对": "转身背对", "转回来": "转身回正", "回正": "转身回正"]
+        if t.hasPrefix("转身") || turnWords[t] != nil, let yaw = turnTags(in: "[\(turnWords[t] ?? t)]").first {
+            return (["type": "turn", "yaw": yaw], yaw == 0 ? "转身：回正" : "转身：\(Int(yaw))°")
+        }
+        return nil
+    }
+
     /// 动作的中文名（或者直接是 id）→ 发给脸的名字；不认识返回 nil
     static func actionID(named raw: String) -> String? {
         let text = Store.simplified(raw)
