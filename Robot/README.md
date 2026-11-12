@@ -2,20 +2,35 @@
 
 手机是机器人的身体和脸。角色是 **Yuki**（3D，GLB 格式，模型放在公开数据集 [langhua1998/yuki-model](https://huggingface.co/datasets/langhua1998/yuki-model)）：
 - `Yuki_outfit1.glb`（校服，默认）和 `Yuki_outfit2.glb`（洋装）是同一个角色的两套衣服，各是一个完整模型。
-- 带 ARKit 的 52 个表情形变（`eyeBlinkLeft`、`jawOpen`、`mouthSmileLeft`…）、骨骼，和 30 个自带动画（我们只用 `idle`、`Yuki_Idle_listening_v3`、`hello`、`Yes`、`No`，其余不加载，省内存）。
+- 带 ARKit 的 52 个表情形变（`eyeBlinkLeft`、`jawOpen`、`mouthSmileLeft`…）、几百根骨骼，和 30 个自带动画（用其中 25 个，见下面「动作」）。动画里带道具：手机、报纸、手柄、爆米花，平时缩到 0 看不见。
 - 数据集里的 `Yuki_手机模型_含骨骼动画.glb`（280 MB）不用。
 
-显示交给 [three.js](https://threejs.org/)（MIT，`GLTFLoader`），我们自己只写了一层接入代码 `live2d/src/main.js`（文件夹名沿用旧的 `live2d`）：把说明书里的 `robot_state` 消息翻译成表情形变和头部转动，再连上 WebSocket。
+显示用 [three.js](https://threejs.org/)（MIT，`GLTFLoader`）。我们自己的代码在 `live2d/src/`（文件夹名沿用旧的 `live2d`），打包成 `live2d/yuki.js`：
+
+| 文件 | 做什么 |
+|---|---|
+| `main.js` | 入口：网址参数、消息、WebSocket、主循环、点击、调试面板 |
+| `avatar.js` | 加载和换装、整理动画轨道、释放 |
+| `toon.js` | 卡通渲染：两段明暗、边缘光、头发高光、描边、脚下的假阴影 |
+| `rig.js` | 辅助骨骼（把手腕、脚踝的「拧」分摊到前臂、小腿）和视线分配（眼 → 头 → 脖子 → 胸） |
+| `face.js` | 表情、眨眼、眼球微跳、口型、说话时的点头和抬眉 |
+| `spring.js` | 悬挂物物理：蝴蝶结、丝带、披风、衣领、耳环、裙子没烘焙的那几段 |
+| `motion.js` | 动作状态机：待机循环、一次性动作、待机时自己做小动作 |
+| `camera.js` | 镜头：全身和半身两个机位、轻微漂移 |
+
+手感和观感的参数都在各文件开头的常量里（`TOON`、`SPRING_PRESETS`、`GAZE`、`FACE`、`MOTION`、`CAM`），按真机上的感觉调。设计思路和模型里查到的数据见 [YUKI_REALISM_PLAN.md](YUKI_REALISM_PLAN.md)。
 
 ## 在「小橘遥控」App 里使用（机器人模式）
 
-App 设置页有「机器人模式 → 打开机器人的脸」。打开后整个屏幕是 Yuki，待命照常进行，连点三下退出。点一下屏幕她会挥手（`hello` 动画）。
+App 设置页有「机器人模式 → 打开机器人的脸」。打开后整个屏幕是 Yuki，待命照常进行，连点三下退出。点一下屏幕开始聊天；闲着的时候点她的头或手，她会有对应的反应（这一下不算开始聊天）。
 
 - GitHub Actions 编译前先运行 `fetch-assets.sh`，从数据集下载两个 glb（约 90 MB，不进仓库），再把 `Robot/live2d` 整个打进 App。数据集要保持公开，否则编译下载会 401。
 - App 用 `yunlai://face/index.html` 打开这个网页（`App/RobotFace.swift`），通过 `window.YunlaiFace.apply(...)` 发消息。
 - 待命收到指令时：拍照 → 观察，并提示「摄像头工作中」；录音 → 倾听，并提示「麦克风工作中」；响铃 → 说话；其他 → 思考。完成后开心一下，口令不对就疑惑。
 - 屏幕底部一直有一行淡淡的「● 待命中 · 设备名」，被远程使用时看得出来。
 - 内存：iPhone 7 Plus 只有 2 GB。贴图最长边缩到 2048（`?tex=1024` 可再小），一次只加载一套衣服，换装时先加载新的再释放旧的。
+- 画质：设置页「机器人模式 → 画质」选「高」或「省电」。省电 = 不描边、不算物理、贴图缩到 1024（网址参数 `outline=0&spring=0&tex=1024`）。
+- 网页进程被系统关掉（多半是内存不够，屏幕会变黑）时，`RobotFace.swift` 会用省电画质自动重新打开，最多 3 次，并在「记录」里写一条。
 
 ### 对话（`App/Talk.swift`）
 
@@ -44,11 +59,31 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
 - 左右 5～90°，上下 5～45°，`center` 回到归位点。云台没连上就告诉她「转不了」，不会装作转了。
 - 每次转动都记在「记录」里（`云台（left 30）：…`）。真机上左右反了就改 `Body.perform` 里的正负号。
 
+### 动作（`Robot/live2d/src/motion.js`）
+
+- 消息 `{"type":"action","name":"dance"}`，页面回 `{"type":"action_done","name":"dance","ok":true}`。`name` 可以是下表的名字，也可以直接是动画名。
+
+| name | 动画 | name | 动画 |
+|---|---|---|---|
+| `wave` | `hello` 挥手 | `dance` | 三个舞蹈里随机一个 |
+| `nod` | `Yes` 点头 | `phone` | 掏出手机敲一会儿（`Tapping_Start/Idle/End` 连着播） |
+| `shake` | `No` 摇头 | `play` | `yuki_play` 打游戏（手柄） |
+| `peace` | `Peace_hand` 比耶 | `read` | `np` 看报纸 |
+| `kiss` | `Kiss` 飞吻 | `popcorn` | `yuki_popcorn_idle` 吃爆米花 |
+| `pose` | `Hand_Pose` | `call` | `Phone_talking` 打电话 |
+| `angry` | `Yuki_Angry_With_Mouth`（只有表情，叠在当前动作上） | `touch_head`、`touch_hand_l/r`、`touch_leg_l/r` | 被摸的反应 |
+
+- 大模型怎么触发：普通模式在回答里写 `[动作 跳舞]`（名字见 `Body.actions`：挥手、点头、摇头、跳舞、比耶、飞吻、生气、玩手机、打游戏、看报纸、吃爆米花）；实时模式调用工具 `play_action(name)`。
+- 自己会做的：待机时每 15～40 秒随机做个小动作；60～120 秒没人理就掏手机、打游戏、看报纸或吃爆米花；情绪变成 `alert` 时做生气的表情；`happy` 时偶尔比耶。开始听人说话时，自己做的小动作会停下来（别人要求的动作会播完）。
+- 不用的动画：`Touch_breast`、`Touch_pants`（不合适）；`Show`、`Hide`、`Hidden`（原作出入场用，从 T 字姿势开始）。
+- 播一次性动作时，视线和头部的叠加降到 30%，避免和动画打架；幅度大的动作（跳舞、道具）镜头保持全身。
+
 ### 换装
 
 - 页面收到 `{"type":"outfit","id":"outfit2"}` 时，加载另一个 glb 换上，旧的释放。`"default"` 是校服（`Yuki_outfit1.glb`）；不认识的 id（比如以前存的 `heibai`、`yeye`）回到校服。
 - App：设置页「机器人模式」里选衣服；或者对她说「换上洋装」「换回校服」（`Store.outfitCommand`，不经过大模型）。
-- 新加一套：把 glb 传到数据集，在 `fetch-assets.sh`、`src/main.js` 的 `OUTFITS`、`App/Store.swift` 的 `Store.outfits` 里各加一行，再重新打包。
+- 新加一套：把 glb 传到数据集，在 `fetch-assets.sh`、`src/avatar.js` 的 `OUTFITS`、`App/Store.swift` 的 `Store.outfits` 里各加一行，再重新打包。物理和辅助骨骼是按「哪些骨骼在所有动画里都不动」自动找的，新衣服不用另外配置。
+- App 打开页面时在网址里带 `outfit=<id>`，直接加载要穿的那套，不用先加载校服再换。
 
 ## 在电脑上调试网页
 
@@ -57,39 +92,65 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
 ```bash
 cd Robot/live2d
 sh fetch-assets.sh     # 下载两个 Yuki 模型到 models/（不放进仓库）
-npm install && npm run build   # 只有改了 src/main.js 才需要；yuki.js 已经提交
+npm install && npm run build   # 只有改了 src/ 才需要；yuki.js 已经提交
+npm test                       # 物理和骨骼的数学测试（node --test）
 python3 -m http.server 8000 -d ..   # 然后打开 http://电脑IP:8000/live2d/
 ```
 
-不带 `?ws=` 打开时自动播放演示。网址参数：`ws=ws://…/ws`（或 `ws=auto`，同一主机的 `/ws`）、`demo=0`、`fps=30|60`、`idle=45`（多少秒没消息回待机）、`tex=贴图最长边上限（默认 2048）`。
+不带 `?ws=` 打开时自动播放演示。网址参数：`ws=ws://…/ws`（或 `ws=auto`，同一主机的 `/ws`）、`demo=0`、`idle=45`（多少秒没消息回待机）、`outfit=outfit2`（一开始穿哪套），以及下面的开关。
+
+### 开关（网址参数）
+
+每个效果都能单独关，真机上卡了可以逐个试。
+
+| 参数 | 默认 | 作用 |
+|---|---|---|
+| `toon` | 1 | 卡通材质；0 回到原来的写实材质加灯光 |
+| `outline` | 1 | 描边；0 不描；2 连顶点特别多的网格（第二套的裙子，4.5 万顶点）也描 |
+| `spring` | 1 | 悬挂物物理 |
+| `helpers` | 1 | 辅助骨骼（扭转分担） |
+| `cam` | 1 | 自动机位和镜头漂移；0 固定全身 |
+| `fidget` | 1 | 待机时自己做小动作 |
+| `tex` | 2048 | 贴图最长边上限 |
+| `fps` | 30 | 帧率上限 |
+| `debug` | 0 | 1 = 左上角显示每帧各部分花的毫秒数、骨骼数、绘制次数 |
+
+没有真机时用无头浏览器看效果：Playwright 的 Chromium 加 `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader`，等 `YunlaiFace.get().loaded`，调用 `YunlaiFace.apply(...)` 后截图。`YunlaiFace._pose('hello', 1.2)` 可以把某个动画定在某一秒。
 
 ## 消息协议（WebSocket 文本帧，JSON）
 
 ```json
-{"type": "robot_state", "state": "speaking", "emotion": "happy", "gaze": {"x": 0.2, "y": -0.1}, "mouth_level": 0.65}
+{"type": "robot_state", "state": "speaking", "emotion": "happy", "gaze": {"x": 0.2, "y": -0.1}, "mouth_level": 0.65, "mouth_bands": [0.5, 0.3, 0.1]}
 ```
 - `state`：`idle` / `listening` / `thinking` / `speaking` / `observing`
 - `emotion`：`neutral` / `happy` / `alert` / `surprised` / `confused`；加 `duration_ms` 表示临时情绪
 - `gaze`：-1 到 1，x 向右为正，y 向下为正
-- `mouth_level`：0 到 1
+- `mouth_level`：0 到 1，管嘴张多大
+- `mouth_bands`：可选，声音低（700 Hz 以下）、中、高（2500 Hz 以上）三个频段的音量。低频占得多是「哦、呜」的圆嘴，高频多是「衣、诶」的扁嘴。不带时嘴型自己慢慢变。实时语音（`Live.swift`）会发；普通对话用的 `AVAudioPlayer` 拿不到波形，只发音量
 
 其他消息：
 - `{"type":"gimbal","yaw":-30,"pitch":0}`：云台角度，角色跟着看过去；`"connected":false` 表示云台断开
 - `{"type":"event","name":"…"}`：`voice_start`、`speech_end`、`answer_start`、`answer_end`、`anomaly`、`person_detected`（带 `x`、`y`）、`idle`
-- `{"type":"speak","url":"…"}`：播放 TTS 音频，库根据真实音量对口型（音频要允许跨域）
+- `{"type":"speak","url":"…"}`：播放 TTS 音频，按真实音量和频段对口型（音频要允许跨域）
+- `{"type":"action","name":"dance"}`：做一个动作，见上面「动作」
+- `{"type":"outfit","id":"outfit2"}`：换装
 - `{"type":"sensing","camera":true,"mic":true}`：屏幕顶部显示「摄像头 / 麦克风工作中」
 
-页面发回 `face_ready`、`touch`、`speak_end`。在 App 的 WKWebView 里也可以直接调用 `window.YunlaiFace.apply({...})`。WebSocket 断线时回到待机，并自动重连。
+页面发回 `face_ready`、`touch`（带 `part`：`head`、`hand_l`、`hand_r`、`body`、`other`）、`speak_end`、`outfit_done`、`action_done`。在 App 的 WKWebView 里也可以直接调用 `window.YunlaiFace.apply({...})`。WebSocket 断线时回到待机，并自动重连。
 
 ## 授权
 
 | 东西 | 授权 | 是否放进仓库 |
 |------|------|------|
 | three.js | MIT | 打包在 `yuki.js` 里 |
-| Yuki 模型 | William 自己的模型，放在公开数据集 | 否，用脚本下载 |
+| Yuki 模型 | **来源和授权还没确认**（以前这里写「William 自己的模型」是 AI 猜的）。自己用问题不大；如果是从别的产品里取出来的，公开发布 App 或公开模型会有版权问题 | 否，用脚本下载 |
 
 ## 还没确认的事
 
-- iPhone 7 Plus（iOS 15）上的流畅度和内存还没实测（3D 比以前的 Live2D 重得多），默认限 30 FPS。头转动的正负号、嘴型大小也要真机上看一眼。
+- iPhone 7 Plus（iOS 15）上的流畅度和内存还没实测，默认限 30 FPS。卡的话先把画质改成「省电」，再用 `?debug=1` 看是哪一部分慢。头转动的正负号、嘴型大小也要真机上看一眼。
+- 卡通渲染的明暗比例、描边粗细、镜头距离是按通用二次元风格调的，没有原作的画面做参照。有录屏或截图后改 `toon.js`、`camera.js` 开头的常量。
+- 物理的软硬、镜头推拉的速度在无头浏览器里看不出手感，要按真机反馈调。
+- 修正骨骼（`…CorrectiveRoot`、`…Off`、`…IN`，膝盖、大腿、手腕处）原作怎么驱动的不知道，现在不动。截图里没看到明显塌陷；真机上看到关节变形再做。
+- 被动画驱动的头发、裙子没有加物理（飘动已经烘焙在动画里）。我们叠加的转头不会带动头发，幅度小，暂时没处理。
 - 云台已经接上（`App/Gimbal.swift`，大疆 OM6）：App 连着云台时每秒把朝向发给脸，远程用 `gimbal` 指令转。
   真机上还没一起试过：脸的左右方向如果和云台转的方向反了，改 `RemoteEngine` 里发 `gimbal` 消息的正负号。

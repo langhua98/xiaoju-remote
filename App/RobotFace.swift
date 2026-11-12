@@ -74,7 +74,8 @@ struct RobotModeView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             Color.black.ignoresSafeArea()
-            FaceWebView(face: engine.face, onMessage: handle).ignoresSafeArea()
+            FaceWebView(face: engine.face, query: "&outfit=\(store.outfit)" + Store.faceQuery(quality: store.faceQuality),
+                        onMessage: handle, onCrash: crashed).ignoresSafeArea()
             StatusLine(talk: engine.talk, live: engine.talk.live, prefix: engine.running ? "● 待命中 · \(store.device)" : "○ 未待命")
                 .font(.caption2)
                 .foregroundColor(.white.opacity(0.35))
@@ -93,7 +94,14 @@ struct RobotModeView: View {
         }
     }
 
+    /// 网页进程被系统关掉（多半是内存不够）后已经用省电画质重新打开：记一笔，把衣服再发一次
+    private func crashed() {
+        engine.record("画面进程被系统关掉了（多半是内存不够），已用省电画质重新打开")
+        engine.face.send(["type": "outfit", "id": store.outfit])
+    }
+
     /// 点一下：说话 / 打断；连点三下：退出。等 0.45 秒看还有没有下一下，避免两种操作打架。
+    /// 闲着的时候点到她的头或手（消息里的 part），她自己会有反应，这一下不算「开始聊天」。
     private func handle(_ msg: [String: Any]) {
         if (msg["type"] as? String) == "outfit_done" {
             let id = msg["id"] as? String ?? ""
@@ -102,6 +110,8 @@ struct RobotModeView: View {
             return
         }
         guard (msg["type"] as? String) == "touch" else { return }
+        let part = msg["part"] as? String ?? ""
+        let petting = ["head", "hand_l", "hand_r"].contains(part) && engine.talk.phase == .idle && engine.talk.live.phase == .off
         let now = Date()
         taps = taps.filter { now.timeIntervalSince($0) < 1.2 } + [now]
         if taps.count >= 3 {
@@ -115,7 +125,7 @@ struct RobotModeView: View {
         let gen = tapGen
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
             guard gen == tapGen else { return }
-            if taps.count == 1 { engine.talk.tap() }
+            if taps.count == 1 && !petting { engine.talk.tap() }
             taps = []
         }
     }
@@ -150,9 +160,16 @@ private struct StatusLine: View {
 /// WKWebView 用自定义的 yunlai:// 地址读 App 里的网页文件，这样模型、贴图都算同源，不会被浏览器拦。
 struct FaceWebView: UIViewRepresentable {
     let face: FaceBridge
+    /// 加在网址后面的参数（穿哪套衣服、画质），比如 "&outfit=outfit2&outline=0"
+    var query: String = ""
     var onMessage: ([String: Any]) -> Void
+    var onCrash: () -> Void = {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(face: face, onMessage: onMessage) }
+    func makeCoordinator() -> Coordinator { Coordinator(face: face, onMessage: onMessage, onCrash: onCrash) }
+
+    static func pageURL(_ query: String) -> URL? {
+        URL(string: "\(BundleSchemeHandler.scheme)://face/index.html?demo=0\(query)")
+    }
 
     func makeUIView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -168,7 +185,7 @@ struct FaceWebView: UIViewRepresentable {
         w.scrollView.isScrollEnabled = false
         w.scrollView.contentInsetAdjustmentBehavior = .never
         w.navigationDelegate = context.coordinator
-        if let url = URL(string: "\(BundleSchemeHandler.scheme)://face/index.html?demo=0") {
+        if let url = Self.pageURL(query) {
             w.load(URLRequest(url: url))
         }
         return w
@@ -176,6 +193,7 @@ struct FaceWebView: UIViewRepresentable {
 
     func updateUIView(_ uiView: WKWebView, context: Context) {
         context.coordinator.onMessage = onMessage
+        context.coordinator.onCrash = onCrash
     }
 
     static func dismantleUIView(_ uiView: WKWebView, coordinator: Coordinator) {
@@ -187,10 +205,14 @@ struct FaceWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         let face: FaceBridge
         var onMessage: ([String: Any]) -> Void
+        var onCrash: () -> Void
+        private var crashes = 0
+        private var reloading = false
 
-        init(face: FaceBridge, onMessage: @escaping ([String: Any]) -> Void) {
+        init(face: FaceBridge, onMessage: @escaping ([String: Any]) -> Void, onCrash: @escaping () -> Void) {
             self.face = face
             self.onMessage = onMessage
+            self.onCrash = onCrash
         }
 
         func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -199,6 +221,20 @@ struct FaceWebView: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             face.pageLoaded(webView)
+            if reloading {
+                reloading = false
+                onCrash()
+            }
+        }
+
+        /// 网页进程被系统关掉（iPhone 7 Plus 只有 2 GB 内存，模型加贴图吃紧时会这样）：
+        /// 屏幕会变成一片黑。用省电画质重新打开，最多试 3 次。
+        func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+            face.pageClosed()
+            crashes += 1
+            guard crashes <= 3, let url = FaceWebView.pageURL(Store.faceQuery(quality: "low")) else { return }
+            reloading = true
+            webView.load(URLRequest(url: url))
         }
     }
 }
@@ -238,6 +274,7 @@ final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
         case "json": return "application/json"
         case "png": return "image/png"
         case "jpg", "jpeg": return "image/jpeg"
+        case "glb": return "model/gltf-binary"
         default: return "application/octet-stream"
         }
     }

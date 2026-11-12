@@ -3,6 +3,7 @@ import Foundation
 /// 让大模型控制机器人的身体（大疆 OM 云台，见 Gimbal.swift）。
 /// - 普通模式（DeepSeek）：回答里写动作标签 [左转 30] [右转 30] [抬头 15] [低头 15] [回正]，App 照着转，标签不念出来。
 /// - 实时模式（Gemini Live）：工具调用 move_gimbal(direction, degrees)，转完把结果告诉模型。
+/// 同样的办法也用来换衣服（[换装 洋装] / change_outfit）和让 3D 角色做动作（[动作 跳舞] / play_action）。
 /// 方向：左 / 右按 Gimbal 的 yaw 负 / 正，上 / 下按 pitch 正 / 负（Gimbal 会自己学正负号；真机上反了就改这里）。
 enum Body {
     static let personaForTags = """
@@ -10,14 +11,30 @@ enum Body {
     [左转 30] [右转 30] [抬头 15] [低头 15] [回正]
     数字是度数，左右 5～90，上下 5～45。比如主人说「往左边看看」，你回答「好，我看看左边。[左转 45]」。不需要转的时候不要写标签，标签不会被念出来。
     你还能换衣服：主人让你换衣服时写 [换装 衣服名]，衣服名只能是：\(outfitNames)。比如「好呀，换上啦。[换装 洋装]」。
+    你有一个 3D 的身体，能做动作：写 [动作 名字]，名字只能是：\(actionNames)。主人让你跳舞、挥手、比耶时就做；平时表示同意可以 [动作 点头]，不同意可以 [动作 摇头]，一次回答最多一个动作，不要每句都做。
     """
 
     static let personaForTool = """
     你能控制自己的身体：手机夹在大疆云台上，云台能左右转、上下抬头低头。主人让你转身、转头、看某个方向、抬头低头、回到正面时，调用 move_gimbal 工具真的去转，再告诉主人转好了。
     你还能换衣服：主人让你换衣服时调用 change_outfit 工具，衣服名只能是：\(outfitNames)；主人没说换哪套就换一套和现在不一样的。
+    你有一个 3D 的身体，能做动作：主人让你跳舞、挥手、比耶、点头、摇头等时，调用 play_action 工具，动作名只能是：\(actionNames)。
     """
 
     static var outfitNames: String { Store.outfits.map { $0.name }.joined(separator: "、") }
+
+    /// 3D 角色会做的动作：中文名 → 发给脸的名字（见 Robot/live2d/src/motion.js 的 ACTIONS）
+    static let actions: [(name: String, id: String)] = [
+        ("挥手", "wave"), ("点头", "nod"), ("摇头", "shake"), ("跳舞", "dance"), ("比耶", "peace"), ("飞吻", "kiss"),
+        ("生气", "angry"), ("玩手机", "phone"), ("打游戏", "play"), ("看报纸", "read"), ("吃爆米花", "popcorn"),
+    ]
+    static var actionNames: String { actions.map { $0.name }.joined(separator: "、") }
+
+    /// 动作的中文名（或者直接是 id）→ 发给脸的名字；不认识返回 nil
+    static func actionID(named raw: String) -> String? {
+        let text = Store.simplified(raw)
+        if let a = actions.first(where: { $0.id == text.lowercased() }) { return a.id }
+        return actions.first { text.contains($0.name) }?.id
+    }
 
     /// 给 Gemini Live 的工具声明
     static let toolDeclaration: [String: Any] = [
@@ -43,10 +60,29 @@ enum Body {
                 ],
                 "required": ["name"],
             ],
+        ], [
+            "name": "play_action",
+            "description": "让机器人的 3D 身体做一个动作：挥手、点头、摇头、跳舞、比耶等。",
+            "parameters": [
+                "type": "OBJECT",
+                "properties": [
+                    "name": ["type": "STRING", "enum": actions.map { $0.name }, "description": "动作名"],
+                ],
+                "required": ["name"],
+            ],
         ]],
     ]
 
     private static let outfitPattern = #"\[\s*换装\s*[:：]?\s*([^\]]+?)\s*\]"#
+
+    private static let actionPattern = #"\[\s*动作\s*[:：]?\s*([^\]]+?)\s*\]"#
+
+    /// 回答里的动作标签 → 动作名
+    static func actionTags(in text: String) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: actionPattern) else { return [] }
+        let ns = text as NSString
+        return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range(at: 1)) }
+    }
 
     /// 回答里的换装标签 → 衣服名
     static func outfitTags(in text: String) -> [String] {
@@ -76,6 +112,7 @@ enum Body {
     static func strip(_ text: String) -> String {
         text.replacingOccurrences(of: tagPattern, with: "", options: .regularExpression)
             .replacingOccurrences(of: outfitPattern, with: "", options: .regularExpression)
+            .replacingOccurrences(of: actionPattern, with: "", options: .regularExpression)
     }
 
     /// 真的去转。返回一句给模型 / 记录看的结果

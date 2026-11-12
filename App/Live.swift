@@ -240,6 +240,15 @@ final class LiveTalk: NSObject, ObservableObject {
                     result = "没有这套衣服，只有：\(Body.outfitNames)"
                 }
                 self.log("换装（工具）：\(result)")
+            } else if name == "play_action" {
+                let want = (args["name"] as? String) ?? ""
+                if let action = Body.actionID(named: want) {
+                    self.face.send(["type": "action", "name": action])
+                    result = "正在做：\(want)"
+                } else {
+                    result = "不会这个动作，只会：\(Body.actionNames)"
+                }
+                self.log("动作（工具）：\(result)")
             } else if name == "move_gimbal" {
                 let dir = (args["direction"] as? String) ?? "center"
                 let deg = (args["degrees"] as? NSNumber)?.doubleValue
@@ -367,10 +376,10 @@ final class LiveTalk: NSObject, ObservableObject {
         input.installTap(onBus: 0, bufferSize: 2048, format: inFormat) { buf, _ in pipe.push(buf) }
         // 嘴型：量正在播放的声音有多大
         let meter = LevelMeter()
-        meter.onLevel = { [weak self] level in
+        meter.onLevel = { [weak self] level, bands in
             Task { @MainActor in
                 guard let self = self, self.phase == .speaking else { return }
-                self.face.send(["type": "robot_state", "mouth_level": Double(level)])
+                self.face.send(["type": "robot_state", "mouth_level": Double(level), "mouth_bands": bands.map { Double($0) }])
             }
         }
         e.mainMixerNode.installTap(onBus: 0, bufferSize: 1024, format: nil) { buf, _ in meter.push(buf) }
@@ -531,16 +540,33 @@ final class MicPipe {
 
 /// 算一段声音的音量（0…1），大约每 60 毫秒报一次
 final class LevelMeter {
-    var onLevel: ((Float) -> Void)?
+    /// 音量（0～1）和低、中、高三个频段的音量（约 700 Hz 以下、700～2500 Hz、2500 Hz 以上）。
+    /// 频段给脸分口型用：低频多是「哦、呜」的圆嘴，高频多是「衣、诶」的扁嘴。
+    var onLevel: ((Float, [Float]) -> Void)?
     private var last = Date.distantPast
 
     func push(_ buf: AVAudioPCMBuffer) {
         guard Date().timeIntervalSince(last) > 0.06, let ch = buf.floatChannelData?[0], buf.frameLength > 0 else { return }
         last = Date()
-        var sum: Float = 0
         let n = Int(buf.frameLength)
-        for i in 0..<n { sum += ch[i] * ch[i] }
-        let rms = (sum / Float(n)).squareRoot()
-        onLevel?(min(1, rms * 6))
+        let rate = Float(buf.format.sampleRate > 0 ? buf.format.sampleRate : 24000)
+        // 两个一阶低通把声音分成三段，不用傅里叶变换
+        let k1 = 1 - exp(-2 * Float.pi * 700 / rate)
+        let k2 = 1 - exp(-2 * Float.pi * 2500 / rate)
+        var lp1: Float = 0, lp2: Float = 0
+        var sum: Float = 0, low: Float = 0, mid: Float = 0, high: Float = 0
+        for i in 0..<n {
+            let x = ch[i]
+            lp1 += k1 * (x - lp1)
+            lp2 += k2 * (x - lp2)
+            sum += x * x
+            low += lp1 * lp1
+            mid += (lp2 - lp1) * (lp2 - lp1)
+            high += (x - lp2) * (x - lp2)
+        }
+        let scale = 1 / Float(n)
+        let rms = (sum * scale).squareRoot()
+        let bands = [low, mid, high].map { min(1, ($0 * scale).squareRoot() * 6) }
+        onLevel?(min(1, rms * 6), bands)
     }
 }

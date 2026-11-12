@@ -120,7 +120,7 @@
 | `App/RemoteEngine.swift` | 待命循环；执行遥控指令时通知脸；把云台朝向发给脸 |
 | `App/Store.swift` | 设置（UserDefaults + 钥匙串备份；令牌、口令、API 密钥只存钥匙串） |
 | `App/ContentView.swift` | 设置页：云盘、设备、对话、云台、声音、机器人模式入口 |
-| `Robot/live2d/` | Yuki 3D 网页：`src/main.js` 是接入层，`yuki.js` 是打包结果 |
+| `Robot/live2d/` | Yuki 3D 网页：`src/` 是我们的代码（卡通渲染、物理、表情、动作、镜头），`yuki.js` 是打包结果 |
 | `Robot/live2d/fetch-assets.sh` | 下载两个 Yuki 模型 glb（不进仓库） |
 | `Robot/README.md` | 脸和对话的详细说明、消息协议 |
 | `Tests/main.swift` | 云台协议自测（编译前跑） |
@@ -133,8 +133,9 @@
 ### 5.1 脸（Yuki 3D）
 
 - 角色：**Yuki**（数据集 `langhua1998/yuki-model`），`Yuki_outfit1.glb` 和 `Yuki_outfit2.glb` 是同一角色的两套衣服。带 ARKit 52 个表情形变、骨骼和自带动画。
-- 显示：**three.js**（MIT，`GLTFLoader`）。待机动作用模型自带的 `idle`，听你说话时切 `Yuki_Idle_listening_v3`。
-- 我们只写了接入层 `Robot/live2d/src/main.js`：把 `robot_state` 等消息翻译成表情形变（眨眼、微笑、`jawOpen` 嘴型）和头部转动。
+- 显示：**three.js**（MIT，`GLTFLoader`）加自己写的卡通着色（两段明暗、边缘光、描边）。待机动作用模型自带的 `idle`，听你说话时切 `Yuki_Idle_listening_v3`；还会挥手、点头、跳舞、掏手机等（25 个自带动画），大模型可以用 `[动作 跳舞]` 或工具触发。
+- 蝴蝶结、丝带、披风等悬挂物有实时物理；视线按 眼 → 头 → 脖子 → 胸 分配；聊天时镜头推到半身。细节见 `Robot/README.md`。
+- `Robot/live2d/src/main.js` 把 `robot_state` 等消息翻译成表情形变（眨眼、微笑、口型）和视线。
 - 打包：`npm run build` 用 esbuild 打成一个 `yuki.js`（目标 Safari 15，iOS 15 不支持 import map）。
 - App 里：`project.yml` 把 `Robot/live2d` 整个文件夹打进 App，`RobotFace.swift` 用自定义地址 `yunlai://face/index.html?demo=0` 打开，这样模型、贴图都算同源，不会被 WebKit 拦。
 
@@ -296,7 +297,7 @@ swiftc App/Duml.swift Tests/main.swift -o dumlcheck && ./dumlcheck   # 云台协
 | 东西 | 授权 | 进不进仓库 |
 |---|---|---|
 | three.js | MIT | 打包在 `yuki.js` 里 |
-| Yuki 模型 | William 自己的，公开数据集 | 不进，编译时下载 |
+| Yuki 模型 | 来源和授权还没确认，公开数据集 | 不进，编译时下载 |
 | Kokoro-82M-v1.1-zh | Apache-2.0 | 在 Space 镜像里 |
 | MeloTTS（vits-melo-tts-zh_en） | MIT | 在 Space 镜像里 |
 | AIRI（参考了思路和默认角色） | MIT | 没有直接用代码 |
