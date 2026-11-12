@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Vector3, Bone, Quaternion } from 'three';
-import { verletStep, constrainLength, pushOutSphere, pushOutCapsule, findSpringBones, SpringSystem, STEP } from '../src/spring.js';
+import { limitAngle, verletStep, constrainLength, pushOutSphere, pushOutCapsule, findSpringBones, SpringSystem, STEP } from '../src/spring.js';
 
 const P = { stiffness: 1.2, drag: 0.4, gravity: 0, radius: 0.01 };
 
@@ -82,7 +82,8 @@ test('裙子跟着动画走：动画姿势变了，裙子带着惯性追过去�
   anim.setFromAxisAngle(new Vector3(1, 0, 0), -0.8);   // 动画突然摆到另一边
   step();
   const lag = b.quaternion.angleTo(anim);
-  assert.ok(lag > 0.3, `应该带着惯性慢一拍，实际只差 ${lag}`);
+  assert.ok(lag > 0.02, `应该带着惯性慢一拍，实际只差 ${lag}`);
+  assert.ok(lag < 0.13, `两节加起来偏离动画不能超过两倍上限（上限 0.06 弧度），实际 ${lag}`);
   for (let i = 0; i < 200; i++) step();
   assert.ok(b.quaternion.angleTo(anim) < 0.1, `最后要回到动画的样子附近，还差 ${b.quaternion.angleTo(anim)}`);
 });
@@ -119,4 +120,15 @@ test('原姿势就在碰撞体里的骨骼，不和那个碰撞体算碰撞', ()
   for (let i = 0; i < 30; i++) sys.update(1 / 30);
   assert.ok(a.quaternion.angleTo(rest) < 0.2);
   assert.ok(new Quaternion().copy(a.quaternion).length() > 0.99);
+});
+
+test('偏离上限：超过了拉回到上限，没超过不动', () => {
+  const center = new Vector3(0, 1, 0), dir = new Vector3(0, -1, 0);
+  const cur = new Vector3(0.1, 1, 0), prev = cur.clone();   // 偏了 90°
+  assert.equal(limitAngle(cur, prev, center, dir, 0.1, 0.2), true);
+  const d = cur.clone().sub(center);
+  assert.ok(Math.abs(d.length() - 0.1) < 1e-9);
+  assert.ok(Math.abs(d.normalize().angleTo(dir) - 0.2) < 1e-6);
+  const ok = new Vector3(0.005, 0.9, 0);
+  assert.equal(limitAngle(ok, ok.clone(), center, dir, 0.1, 0.2), false);
 });

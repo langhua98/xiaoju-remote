@@ -10,9 +10,12 @@ import { Vector3, Quaternion, Matrix4 } from 'three';
 
 // 手感参数集中在这里，按真机反馈调。stiffness 回弹、drag 阻力（0～1）、gravity 重力，radius 是碰撞半径（米）
 export const SPRING_PRESETS = [
-  [/skirt/i, { stiffness: 1.1, drag: 0.45, gravity: 0.12, radius: 0.02 }],
+  // 注意顺序：从上往下第一个对上的生效。「跟着动画走」的要排在最前面（名字是 follow:骨骼名）
   // 裙子跟着动画走时用这一组：回弹要强一点，不然会离动画的样子太远；重力小一点，动画里已经是垂着的
-  [/^follow:/, { stiffness: 5.0, drag: 0.55, gravity: 0.05, radius: 0.012 }],
+  // limit：最多偏离动画姿势多少弧度。动画里的裙子是照着不穿模摆的，物理偏多了大腿就会从裙子里露出来，
+  // 所以只让每一节在动画姿势附近小幅度晃（约 3.5°，一条链七八节，加起来裙摆末端能晃二十多度）；重力也不加，动画里已经是垂着的。
+  [/^follow:/, { stiffness: 5.0, drag: 0.55, gravity: 0, radius: 0.012, limit: 0.06 }],
+  [/skirt/i, { stiffness: 1.1, drag: 0.45, gravity: 0.12, radius: 0.02 }],
   [/cape/i, { stiffness: 1.0, drag: 0.45, gravity: 0.1, radius: 0.02 }],
   [/ribbon/i, { stiffness: 2.2, drag: 0.6, gravity: 0.25, radius: 0.012 }],   // 长丝带太软会甩到身前，收紧一些
   [/bow/i, { stiffness: 1.6, drag: 0.4, gravity: 0.05, radius: 0.012 }],
@@ -51,6 +54,20 @@ export function constrainLength(p, center, len, fallbackDir) {
   if (d < 1e-8) return p.copy(center).addScaledVector(fallbackDir, len);
   const s = len / d;
   return p.set(center.x + dx * s, center.y + dy * s, center.z + dz * s);
+}
+
+const _d = new Vector3(), _perp = new Vector3();
+/// 末端偏离原方向超过 max（弧度）就拉回到 max 的位置，并把速度收掉一半（prev 往 cur 靠）
+export function limitAngle(cur, prev, center, restDir, len, max) {
+  _d.subVectors(cur, center).normalize();
+  const cos = _d.dot(restDir);
+  if (cos >= Math.cos(max)) return false;
+  _perp.copy(_d).addScaledVector(restDir, -cos);
+  if (_perp.lengthSq() < 1e-12) { cur.copy(center).addScaledVector(restDir, len); prev.copy(cur); return true; }
+  _perp.normalize();
+  cur.copy(center).addScaledVector(restDir, len * Math.cos(max)).addScaledVector(_perp, len * Math.sin(max));
+  prev.lerp(cur, 0.5);
+  return true;
 }
 
 /// 点在球里就推到球面上。返回有没有推
@@ -136,7 +153,8 @@ export class SpringSystem {
       const tail = child ? child.position.clone() : bone.position.clone().normalize().multiplyScalar(0.05);
       if (tail.lengthSq() < 1e-10) tail.set(0, 0.05, 0);
       const followAnim = !isStatic(bone);
-      const p = followAnim ? presetFor('follow:' + bone.name) : presetFor(bone.name);
+      // 裙子整条链都用「跟着动画走」的参数（裙腰那一节没有动画，但它一晃整片裙子都跟着歪）
+      const p = followAnim || FOLLOW.test(bone.name) ? presetFor('follow:' + bone.name) : presetFor(bone.name);
       return {
         bone, p, followAnim, restQ: bone.quaternion.clone(), axis: tail.clone().normalize(), localLen: tail.length(),
         cur: new Vector3(), prev: new Vector3(), ignore: null,
@@ -208,6 +226,7 @@ export class SpringSystem {
         if (hit) constrainLength(_next, _center, len, _dir);
         j.prev.copy(j.cur); j.cur.copy(_next);
       }
+      if (j.p.limit) limitAngle(j.cur, j.prev, _center, _dir, len, j.p.limit);
       // 末端方向 → 骨骼的局部转动
       _mi.copy(_m).invert();
       _b.copy(j.cur).applyMatrix4(_mi).normalize();
