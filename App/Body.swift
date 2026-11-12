@@ -31,7 +31,47 @@ enum Body {
     static let actions: [(name: String, id: String)] = [
         ("挥手", "wave"), ("点头", "nod"), ("摇头", "shake"), ("跳舞", "dance"), ("比耶", "peace"), ("飞吻", "kiss"),
         ("生气", "angry"), ("玩手机", "phone"), ("打游戏", "play"), ("看报纸", "read"), ("吃爆米花", "popcorn"),
+        ("摆姿势", "pose"), ("打电话", "call"), ("边吃边聊", "Popcorn_talking"),
+        ("慢舞", "dance_90bpm"), ("快舞", "dance_120bpm"), ("律动", "f_vibe_dance_60_bpm_002"),
+        ("摸头", "touch_head"), ("摸左手", "touch_hand_l"), ("摸右手", "touch_hand_r"), ("摸左腿", "touch_leg_l"), ("摸右腿", "touch_leg_r"),
     ]
+
+    /// 聊天框左边快捷菜单的全部内容，也是能直接打字执行的全部短指令（打名字就行，不问大模型）。
+    /// 每一项：名字 + 发给脸的消息；msg 是 nil 的当成一句话交给 Talk（换装）。
+    static let menu: [(title: String, items: [(name: String, msg: [String: Any]?)])] = {
+        func act(_ names: [String]) -> [(name: String, msg: [String: Any]?)] {
+            names.map { n in (n, ["type": "action", "name": actions.first { $0.name == n }?.id ?? n]) }
+        }
+        func emo(_ name: String, _ id: String) -> (name: String, msg: [String: Any]?) {
+            (name, id == "neutral" ? ["type": "robot_state", "emotion": id] : ["type": "robot_state", "emotion": id, "duration_ms": 5000])
+        }
+        return [
+            ("动作", act(["挥手", "点头", "摇头", "比耶", "飞吻", "摆姿势", "生气"])),
+            ("舞蹈", act(["跳舞", "慢舞", "快舞", "律动"])),
+            ("道具", act(["玩手机", "打电话", "打游戏", "看报纸", "吃爆米花", "边吃边聊"])),
+            ("互动", act(["摸头", "摸左手", "摸右手", "摸左腿", "摸右腿"])),
+            ("表情", [emo("开心", "happy"), emo("惊讶", "surprised"), emo("疑惑", "confused"), emo("警觉", "alert"), emo("平静", "neutral")]),
+            ("镜头", shots.map { s in (s.name, ["type": "view", "shot": s.id]) } + [
+                ("正面", ["type": "view", "orbit": 0, "tilt": 0]),
+                ("左侧", ["type": "view", "orbit": -45]), ("右侧", ["type": "view", "orbit": 45]),
+                ("背面", ["type": "view", "orbit": 180]),
+                ("俯视", ["type": "view", "tilt": 25]), ("仰视", ["type": "view", "tilt": -15]), ("平视", ["type": "view", "tilt": 0]),
+            ]),
+            ("转身", [
+                ("向左转", ["type": "turn", "yaw": 90]), ("向右转", ["type": "turn", "yaw": -90]),
+                ("左转一点", ["type": "turn", "by": 30]), ("右转一点", ["type": "turn", "by": -30]),
+                ("背对", ["type": "turn", "yaw": 180]), ("转回来", ["type": "turn", "yaw": 0]),
+            ]),
+            ("视线", [
+                ("看左边", ["type": "look", "x": -0.9, "y": 0, "ms": 8000]), ("看右边", ["type": "look", "x": 0.9, "y": 0, "ms": 8000]),
+                ("看上面", ["type": "look", "x": 0, "y": -0.9, "ms": 8000]), ("看下面", ["type": "look", "x": 0, "y": 0.9, "ms": 8000]),
+                ("看我", ["type": "look", "free": true]),
+            ]),
+            ("换装", outfitsMenu),
+            ("其他", [("停下", ["type": "action", "name": "stop"]), ("重置", ["type": "reset"])]),
+        ]
+    }()
+    private static var outfitsMenu: [(name: String, msg: [String: Any]?)] { Store.outfits.map { ("换上" + $0.name, nil) } }
     static var actionNames: String { actions.map { $0.name }.joined(separator: "、") }
 
     /// 镜头的景别：中文名 → 发给脸的名字（见 Robot/live2d/src/camera.js 的 SHOTS）
@@ -66,6 +106,10 @@ enum Body {
     static func quickCommand(_ raw: String) -> (msg: [String: Any], label: String)? {
         var t = Store.simplified(raw)
         if t.hasPrefix("/") || t.hasPrefix("／") { t.removeFirst() }
+        // 快捷菜单里的名字，原样打出来就执行
+        for group in menu {
+            if let item = group.items.first(where: { $0.name == t }), let msg = item.msg { return (msg, "\(group.title)：\(item.name)") }
+        }
         if ["重置", "复位", "回到默认"].contains(t) { return (["type": "reset"], "回到默认") }
         if let a = actions.first(where: { $0.name == t || $0.id == t.lowercased() }) {
             return (["type": "action", "name": a.id], "动作：\(a.name)")

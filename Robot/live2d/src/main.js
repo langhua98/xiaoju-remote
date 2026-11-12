@@ -69,6 +69,8 @@ function apply(msg) {
     if (msg.name === 'person_detected') { S.gaze = { x: clamp(+msg.x || 0, -1, 1), y: clamp(+msg.y || 0, -1, 1), at: t }; act('wave'); }
   } else if (type === 'action') {
     // {"type":"action","name":"dance"}：name 是 wave、nod、shake、dance、peace、kiss、angry、phone、play、read… 或者动画名
+    // name 是 stop：停下正在做的动作
+    if (msg.name === 'stop') { if (avatar) avatar.motion.stopAction(); send({ type: 'action_done', name: 'stop', ok: true }); return true; }
     const ok = act(String(msg.name || ''), true);
     send({ type: 'action_done', name: String(msg.name || ''), ok });
     return ok;

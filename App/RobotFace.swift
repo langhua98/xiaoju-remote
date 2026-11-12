@@ -261,20 +261,15 @@ private struct ChatBar: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // 快捷菜单：Body.menu 里的全部短指令，按类分成子菜单，点一下就执行
             Menu {
-                Section("动作") {
-                    ForEach(RobotBody.actions, id: \.id) { a in Button(a.name) { talk.typed(a.name) } }
+                ForEach(RobotBody.menu.indices, id: \.self) { g in
+                    Menu(RobotBody.menu[g].title) {
+                        ForEach(RobotBody.menu[g].items.indices, id: \.self) { i in
+                            Button(RobotBody.menu[g].items[i].name) { talk.typed(RobotBody.menu[g].items[i].name) }
+                        }
+                    }
                 }
-                Section("镜头") {
-                    ForEach(RobotBody.shots, id: \.id) { s in Button(s.name) { talk.typed(s.name) } }
-                }
-                Section("转身") {
-                    Button("向左转") { talk.typed("转身 左 90") }
-                    Button("向右转") { talk.typed("转身 右 90") }
-                    Button("背对") { talk.typed("背对") }
-                    Button("转回来") { talk.typed("转回来") }
-                }
-                Button("全部回到默认") { talk.typed("重置") }
             } label: {
                 icon("sparkles")
             }
