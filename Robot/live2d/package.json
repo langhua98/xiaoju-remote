@@ -1,10 +1,12 @@
 {
   "name": "yunlai-yuki",
   "private": true,
-  "description": "Yunlai Robot 的 3D 角色（Yuki）：three.js + GLTFLoader，这里只有接入代码",
+  "type": "module",
+  "description": "Yunlai Robot 的 3D 角色（Yuki）：three.js + GLTFLoader，卡通渲染、悬挂物物理、动作状态机",
   "scripts": {
     "fetch": "sh fetch-assets.sh",
-    "build": "esbuild src/main.js --bundle --minify --format=iife --target=safari15 --legal-comments=eof --outfile=yuki.js"
+    "build": "esbuild src/main.js --bundle --minify --format=iife --target=safari15 --legal-comments=eof --outfile=yuki.js",
+    "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
     "three": "0.160.1"

@@ -1,56 +1,44 @@
-// Yunlai Robot 的 3D 面部/身体（Yuki）：接入层。
-// 角色是 GLB（models/Yuki_outfit1.glb、Yuki_outfit2.glb，同一个角色两套衣服，由 fetch-assets.sh 下载）：
-// ARKit 52 个表情形变（eyeBlinkLeft、jawOpen…）+ 骨骼 + 自带动画（idle、Yuki_Idle_listening_v3、hello、Yes、No…）。
-// 显示和动画交给 three.js，这里只做两件事：把说明书里的 robot_state 消息翻译成表情形变和头部朝向；连 WebSocket。
+// Yunlai Robot 的 3D 角色（Yuki）：入口。配置、消息、主循环；其余在同目录的模块里：
+//   avatar.js 加载和换装   toon.js 卡通渲染   rig.js 辅助骨骼和视线   face.js 表情和口型
+//   spring.js 悬挂物物理   motion.js 动作状态机   camera.js 机位
+// 每帧的顺序不能乱：状态机 → 动画 → 辅助骨骼 → 视线 → 表情 → 物理 → 镜头 → 渲染。
 import * as THREE from 'three';
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { OUTFITS, loadAvatar, disposeAvatar } from './avatar.js';
+import { updateToon, makeGroundShadow } from './toon.js';
+import { Face, STATES, EMOTIONS } from './face.js';
+import { CameraRig } from './camera.js';
+import { ACTIONS } from './motion.js';
 
-// ───────── 配置（网址参数） ─────────
+// ───────── 配置（网址参数），每个新功能都能单独关掉 ─────────
 const Q = new URLSearchParams(location.search);
 const wsParam = Q.get('ws');
+const flag = (k, d) => (Q.has(k) ? Number(Q.get(k)) : d);
 const CFG = {
   ws: wsParam === 'auto' ? (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws' : wsParam || '',
   demo: Q.has('demo') ? Q.get('demo') !== '0' : !wsParam,
   fps: Number(Q.get('fps')) || 30,
   idleAfter: (Number(Q.get('idle')) || 45) * 1000,
   tex: Number(Q.get('tex')) || 2048,   // 贴图最长边上限（iPhone 内存小，大图缩小）
+  toon: flag('toon', 1),       // 卡通材质；0 回到标准材质
+  outline: flag('outline', 1), // 描边；2 = 连顶点特别多的裙子也描
+  spring: flag('spring', 1),   // 悬挂物物理
+  helpers: flag('helpers', 1), // 辅助骨骼
+  cam: flag('cam', 1),         // 自动机位
+  fidget: flag('fidget', 1),   // 待机时自己做小动作
+  debug: flag('debug', 0),     // 调试面板
 };
-
-// 衣服 id → 模型文件。default 是第一套；以前存的旧 id（heibai、yeye）也回到第一套
-const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yuki_outfit2.glb' };
-
-// ───────── 状态和情绪 → 表情形变（ARKit 名字，0～1） ─────────
-// head：头的额外转动（弧度，yaw 正 = 向屏幕右，pitch 正 = 低头，roll 正 = 向屏幕右歪）
-const STATES = {
-  idle: {},
-  listening: { browInnerUp: 0.3, eyeWideLeft: 0.15, eyeWideRight: 0.15, head: { roll: 0.08 } },
-  thinking: { mouthPressLeft: 0.3, mouthPressRight: 0.3, browDownLeft: 0.2, browOuterUpRight: 0.3, mouthLeft: 0.2, head: { roll: -0.1, pitch: -0.05 } },
-  speaking: {},
-  observing: { browDownLeft: 0.15, browDownRight: 0.15, eyeSquintLeft: 0.15, eyeSquintRight: 0.15 },
-};
-const EMOTIONS = {
-  neutral: {},
-  happy: { mouthSmileLeft: 0.85, mouthSmileRight: 0.85, cheekSquintLeft: 0.45, cheekSquintRight: 0.45, eyeSquintLeft: 0.3, eyeSquintRight: 0.3 },
-  alert: { browDownLeft: 0.7, browDownRight: 0.7, eyeWideLeft: 0.35, eyeWideRight: 0.35, mouthFrownLeft: 0.25, mouthFrownRight: 0.25 },
-  surprised: { browInnerUp: 0.8, browOuterUpLeft: 0.6, browOuterUpRight: 0.6, eyeWideLeft: 0.7, eyeWideRight: 0.7, jawOpen: 0.3 },
-  confused: { browDownLeft: 0.6, browOuterUpRight: 0.6, mouthFrownLeft: 0.3, mouthFrownRight: 0.1, mouthLeft: 0.3, head: { roll: 0.18 } },
-};
-const SHAPES = [...new Set([...Object.values(STATES), ...Object.values(EMOTIONS)].flatMap((o) => Object.keys(o)))].filter((k) => k !== 'head');
-const DRIVEN = [...new Set([...SHAPES, 'jawOpen', 'mouthFunnel', 'eyeBlinkLeft', 'eyeBlinkRight',
-  'eyeLookInLeft', 'eyeLookInRight', 'eyeLookOutLeft', 'eyeLookOutRight', 'eyeLookUpLeft', 'eyeLookUpRight', 'eyeLookDownLeft', 'eyeLookDownRight'])];
 
 const S = {
   state: 'idle', emotion: 'neutral', emotionUntil: 0, emotionBack: 'neutral',
   gaze: { x: 0, y: 0, at: -1e9 }, gimbal: { x: 0, y: 0, at: -1e9 },
-  mouth: 0, mouthAt: -1e9, speaking: false, link: CFG.ws ? 'connecting' : 'none', lastInput: 0,
+  mouth: 0, bands: null, mouthAt: -1e9, speaking: false, link: CFG.ws ? 'connecting' : 'none', lastInput: 0,
 };
-const cur = Object.fromEntries(DRIVEN.map((p) => [p, 0]));
-const head = { yaw: 0, pitch: 0, roll: 0 };
 const now = () => performance.now() / 1000;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const face = new Face();
 
 // ───────── 消息（与说明书一致） ─────────
-// {"type":"robot_state","state":"speaking","emotion":"happy","gaze":{"x":0.2,"y":-0.1},"mouth_level":0.65}
+// {"type":"robot_state","state":"speaking","emotion":"happy","gaze":{"x":0.2,"y":-0.1},"mouth_level":0.65,"mouth_bands":[0.5,0.3,0.1]}
 function apply(msg) {
   if (typeof msg === 'string') { try { msg = JSON.parse(msg); } catch (e) { return false; } }
   if (!msg || typeof msg !== 'object') return false;
@@ -58,21 +46,29 @@ function apply(msg) {
   S.lastInput = t;
   const type = msg.type || (msg.state || msg.emotion ? 'robot_state' : '');
   if (type === 'robot_state') {
-    if (STATES[msg.state]) S.state = msg.state;
+    if (STATES[msg.state]) setState(msg.state);
     if (EMOTIONS[msg.emotion]) setEmotion(msg.emotion, Number(msg.duration_ms) || 0);
     if (msg.gaze) { S.gaze = { x: clamp(+msg.gaze.x || 0, -1, 1), y: clamp(+msg.gaze.y || 0, -1, 1), at: t }; }
-    if (typeof msg.mouth_level === 'number') { S.mouth = clamp(msg.mouth_level, 0, 1); S.mouthAt = t; }
+    if (typeof msg.mouth_level === 'number') {
+      S.mouth = clamp(msg.mouth_level, 0, 1); S.mouthAt = t;
+      // 可选：声音低、中、高三个频段的能量，用来分出圆嘴和扁嘴
+      S.bands = Array.isArray(msg.mouth_bands) && msg.mouth_bands.length === 3 ? msg.mouth_bands.map((v) => clamp(+v || 0, 0, 1)) : null;
+    }
   } else if (type === 'gimbal') {
     // 云台角度（度）：yaw 负 = 屏幕左，pitch 正 = 抬头；connected:false 表示云台断开
     S.gimbal = { x: clamp((+msg.yaw || 0) / 35, -1, 1), y: clamp(-(+msg.pitch || 0) / 30, -1, 1), at: msg.connected === false ? -1e9 : t };
   } else if (type === 'event') {
     const E = { voice_start: 'listening', sound: 'listening', speech_end: 'thinking', voice_end: 'thinking', answer_start: 'speaking', answer_end: 'idle', idle: 'idle' };
-    if (E[msg.name]) S.state = E[msg.name];
+    if (E[msg.name]) setState(E[msg.name]);
     if (msg.name === 'idle') setEmotion('neutral');
     if (msg.name === 'anomaly') setEmotion('alert', Number(msg.duration_ms) || 3000);
-    if (msg.name === 'person_detected') { S.gaze = { x: clamp(+msg.x || 0, -1, 1), y: clamp(+msg.y || 0, -1, 1), at: t }; playOnce('hello'); }
+    if (msg.name === 'person_detected') { S.gaze = { x: clamp(+msg.x || 0, -1, 1), y: clamp(+msg.y || 0, -1, 1), at: t }; act('wave'); }
+  } else if (type === 'action') {
+    // {"type":"action","name":"dance"}：name 是 wave、nod、shake、dance、peace、kiss、angry、phone、play、read… 或者动画名
+    const ok = act(String(msg.name || ''), true);
+    send({ type: 'action_done', name: String(msg.name || ''), ok });
   } else if (type === 'speak' && msg.url) {
-    S.state = 'speaking'; S.speaking = true;
+    setState('speaking'); S.speaking = true;
     speakUrl(String(msg.url));
   } else if (type === 'outfit') {
     // 换装：{"type":"outfit","id":"outfit2"}，"default" 是第一套
@@ -83,21 +79,38 @@ function apply(msg) {
   } else return false;
   return true;
 }
+function setState(name) {
+  if (S.state === name) return;
+  S.state = name;
+  // 开始听、想、说的时候，把正在做的小动作停下来，专心对着人
+  if (name !== 'idle' && avatar && avatar.motion.busy && !avatar.motion.keep) avatar.motion.stopAction();
+}
 function setEmotion(name, ms) {
   if (ms) { if (!S.emotionUntil) S.emotionBack = S.emotion; S.emotionUntil = now() + ms / 1000; } else S.emotionUntil = 0;
+  const changed = S.emotion !== name;
   S.emotion = name;
+  // 情绪带动作：生气时跺一下，开心时偶尔比个耶（聊天中不比，免得挡住对话）
+  if (changed && name === 'alert') act('angry');
+  if (changed && name === 'happy' && S.state === 'idle' && Math.random() < 0.3) act('peace');
 }
 function goIdle() { S.state = 'idle'; setEmotion('neutral'); S.gaze.at = -1e9; S.gimbal.at = -1e9; }
+/// 播一个动作。byUser：大模型或人要求的（可以打断别的动作，聊天中也播完）
+function act(name, byUser) {
+  if (!avatar) return false;
+  const ok = avatar.motion.play(name, !!byUser);
+  if (ok) avatar.motion.keep = !!byUser;
+  return ok;
+}
 
-// ───────── 真实语音：用音量驱动嘴型 ─────────
-let audio = null, analyser = null, level = new Uint8Array(512);
+// ───────── 真实语音：音量管张嘴，频段管嘴型 ─────────
+let audio = null, analyser = null, level = new Uint8Array(512), freq = new Uint8Array(256), audioBands = [0, 0, 0];
 function endSpeak() { S.speaking = false; if (S.state === 'speaking') S.state = 'idle'; send({ type: 'speak_end' }); }
 function speakUrl(url) {
   try {
     if (!audio) {
       audio = new Audio(); audio.crossOrigin = 'anonymous';
       const ac = new (window.AudioContext || window.webkitAudioContext)();
-      analyser = ac.createAnalyser(); analyser.fftSize = 512;
+      analyser = ac.createAnalyser(); analyser.fftSize = 512; analyser.smoothingTimeConstant = 0.5;
       ac.createMediaElementSource(audio).connect(analyser); analyser.connect(ac.destination);
       audio.ac = ac;
     }
@@ -112,6 +125,12 @@ function audioMouth() {
   analyser.getByteTimeDomainData(level);
   let sum = 0;
   for (let i = 0; i < level.length; i++) { const v = (level[i] - 128) / 128; sum += v * v; }
+  // 三个频段的音量：约 700 Hz 以下（圆嘴）、700～2500 Hz、2500 Hz 以上（扁嘴）。
+  // 频谱是按分贝给的（0～255 对应 -100～-30 dB），先换回能量再加起来，和 App 发来的 mouth_bands 是同一种量
+  analyser.getByteFrequencyData(freq);
+  const hz = audio.ac.sampleRate / analyser.fftSize;
+  const band = (a, b) => { let e = 0; for (let i = Math.round(a / hz); i < Math.min(freq.length, Math.round(b / hz)); i++) e += Math.pow(10, (freq[i] / 255 * 70 - 100) / 10); return Math.sqrt(e); };
+  audioBands = [band(80, 700), band(700, 2500), band(2500, 8000)];
   return clamp(Math.sqrt(sum / level.length) * 4, 0, 1);
 }
 
@@ -120,11 +139,19 @@ const canvas = document.getElementById('stage');
 const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
 renderer.setClearColor(0x000000, 0);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NoToneMapping;   // 卡通底色不要被压暗
 const scene = new THREE.Scene();
+scene.matrixWorldAutoUpdate = false;   // 世界矩阵我们自己在物理之前更新一次，渲染时不再重复算
 const camera = new THREE.PerspectiveCamera(28, 1, 0.05, 100);
-scene.add(new THREE.HemisphereLight(0xdde8ff, 0x403850, 1.5));
-const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(1.5, 2.5, 3); scene.add(key);
-const rim = new THREE.DirectionalLight(0x7fe9ff, 0.8); rim.position.set(-2, 1.5, -2); scene.add(rim);
+if (!CFG.toon) {
+  scene.add(new THREE.HemisphereLight(0xdde8ff, 0x403850, 1.5));
+  const key = new THREE.DirectionalLight(0xffffff, 2.2); key.position.set(1.5, 2.5, 3); scene.add(key);
+  const rim = new THREE.DirectionalLight(0x7fe9ff, 0.8); rim.position.set(-2, 1.5, -2); scene.add(rim);
+}
+const rig = new CameraRig(camera, document.getElementById('bg'));
+const shadow = makeGroundShadow(0.42);
+scene.add(shadow);
 
 let W = 1, H = 1;
 function resize() {
@@ -136,84 +163,16 @@ function resize() {
 addEventListener('resize', resize);
 
 // 角色（当前穿着的那一套）
-let avatar = null;   // { id, root, mixer, clips, faces, headBone, base, action, size }
-let wantOutfit = 'default';
+let avatar = null;
+let wantOutfit = OUTFITS[Q.get('outfit')] ? Q.get('outfit') : 'default';   // 网址可以直接指定穿哪套，省得先加载默认的再换
 let loadingId = '';
-const loader = new GLTFLoader();
 
-// 显示全身，脚落在背景地板那圈光环上（大约屏幕高度 84% 的地方）
+// 脚底放在世界 y = 0，左右居中；镜头怎么摆交给 camera.js
 function layout() {
   if (!avatar) return;
-  const h = avatar.size.y, fov = THREE.MathUtils.degToRad(camera.fov);
-  const dist = (h / 0.8) / (2 * Math.tan(fov / 2));
-  camera.position.set(0, 0, dist);
-  camera.lookAt(0, 0, 0);
-  // 脚底放在屏幕 84% 高度处：屏幕中心对应世界 y=0，往下 0.34*画面高度
-  const viewH = 2 * Math.tan(fov / 2) * dist;
-  avatar.root.position.y = -0.34 * viewH + (-avatar.box.min.y);
-  avatar.root.position.x = -(avatar.box.min.x + avatar.box.max.x) / 2;
-}
-
-function shrinkTextures(root) {
-  const seen = new Set();
-  root.traverse((o) => {
-    if (!o.isMesh) return;
-    for (const m of [].concat(o.material)) {
-      for (const k of Object.keys(m)) {
-        const tx = m[k];
-        if (!tx || !tx.isTexture || seen.has(tx)) continue;
-        seen.add(tx);
-        const img = tx.image;
-        const w = img && (img.width || img.naturalWidth), h = img && (img.height || img.naturalHeight);
-        if (!w || Math.max(w, h) <= CFG.tex) continue;
-        const r = CFG.tex / Math.max(w, h);
-        const c = document.createElement('canvas');
-        c.width = Math.max(1, Math.round(w * r)); c.height = Math.max(1, Math.round(h * r));
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        if (img.close) try { img.close(); } catch (e) { /* ImageBitmap */ }
-        tx.image = c; tx.needsUpdate = true;
-      }
-    }
-  });
-}
-
-function disposeAvatar(a) {
-  if (!a) return;
-  a.mixer.stopAllAction();
-  scene.remove(a.root);
-  a.root.traverse((o) => {
-    if (!o.isMesh) return;
-    o.geometry.dispose();
-    for (const m of [].concat(o.material)) {
-      for (const k of Object.keys(m)) if (m[k] && m[k].isTexture) m[k].dispose();
-      m.dispose();
-    }
-  });
-}
-
-const KEEP = ['idle', 'Yuki_Idle_listening_v3', 'hello', 'Yes', 'No'];
-function load(id) {
-  const file = OUTFITS[id] || OUTFITS.default;
-  return new Promise((ok, fail) => {
-    loader.load(file, (gltf) => {
-      const root = gltf.scene;
-      shrinkTextures(root);
-      root.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; } });
-      const faces = [];
-      let headBone = null;
-      root.traverse((o) => {
-        if (o.isMesh && o.morphTargetDictionary && o.morphTargetDictionary.jawOpen !== undefined) faces.push(o);
-        if (o.name === 'Head_M') headBone = o;
-      });
-      root.updateMatrixWorld(true);
-      const box = new THREE.Box3().setFromObject(root);
-      const size = box.getSize(new THREE.Vector3());
-      const clips = {};
-      for (const c of gltf.animations) if (KEEP.includes(c.name)) clips[c.name] = c;   // 其余 25 个动画不要，省内存
-      const mixer = new THREE.AnimationMixer(root);
-      ok({ id, root, mixer, clips, faces, headBone, box, size, base: null, action: null });
-    }, undefined, fail);
-  });
+  avatar.root.position.set(-(avatar.box.min.x + avatar.box.max.x) / 2, -avatar.box.min.y, 0);
+  rig.layout(avatar.box.max.y - avatar.box.min.y, avatar.headY - avatar.box.min.y);
+  shadow.position.set(0, 0.012, -0.12);
 }
 
 async function setOutfit(id) {
@@ -223,14 +182,16 @@ async function setOutfit(id) {
   if (loadingId === id) return;
   loadingId = id;
   try {
-    const a = await load(id);
+    const a = await loadAvatar(id, CFG);
     if (wantOutfit !== id) { disposeAvatar(a); return; }   // 加载期间又换了别的
     const old = avatar;
     avatar = a;
     scene.add(a.root);
     layout();
     disposeAvatar(old);
+    a.motion.setBase(baseClip());
     document.getElementById('loading').style.display = 'none';
+    canvas.style.opacity = 1;   // 第一次出现：淡入
     send({ type: 'outfit_done', id, ok: true });
   } catch (e) {
     console.error('加载角色失败', id, e);
@@ -241,107 +202,82 @@ async function setOutfit(id) {
   }
 }
 
-// ───────── 动画：待机循环 + 偶尔的一次性动作 ─────────
 function baseClip() { return S.state === 'listening' && avatar.clips.Yuki_Idle_listening_v3 ? 'Yuki_Idle_listening_v3' : 'idle'; }
-function syncBase() {
-  const name = baseClip();
-  if (!avatar.clips[name] || avatar.base === name) return;
-  const next = avatar.mixer.clipAction(avatar.clips[name]);
-  next.reset().setLoop(THREE.LoopRepeat, Infinity).play();
-  if (avatar.action) next.crossFadeFrom(avatar.action, 0.5, false);
-  avatar.action = next; avatar.base = name;
-}
-let oneShotUntil = 0;
-function playOnce(name) {
-  if (!avatar || !avatar.clips[name] || now() < oneShotUntil) return;
-  const a = avatar.mixer.clipAction(avatar.clips[name]);
-  a.reset().setLoop(THREE.LoopOnce, 1); a.clampWhenFinished = false;
-  a.play();
-  if (avatar.action) a.crossFadeFrom(avatar.action, 0.3, false);
-  oneShotUntil = now() + avatar.clips[name].duration;
-  setTimeout(() => {
-    if (!avatar) return;
-    a.fadeOut(0.4);
-    if (avatar.action) avatar.action.reset().fadeIn(0.4).play();
-  }, avatar.clips[name].duration * 1000 - 400);
-}
 
-// ───────── 每帧：动画之后叠加表情和头部朝向 ─────────
-let nextBlink = now() + 2.5, blinkT = -1;
-const qTmp = new THREE.Quaternion(), qParent = new THREE.Quaternion(), eTmp = new THREE.Euler();
+// ───────── 每帧 ─────────
+const perf = { anim: 0, rig: 0, phys: 0, draw: 0, n: 0 };
+const eyeNone = [0, 0];
 
 function frame(dt) {
   if (!avatar) return;
-  const t = now();
+  const t = now(), a = avatar, dbg = CFG.debug;
+  let t0 = dbg ? performance.now() : 0;
   if (S.emotionUntil && t > S.emotionUntil) { S.emotionUntil = 0; S.emotion = S.emotionBack; }
   if (!CFG.demo && t - S.lastInput > CFG.idleAfter / 1000 && !S.speaking && (S.state !== 'idle' || S.emotion !== 'neutral')) goIdle();
 
-  syncBase();
-  avatar.mixer.update(dt);
+  // 1. 状态机和动画
+  const idle = S.state === 'idle' && !S.speaking;
+  a.motion.setBase(baseClip());
+  a.motion.update(t, dt, idle && CFG.fidget && t - S.lastInput > 6);
+  a.gaze.resetBones();
+  a.mixer.update(dt);
+  let t1 = dbg ? performance.now() : 0;
 
-  const target = { ...STATES[S.state] };
-  const headT = { yaw: 0, pitch: 0, roll: 0, ...(target.head || {}) };
-  delete target.head;
-  for (const [k, v] of Object.entries(EMOTIONS[S.emotion])) {
-    if (k === 'head') { for (const [a, b] of Object.entries(v)) headT[a] += b; } else target[k] = (target[k] || 0) + v;
-  }
+  // 2. 辅助骨骼；没拿在手上的道具不画
+  if (a.twist) a.twist.update();
+  for (const p of a.props) { const on = p.node.scale.x > 0.01; for (const m of p.meshes) m.visible = on; }
 
-  // 说话时嘴型：有真实音频用音量；有 mouth_level 用它；都没有时用合成的音节节奏
-  let mouth = 0;
-  if (S.speaking && analyser) mouth = audioMouth();
-  else if (t - S.mouthAt < 0.5) mouth = S.mouth;
+  // 3. 嘴：有真实音频用它；有 mouth_level 用它；都没有时用合成的音节节奏
+  let mouth = 0, bands = null;
+  if (S.speaking && analyser) { mouth = audioMouth(); bands = audioBands; }
+  else if (t - S.mouthAt < 0.5) { mouth = S.mouth; bands = S.bands; }
   else if (S.state === 'speaking' && !S.speaking) mouth = Math.max(0, Math.sin(t * 9.3) * Math.sin(t * 3.7 + 1)) * 0.9;
-  if (mouth > 0) { target.jawOpen = Math.max(target.jawOpen || 0, mouth * 0.7); target.mouthFunnel = mouth * 0.25; }
 
-  // 眨眼
-  if (blinkT < 0 && t > nextBlink) { blinkT = t; nextBlink = t + 2.5 + Math.random() * 3; }
-  let blink = 0;
-  if (blinkT >= 0) {
-    const p = (t - blinkT) / 0.18;
-    if (p >= 1) blinkT = -1; else blink = Math.sin(p * Math.PI);
-  }
-  target.eyeBlinkLeft = Math.max(target.eyeBlinkLeft || 0, blink);
-  target.eyeBlinkRight = Math.max(target.eyeBlinkRight || 0, blink);
-
-  // 视线：x 向屏幕右为正，y 向下为正
+  // 4. 视线：x 向屏幕右为正，y 向下为正
   let gx = 0, gy = 0;
   if (t - S.gaze.at < 4) { gx = S.gaze.x; gy = S.gaze.y; }
   else if (t - S.gimbal.at < 6) { gx = S.gimbal.x; gy = S.gimbal.y; }
   else if (S.state === 'thinking') { gx = 0.5 * Math.sin(t * 0.5); gy = -0.5; }
   else if (S.state === 'observing') { gx = 0.7 * Math.sin(t * 0.45); }
-  // 角色的左眼在屏幕右边：看屏幕右 = 左眼往内、右眼往外
-  const right = Math.max(0, gx), left = Math.max(0, -gx), down = Math.max(0, gy), up = Math.max(0, -gy);
-  target.eyeLookInLeft = right * 0.7; target.eyeLookOutRight = right * 0.7;
-  target.eyeLookOutLeft = left * 0.7; target.eyeLookInRight = left * 0.7;
-  target.eyeLookDownLeft = down * 0.6; target.eyeLookDownRight = down * 0.6;
-  target.eyeLookUpLeft = up * 0.6; target.eyeLookUpRight = up * 0.6;
-  headT.yaw += gx * 0.45; headT.pitch += gy * 0.25;
 
-  const kShape = Math.min(1, dt * 8), kMouth = Math.min(1, dt * 20), kHead = Math.min(1, dt * 5);
-  for (const p of DRIVEN) {
-    const k = (p === 'jawOpen' || p === 'mouthFunnel' || p.startsWith('eyeBlink')) ? kMouth : kShape;
-    cur[p] += ((target[p] || 0) - cur[p]) * k;
-  }
-  head.yaw += (headT.yaw - head.yaw) * kHead;
-  head.pitch += (headT.pitch - head.pitch) * kHead;
-  head.roll += (headT.roll - head.roll) * kHead;
+  // 5. 表情（算出头的额外姿态和眼球微跳），再做视线分配
+  const head = face.update(t, dt, { state: S.state, emotion: S.emotion, mouth, bands, gx, gy });
+  a.gaze.update(dt, gx, gy, head, a.motion.busy ? eyeNone : face.saccade, a.motion.overlay);
+  face.apply(a.faces);
 
-  // 动画里的表情形变权重会被它自己的轨道改写，所以在动画之后覆盖我们驱动的那几个
-  for (const m of avatar.faces) {
-    const dict = m.morphTargetDictionary, inf = m.morphTargetInfluences;
-    for (const p of DRIVEN) { const i = dict[p]; if (i !== undefined) inf[i] = cur[p]; }
-  }
+  // 6. 世界矩阵（整棵树只在这里算一次），然后是物理
+  let t2 = dbg ? performance.now() : 0;
+  scene.updateMatrixWorld();
+  if (a.spring) a.spring.update(dt);
+  let t3 = dbg ? performance.now() : 0;
 
-  // 头：在世界坐标里叠加转动（不依赖骨骼的局部轴方向）
-  const hb = avatar.headBone;
-  if (hb && hb.parent && (Math.abs(head.yaw) + Math.abs(head.pitch) + Math.abs(head.roll)) > 0.001) {
-    hb.parent.updateWorldMatrix(true, false);
-    hb.parent.getWorldQuaternion(qParent);
-    eTmp.set(head.pitch, head.yaw, -head.roll, 'YXZ');
-    qTmp.setFromEuler(eTmp);
-    // local' = P⁻¹ · delta · P · local
-    hb.quaternion.premultiply(qParent).premultiply(qTmp).premultiply(qParent.clone().invert());
+  // 7. 镜头
+  const close = (S.state === 'listening' || S.state === 'thinking' || S.state === 'speaking' || S.speaking) && !a.motion.wide;
+  rig.update(t, dt, close, !!CFG.cam);
+  camera.updateMatrixWorld();
+  if (CFG.toon) updateToon(camera, a.head, a.headLocal);
+
+  renderer.render(scene, camera);
+  if (dbg) {
+    const t4 = performance.now();
+    perf.anim += t1 - t0; perf.rig += t2 - t1; perf.phys += t3 - t2; perf.draw += t4 - t3;
+    if (++perf.n >= 30) showDebug();
   }
+}
+
+// 调试面板（?debug=1）：各部分每帧花多少毫秒
+let debugEl = null;
+function showDebug() {
+  if (!debugEl) {
+    debugEl = document.createElement('pre');
+    debugEl.style.cssText = 'position:fixed;left:6px;top:40px;margin:0;padding:6px 8px;font:11px/1.4 Menlo,monospace;color:#7fe9ff;background:rgba(0,0,0,.6);border-radius:6px;pointer-events:none;z-index:9';
+    document.body.appendChild(debugEl);
+  }
+  const n = perf.n, f = (v) => (v / n).toFixed(1).padStart(5);
+  const st = avatar.stats, info = renderer.info.render;
+  debugEl.textContent = `动画 ${f(perf.anim)} ms\n骨骼和表情 ${f(perf.rig)} ms\n矩阵和物理 ${f(perf.phys)} ms\n镜头和渲染 ${f(perf.draw)} ms\n` +
+    `骨骼 ${st.bones}  轨道 ${st.tracks}\n弹簧 ${st.springs}  扭转 ${st.twists}\n绘制 ${info.calls} 次  三角 ${info.triangles}\n${S.state} / ${S.emotion}`;
+  perf.anim = perf.rig = perf.phys = perf.draw = perf.n = 0;
 }
 
 // 30 FPS 上限（iPhone 7 Plus）
@@ -351,10 +287,12 @@ function tick() {
   const ts = performance.now();
   if (ts - last < 1000 / CFG.fps - 2) return;
   const dt = Math.min(0.1, (ts - last) / 1000);
+  // 切到后台再回来、或者卡了很久：物理从原姿势重新开始，不要炸开
+  if (ts - last > 500 && avatar && avatar.spring) avatar.spring.reset();
   last = ts;
   frame(dt);
-  renderer.render(scene, camera);
 }
+document.addEventListener('visibilitychange', () => { if (avatar && avatar.spring) avatar.spring.reset(); });
 
 // ───────── WebSocket：断线回到待机，自动重连 ─────────
 let ws = null, backoff = 1000;
@@ -376,8 +314,10 @@ const DEMO = [
   [3, { state: 'idle', emotion: 'neutral' }], [3, { type: 'event', name: 'voice_start' }],
   [3.5, { type: 'event', name: 'speech_end' }], [4, { state: 'speaking' }], [3, { state: 'speaking', emotion: 'happy' }],
   [2, { state: 'observing', emotion: 'neutral' }], [2, { type: 'gimbal', yaw: -30 }], [2, { type: 'gimbal', yaw: 30 }],
-  [2, { type: 'gimbal', yaw: 0 }], [2.5, { type: 'event', name: 'anomaly', duration_ms: 2500 }],
+  [2, { type: 'gimbal', yaw: 0 }], [3, { type: 'event', name: 'anomaly', duration_ms: 2500 }],
   [2, { state: 'idle', emotion: 'surprised', duration_ms: 1500 }], [3, { state: 'thinking', emotion: 'confused' }],
+  [3, { state: 'idle', emotion: 'neutral' }], [5, { type: 'action', name: 'wave' }], [3, { type: 'action', name: 'nod' }],
+  [12, { type: 'action', name: 'dance' }],
 ];
 let demoI = 0;
 function demo() {
@@ -388,14 +328,55 @@ function demo() {
   setTimeout(demo, sec * 1000);
 }
 
-// 点一下：挥手打招呼
-addEventListener('pointerup', () => { playOnce('hello'); send({ type: 'touch' }); });
+// ───────── 点她：点到头、手有对应的反应，别处是打招呼 ─────────
+// 不做精确的射线检测（几万个蒙皮三角形太慢），把几根关键骨骼投影到屏幕上，看点在谁附近。
+const _p = new THREE.Vector3(), _p2 = new THREE.Vector3();
+function screenOf(bone, out, up) {
+  out.setFromMatrixPosition(bone.matrixWorld); out.y += up || 0;
+  out.project(camera);
+  out.x = (out.x * 0.5 + 0.5) * W; out.y = (0.5 - out.y * 0.5) * H;
+  return out;
+}
+function partAt(x, y) {
+  if (!avatar) return 'none';
+  const b = avatar.byName;
+  if (!b.Head_M || !b.Root_M) return 'other';
+  // 屏幕上 1 米有多少像素（按头和腰的距离估）
+  const px = screenOf(b.Head_M, _p).distanceTo(screenOf(b.Root_M, _p2)) / Math.max(0.2, b.Head_M.getWorldPosition(new THREE.Vector3()).distanceTo(b.Root_M.getWorldPosition(new THREE.Vector3())));
+  const near = (bone, up, r) => bone && Math.hypot(screenOf(bone, _p, up).x - x, _p.y - y) < r * px;
+  if (near(b.Head_M, 0.09, 0.13)) return 'head';
+  if (near(b.Wrist_L, -0.04, 0.09)) return 'hand_l';
+  if (near(b.Wrist_R, -0.04, 0.09)) return 'hand_r';
+  // 大致在身体范围内
+  const top = screenOf(b.Head_M, _p, 0.25).y, cx = screenOf(b.Root_M, _p2).x;
+  if (y > top && Math.abs(x - cx) < 0.3 * px) return 'body';
+  return 'other';
+}
+addEventListener('pointerup', (e) => {
+  const part = partAt(e.clientX, e.clientY);
+  // 闲着的时候才有反应；正在聊天时点一下是「打断」，不要乱动
+  if (S.state === 'idle' && !S.speaking && avatar && !avatar.motion.busy) {
+    if (part === 'head') act('touch_head');
+    else if (part === 'hand_l') act('touch_hand_l');
+    else if (part === 'hand_r') act('touch_hand_r');
+    else act('wave');
+  }
+  if (avatar) avatar.motion.touch();
+  send({ type: 'touch', part });
+});
 addEventListener('message', (e) => { if (e.data && typeof e.data === 'object' && e.data.type) apply(e.data); });
 
 window.YunlaiFace = {
   apply,
   stopDemo: () => { CFG.demo = false; },
-  get: () => ({ state: S.state, emotion: S.emotion, link: S.link, loaded: !!avatar, outfit: avatar && avatar.id }),
+  get: () => ({
+    state: S.state, emotion: S.emotion, link: S.link, loaded: !!avatar, outfit: avatar && avatar.id,
+    action: avatar && avatar.motion.one ? avatar.motion.one.getClip().name : '', stats: avatar && avatar.stats,
+    actions: Object.keys(ACTIONS), clips: avatar ? Object.keys(avatar.clips) : [],
+  }),
+  // 调试用：把某个动画定在某一秒（截图看姿势）
+  _pose: (clip, time) => { if (!avatar || !avatar.clips[clip] || avatar.clips[clip].faceOnly) return false; CFG.fidget = 0; avatar.motion.play(clip, true); avatar.motion.one.time = time; avatar.motion.one.paused = true; return true; },
+  _avatar: () => avatar, _camera: () => rig,
 };
 
 resize();

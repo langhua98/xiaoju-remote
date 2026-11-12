@@ -16,10 +16,17 @@ final class Store: ObservableObject {
     @Published var geminiKey: String { didSet { Keychain.set("geminiKey", geminiKey) } }
     /// 打开 App 时自动连大疆云台
     @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
-    /// 机器人穿哪套衣服（default = Yuki_outfit1.glb，outfit2 = Yuki_outfit2.glb，见 Robot/live2d/src/main.js 的 OUTFITS）
+    /// 机器人穿哪套衣服（default = Yuki_outfit1.glb，outfit2 = Yuki_outfit2.glb，见 Robot/live2d/src/avatar.js 的 OUTFITS）
     @Published var outfit: String { didSet { save("outfit", outfit) } }
+    /// 机器人的画质：high = 全部效果，low = 省电（不描边、不算物理、贴图缩到 1024）
+    @Published var faceQuality: String { didSet { save("faceQuality", faceQuality) } }
 
-    /// 衣服列表：id、名字、对她说话时认的叫法。新加衣服时这里和 Robot/live2d/src/main.js 的 OUTFITS、fetch-assets.sh 一起加
+    /// 画质 → 网页的网址参数（见 Robot/README.md「开关」）
+    static func faceQuery(quality: String) -> String {
+        quality == "low" ? "&outline=0&spring=0&tex=1024" : ""
+    }
+
+    /// 衣服列表：id、名字、对她说话时认的叫法。新加衣服时这里和 Robot/live2d/src/avatar.js 的 OUTFITS、fetch-assets.sh 一起加
     static let outfits: [(id: String, name: String, words: [String])] = [
         ("default", "校服", ["校服", "原版", "原来", "第一套", "一号"]),
         ("outfit2", "洋装", ["洋装", "裙子", "婚纱", "第二套", "二号"]),
@@ -86,6 +93,7 @@ final class Store: ObservableObject {
         geminiKey = Keychain.get("geminiKey") ?? ""
         gimbalAuto = d.object(forKey: "gimbalAuto") is Bool ? d.bool(forKey: "gimbalAuto") : (load("gimbalAuto") == "1")
         outfit = load("outfit").flatMap { id in Store.outfits.contains { $0.id == id } ? id : nil } ?? "default"
+        faceQuality = load("faceQuality") == "low" ? "low" : "high"
     }
 
     // 处理过的指令 id（避免重复执行）

@@ -355,6 +355,11 @@ final class Talk: NSObject, ObservableObject {
             }
         }
         for name in Body.outfitTags(in: raw) { applyOutfit(name) }
+        for name in Body.actionTags(in: raw) {
+            guard let id = Body.actionID(named: name) else { log("动作：不会做「\(name)」"); continue }
+            face.send(["type": "action", "name": id])
+            log("动作：\(name)")
+        }
         let text = Chat.clean(Body.strip(raw))
         guard text.rangeOfCharacter(from: .letters) != nil || text.rangeOfCharacter(from: .decimalDigits) != nil else { return }
         reply += text
