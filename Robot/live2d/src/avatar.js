@@ -9,8 +9,7 @@ import { SpringSystem, findSpringBones } from './spring.js';
 import { Motion, BANNED } from './motion.js';
 
 // 衣服 id → 模型文件。default 是第一套；以前存的旧 id（heibai、yeye）也回到第一套
-export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yuki_outfit2.glb' };
-
+export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yuki_outfit2.glb', yoga: 'models/Yuki_yoga.glb' };   // 瑜伽服由 ../tools/build_yoga.py 用两套模型拼出来
 const loader = new GLTFLoader();
 
 function shrinkTextures(root, max) {
