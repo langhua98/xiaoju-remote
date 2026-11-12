@@ -3,7 +3,7 @@
 // ARKit 52 个表情形变 + 几百根骨骼 + 30 个自带动画（带道具：手机、报纸、手柄、爆米花，平时缩到 0 看不见）。
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { applyToon } from './toon.js';
+import { applyToon, setChin } from './toon.js';
 import { TwistHelpers, Gaze } from './rig.js';
 import { SpringSystem, findSpringBones } from './spring.js';
 import { Motion, BANNED } from './motion.js';
@@ -108,7 +108,20 @@ export function loadAvatar(id, cfg) {
           head.worldToLocal(headLocal);
         }
         const headY = head ? head.getWorldPosition(new THREE.Vector3()).y + 0.09 : box.max.y * 0.92;
-
+        // 头的朝上、朝前方向（头骨局部坐标），和下巴尖的位置：下巴的阴影要用。
+        // 下巴尖 = 脸正中间、离鼻尖 3.5 厘米以内最低的那个点（脖子在更后面）
+        const headWorldInv = head ? head.matrixWorld.clone().invert() : new THREE.Matrix4();
+        const headUp = new THREE.Vector3(0, 1, 0).transformDirection(headWorldInv), headFwd = new THREE.Vector3(0, 0, 1).transformDirection(headWorldInv);
+        if (head && faceMesh) {
+          const pos = faceMesh.geometry.attributes.position, fb = faceMesh.geometry.boundingBox;
+          let chinY = Infinity, chinZ = 0;
+          for (let i = 0; i < pos.count; i++) {
+            const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+            if (Math.abs(x) < 0.012 && z > fb.max.z - 0.035 && y < chinY) { chinY = y; chinZ = z; }
+          }
+          const c = headLocal.clone().applyMatrix4(head.matrixWorld);
+          if (chinY < Infinity) setChin(chinY - c.y, chinZ - c.z);
+        }
         const clips = {};
         const all = gltf.animations.filter((c) => !BANNED.includes(c.name));
         const trim = trimTracks(root, all);
@@ -120,7 +133,7 @@ export function loadAvatar(id, cfg) {
           clips[c.name] = c;
         }
 
-        const toon = cfg.toon ? applyToon(root, { outline: cfg.outline }) : { outlines: [] };
+        const toon = cfg.toon ? applyToon(root, { outline: cfg.outline, shadow: cfg.shadow }) : { outlines: [] };
         const mixer = new THREE.AnimationMixer(root);
         const bones = skeleton ? skeleton.bones : [];
         const twist = cfg.helpers ? new TwistHelpers(byName) : null;
@@ -149,6 +162,7 @@ export function loadAvatar(id, cfg) {
         const motion = new Motion(mixer, clips);
         ok({
           id, root, mixer, clips, faces, box, byName, bones, headLocal, headY, head,
+          toonHead: { bone: head, center: headLocal, up: headUp, fwd: headFwd },
           twist, gaze, spring, motion, props, outlines: toon.outlines,
           stats: { bones: bones.length, tracks: `${trim.after}/${trim.before}`, springs: spring ? spring.joints.length : 0, twists: twist ? twist.items.length : 0 },
         });
@@ -166,6 +180,7 @@ export function disposeAvatar(a) {
     if (!o.userData.outline) o.geometry.dispose();
     for (const m of [].concat(o.material)) {
       if (m.uniforms && m.uniforms.map && m.uniforms.map.value && m.userData.toonMap) m.uniforms.map.value.dispose();
+      if (m.uniforms && m.uniforms.aoMap && m.defines && m.defines.USE_AO) m.uniforms.aoMap.value.dispose();
       for (const k of Object.keys(m)) if (m[k] && m[k].isTexture) m[k].dispose();
       m.dispose();
     }

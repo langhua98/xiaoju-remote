@@ -21,6 +21,7 @@ const CFG = {
   tex: Number(Q.get('tex')) || 2048,   // 贴图最长边上限（iPhone 内存小，大图缩小）
   toon: flag('toon', 1),       // 卡通材质；0 回到标准材质
   outline: flag('outline', 1), // 描边；2 = 连顶点特别多的裙子也描
+  shadow: flag('shadow', 1),   // 刘海在额头上的投影、眼睛上沿的阴影
   spring: flag('spring', 1),   // 悬挂物物理
   helpers: flag('helpers', 1), // 辅助骨骼
   cam: flag('cam', 1),         // 自动机位
@@ -136,7 +137,7 @@ function audioMouth() {
 
 // ───────── 画面 ─────────
 const canvas = document.getElementById('stage');
-const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, stencil: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
 renderer.setClearColor(0x000000, 0);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -255,7 +256,7 @@ function frame(dt) {
   const close = (S.state === 'listening' || S.state === 'thinking' || S.state === 'speaking' || S.speaking) && !a.motion.wide;
   rig.update(t, dt, close, !!CFG.cam);
   camera.updateMatrixWorld();
-  if (CFG.toon) updateToon(camera, a.head, a.headLocal);
+  if (CFG.toon) updateToon(camera, a.toonHead);
 
   renderer.render(scene, camera);
   if (dbg) {
