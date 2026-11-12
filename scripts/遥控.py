@@ -24,6 +24,19 @@ B 设备装了「小橘遥控」App 并开着「待命」。
   遥控.py 测试机B gimbal --go look --yaw -45 --pitch 10   （转到相对归位点的方向）
   遥控.py 测试机B gimbal --go move --yaw 20 --ms 1000     （按 20°/s 转 1 秒）
   遥控.py 测试机B gimbal --go center          （回到归位点）
+
+  屏幕里的机器人（3D 角色，iPhone 被控端）：
+  遥控.py 测试机B robot                                  （状态：衣服、表情、镜头、朝向、正在做的动作）
+  遥控.py 测试机B robot --robot act --name 跳舞          （做动作：挥手 点头 摇头 跳舞 比耶 飞吻 生气 玩手机 打游戏 看报纸 吃爆米花）
+  遥控.py 测试机B robot --robot view --shot 特写         （镜头：自动 全身 半身 特写）
+  遥控.py 测试机B robot --robot view --orbit 40 --tilt 10   （镜头绕到她的左前方、稍微从上往下看）
+  遥控.py 测试机B robot --robot turn --yaw 90            （转身到 90°，正 = 转向屏幕右边；180 背对）
+  遥控.py 测试机B robot --robot turn --by -30            （在现在的基础上再转 -30°）
+  遥控.py 测试机B robot --robot look --x 0.6 --y -0.2 --hold 8   （看向屏幕右上方 8 秒；--free 放开）
+  遥控.py 测试机B robot --robot emotion --name happy --hold 3    （表情，3 秒后回去；不给 --hold 一直保持）
+  遥控.py 测试机B robot --robot outfit --name 洋装        （换装）
+  遥控.py 测试机B robot --robot say --text "你好呀[动作 挥手]"   （让她说一句话，可以带标签）
+  遥控.py 测试机B robot --robot reset                    （回到默认：自动镜头、面向屏幕、平静）
 """
 import argparse, base64, json, os, sys, time, urllib.error, urllib.parse, urllib.request, uuid
 
@@ -81,7 +94,7 @@ def main():
     ap = argparse.ArgumentParser(description="小橘遥控发送端")
     ap.add_argument("device", help="B 设备的名字，和 App 里填的一样")
     ap.add_argument("action", choices=["info", "photo", "audio", "location", "torch", "vibrate", "ring", "shell", "gimbal",
-                                       "monitor", "monitor_status", "update"])
+                                       "monitor", "monitor_status", "update", "robot"])
     ap.add_argument("--lens", choices=["back", "front"], default="back")
     ap.add_argument("--seconds", type=int, default=5)
     ap.add_argument("--on", action="store_true")
@@ -93,6 +106,19 @@ def main():
                     help="gimbal 的动作")
     ap.add_argument("--yaw", type=float, help="gimbal：左右（度，或 move 时的度每秒）")
     ap.add_argument("--pitch", type=float, help="gimbal：上下（度，或 move 时的度每秒）")
+    ap.add_argument("--robot", default="status",
+                    choices=["status", "act", "view", "turn", "look", "emotion", "outfit", "say", "reset"],
+                    help="robot 的动作")
+    ap.add_argument("--name", help="robot：act 的动作名、emotion 的表情名、outfit 的衣服名")
+    ap.add_argument("--shot", help="robot view：自动 全身 半身 特写（或 auto full bust face）")
+    ap.add_argument("--orbit", type=float, help="robot view：镜头绕着她转多少度（正 = 往屏幕右边绕）")
+    ap.add_argument("--tilt", type=float, help="robot view：镜头俯仰（度，正 = 从上往下看）")
+    ap.add_argument("--by", type=float, help="robot turn：在现在的基础上再转多少度")
+    ap.add_argument("--x", type=float, help="robot look：-1～1，正 = 屏幕右")
+    ap.add_argument("--y", type=float, help="robot look：-1～1，正 = 屏幕下")
+    ap.add_argument("--hold", type=float, help="robot look / emotion：保持多少秒")
+    ap.add_argument("--free", action="store_true", help="robot look：放开视线")
+    ap.add_argument("--text", help="robot say：要她说的话")
     ap.add_argument("--save", default=".", help="回执里的文件下载到哪个目录")
     ap.add_argument("--timeout", type=int, default=90, help="等回执最多多少秒")
     ap.add_argument("--check", action="store_true", help="update：只看有没有新版本，不下载")
@@ -130,6 +156,42 @@ def main():
             cmd["pitch"] = a.pitch
         if a.go == "move":
             cmd["ms"] = a.ms
+    elif a.action == "robot":
+        cmd["action"] = a.robot
+        r = a.robot
+        if r == "act" or r == "emotion":
+            if not a.name:
+                sys.exit(f"robot {r} 要用 --name")
+            cmd["name"] = a.name
+            if r == "emotion" and a.hold:
+                cmd["ms"] = int(a.hold * 1000)
+        elif r == "outfit":
+            if not a.name:
+                sys.exit("robot outfit 要用 --name（校服 / 洋装，或 default / outfit2）")
+            cmd["name"] = a.name
+        elif r == "view":
+            for k in ("shot", "orbit", "tilt"):
+                if getattr(a, k) is not None:
+                    cmd[k] = getattr(a, k)
+        elif r == "turn":
+            if a.by is not None:
+                cmd["by"] = a.by
+            elif a.yaw is not None:
+                cmd["yaw"] = a.yaw
+            else:
+                sys.exit("robot turn 要用 --yaw（转到多少度）或 --by（再转多少度）")
+        elif r == "look":
+            if a.free:
+                cmd["free"] = True
+            else:
+                cmd["x"] = a.x or 0
+                cmd["y"] = a.y or 0
+                if a.hold is not None:
+                    cmd["ms"] = int(a.hold * 1000)
+        elif r == "say":
+            if not a.text:
+                sys.exit("robot say 要用 --text")
+            cmd["text"] = a.text
 
     sent = time.time()
     via_relay = relay_send(f"遥控/{a.device}/收件", cmd)
@@ -157,6 +219,8 @@ def main():
         print(r.get("text", ""))
         if isinstance(r.get("status"), dict):  # monitor / monitor_status：侦测状态和耗电诊断
             print(json.dumps(r["status"], ensure_ascii=False, indent=2))
+        if isinstance(r.get("robot"), dict):  # robot：屏幕里机器人现在的状态
+            print("机器人：" + json.dumps(r["robot"], ensure_ascii=False))
         for fp in r.get("files", []):
             if isinstance(fp, dict):  # 即时信箱：文件直接放在回执里
                 out = os.path.join(a.save, f"{cid}-{fp.get('name', 'file')}")

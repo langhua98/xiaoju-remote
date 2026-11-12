@@ -22,7 +22,7 @@
 
 ## 在「小橘遥控」App 里使用（机器人模式）
 
-App 设置页有「机器人模式 → 打开机器人的脸」。打开后整个屏幕是 Yuki，待命照常进行，连点三下退出。点一下屏幕开始聊天；闲着的时候点她的头或手，她会有对应的反应（这一下不算开始聊天）。
+打开 App 就是 Yuki（`MainView`），设置在左上角的齿轮里（连点三下屏幕也能打开）。第一次用、什么密钥都没填时自动打开设置；设置里可以开「打开 App 时自动待命」。点一下屏幕开始聊天；闲着的时候点她的头或手，她会有对应的反应（这一下不算开始聊天）。
 
 - GitHub Actions 编译前先运行 `fetch-assets.sh`，从数据集下载两个 glb（约 90 MB，不进仓库），再把 `Robot/live2d` 整个打进 App。数据集要保持公开，否则编译下载会 401。
 - App 用 `yunlai://face/index.html` 打开这个网页（`App/RobotFace.swift`），通过 `window.YunlaiFace.apply(...)` 发消息。
@@ -73,6 +73,7 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
 | `pose` | `Hand_Pose` | `call` | `Phone_talking` 打电话 |
 | `angry` | `Yuki_Angry_With_Mouth`（只有表情，叠在当前动作上） | `touch_head`、`touch_hand_l/r`、`touch_leg_l/r` | 被摸的反应 |
 
+- 镜头和转身也一样：`[镜头 特写]`（全身、半身、特写、自动）、`[转身 左 90]`（右、背对、回正）；实时模式的工具是 `set_camera(shot)`、`turn_body(direction, degrees)`。
 - 大模型怎么触发：普通模式在回答里写 `[动作 跳舞]`（名字见 `Body.actions`：挥手、点头、摇头、跳舞、比耶、飞吻、生气、玩手机、打游戏、看报纸、吃爆米花）；实时模式调用工具 `play_action(name)`。
 - 自己会做的：待机时每 15～40 秒随机做个小动作；60～120 秒没人理就掏手机、打游戏、看报纸或吃爆米花；情绪变成 `alert` 时做生气的表情；`happy` 时偶尔比耶。开始听人说话时，自己做的小动作会停下来（别人要求的动作会播完）。
 - 不用的动画：`Touch_breast`、`Touch_pants`（不合适）；`Show`、`Hide`、`Hidden`（原作出入场用，从 T 字姿势开始）。
@@ -134,8 +135,14 @@ python3 -m http.server 8000 -d ..   # 然后打开 http://电脑IP:8000/live2d/
 - `{"type":"event","name":"…"}`：`voice_start`、`speech_end`、`answer_start`、`answer_end`、`anomaly`、`person_detected`（带 `x`、`y`）、`idle`
 - `{"type":"speak","url":"…"}`：播放 TTS 音频，按真实音量和频段对口型（音频要允许跨域）
 - `{"type":"action","name":"dance"}`：做一个动作，见上面「动作」
+- `{"type":"view","shot":"face","orbit":30,"tilt":10}`：镜头。`shot` 是 `auto`（聊天时半身、闲着全身）/ `full` / `bust` / `face`；`orbit` 绕着她转（度，-180～180，正 = 往屏幕右边绕）；`tilt` 俯仰（度，-25～45，正 = 从上往下看）。没给的不变
+- `{"type":"turn","yaw":90}` 或 `{"type":"turn","by":-30}`：身体转身（度，0 面向屏幕，正 = 转向屏幕右边，180 背对）。身体转开、又没有别的视线目标时，她会回头看屏幕前的人
+- `{"type":"look","x":0.5,"y":-0.2,"ms":8000}`：看哪里，保持 `ms`（默认 10 秒，0 一直看）；`{"type":"look","free":true}` 放开
+- `{"type":"reset"}`：自动镜头、面向屏幕、视线放开、平静、停下动作
 - `{"type":"outfit","id":"outfit2"}`：换装
 - `{"type":"sensing","camera":true,"mic":true}`：屏幕顶部显示「摄像头 / 麦克风工作中」
+
+`apply` 有返回值：`action` 返回做没做成（true / false），`view` 返回现在的镜头设置，`turn` 返回朝向，`look` 返回视线；App 的 `robot` 遥控指令（`App/RobotCommand.swift`，参数见 AGENTS.md）就是靠这个拿结果的。`window.YunlaiFace.get()` 返回整体状态。
 
 页面发回 `face_ready`、`touch`（带 `part`：`head`、`hand_l`、`hand_r`、`body`、`other`）、`speak_end`、`outfit_done`、`action_done`。在 App 的 WKWebView 里也可以直接调用 `window.YunlaiFace.apply({...})`。WebSocket 断线时回到待机，并自动重连。
 

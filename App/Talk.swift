@@ -221,7 +221,6 @@ final class Talk: NSObject, ObservableObject {
         // 换装直接办，不问大模型
         if let id = Store.outfitCommand(text, current: store.outfit) {
             store.outfit = id
-            face.send(["type": "outfit", "id": id])
             log("换装：\(Store.outfitName(id))")
             say(id == "default" ? "好，换回原来的衣服啦。" : "好呀，换上\(Store.outfitName(id))啦，好看吗？", emotion: "happy")
             return
@@ -323,7 +322,6 @@ final class Talk: NSObject, ObservableObject {
     private func applyOutfit(_ name: String) {
         guard let id = Store.outfitID(named: name) else { return log("换装：没有叫「\(name)」的衣服") }
         store.outfit = id
-        face.send(["type": "outfit", "id": id])
         log("换装：\(Store.outfitName(id))")
     }
 
@@ -334,6 +332,20 @@ final class Talk: NSObject, ObservableObject {
         llmDone = false
         startedSpeaking = false
         playLoop = Task { await self.runQueue() }
+    }
+
+    /// 别人（遥控指令）让她说一句话。text 里也可以带动作、镜头、转身标签。
+    /// 实时语音（Gemini）进行中不插话，返回 false；普通对话进行中会被打断。
+    @discardableResult
+    func speak(_ text: String, emotion: String = "neutral") -> Bool {
+        guard live.phase == .off else { return false }
+        conversing = false
+        llmTask?.cancel()
+        llmTask = nil
+        stopAudio()
+        phase = .idle
+        say(text, emotion: emotion)
+        return true
     }
 
     private func say(_ text: String, emotion: String) {
@@ -355,6 +367,15 @@ final class Talk: NSObject, ObservableObject {
             }
         }
         for name in Body.outfitTags(in: raw) { applyOutfit(name) }
+        for name in Body.viewTags(in: raw) {
+            guard let shot = Body.shotID(named: name) else { log("镜头：没有「\(name)」"); continue }
+            face.send(["type": "view", "shot": shot])
+            log("镜头：\(name)")
+        }
+        for yaw in Body.turnTags(in: raw) {
+            face.send(["type": "turn", "yaw": yaw])
+            log("转身：\(Int(yaw))°")
+        }
         for name in Body.actionTags(in: raw) {
             guard let id = Body.actionID(named: name) else { log("动作：不会做「\(name)」"); continue }
             face.send(["type": "action", "name": id])

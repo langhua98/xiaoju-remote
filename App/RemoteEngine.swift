@@ -123,13 +123,14 @@ final class RemoteEngine: ObservableObject {
         }
 
         let action = cmd["do"] as? String ?? ""
-        push("执行：\(action)")
+        push("执行：\(action)\(action == "robot" ? "（\(cmd["action"] as? String ?? "status")）" : "")")
         face.commandStarted(action)
-        // 云台指令要用这台 App 里连着的云台，不走 Commands
+        // 云台指令要用这台 App 里连着的云台，机器人指令要用屏幕上的脸，都不走 Commands
         let result: CmdResult
         if action == "gimbal" { result = CmdResult(text: await gimbal.command(cmd)) }
+        else if action == "robot" { result = await RobotCommand.run(cmd, face: face, talk: talk, store: store) }
         else { result = await Commands.run(cmd) }
-        face.commandFinished(ok: !result.text.hasPrefix("执行出错"))
+        if action != "robot" { face.commandFinished(ok: !result.text.hasPrefix("执行出错")) }
 
         var files: [Any] = []
         for (name, bytes) in result.files {
@@ -147,6 +148,7 @@ final class RemoteEngine: ObservableObject {
         var r: [String: Any] = ["id": id, "do": action, "ok": true,
                                 "text": result.text, "files": files, "at": f.string(from: Date())]
         if action == "gimbal" { r["gimbal"] = gimbal.statusJSON() }
+        if action == "robot", let st = await RobotCommand.status(face) { r["robot"] = st }
         await reply(r)
         push("完成：\(action) — \(result.text.split(separator: "\n").first.map(String.init) ?? "")")
     }

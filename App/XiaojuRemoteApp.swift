@@ -21,7 +21,7 @@ struct RootView: View {
     }
 
     var body: some View {
-        ContentView()
+        MainView()
             .environmentObject(store)
             .environmentObject(engine)
     }

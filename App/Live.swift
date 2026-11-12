@@ -233,7 +233,6 @@ final class LiveTalk: NSObject, ObservableObject {
                 let want = (args["name"] as? String) ?? ""
                 if let id = Store.outfitID(named: want) {
                     self.store.outfit = id
-                    self.face.send(["type": "outfit", "id": id])
                     self.usedOutfitTool = true
                     result = "换好了：\(Store.outfitName(id))"
                 } else {
@@ -249,6 +248,21 @@ final class LiveTalk: NSObject, ObservableObject {
                     result = "不会这个动作，只会：\(Body.actionNames)"
                 }
                 self.log("动作（工具）：\(result)")
+            } else if name == "turn_body" {
+                let dir = (args["direction"] as? String) ?? "center"
+                let yaw = Body.turnYaw(direction: dir, degrees: (args["degrees"] as? NSNumber)?.doubleValue)
+                self.face.send(["type": "turn", "yaw": yaw])
+                result = yaw == 0 ? "转回来了" : "转好了（\(Int(yaw))°）"
+                self.log("转身（工具）：\(Int(yaw))°")
+            } else if name == "set_camera" {
+                let want = (args["shot"] as? String) ?? ""
+                if let shot = Body.shotID(named: want) {
+                    self.face.send(["type": "view", "shot": shot])
+                    result = "镜头换成\(want)了"
+                } else {
+                    result = "没有这种镜头，只有：\(Body.shotNames)"
+                }
+                self.log("镜头（工具）：\(result)")
             } else if name == "move_gimbal" {
                 let dir = (args["direction"] as? String) ?? "center"
                 let deg = (args["degrees"] as? NSNumber)?.doubleValue
@@ -300,7 +314,6 @@ final class LiveTalk: NSObject, ObservableObject {
         if !s.isEmpty { log("回答：\(s)") }
         if !usedOutfitTool, let id = Store.outfitCommand(h, current: store.outfit) {
             store.outfit = id
-            face.send(["type": "outfit", "id": id])
             log("换装：\(Store.outfitName(id))")
         }
         if Self.byeWords.contains(where: { h.contains($0) }) { ending = true }

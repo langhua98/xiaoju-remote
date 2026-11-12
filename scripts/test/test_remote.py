@@ -50,10 +50,19 @@ def relay_slave_loop(base, stop):
                     text, files = fake_run(cmd)
                     files = [{"name": "photo.jpg", "data": base64.b64encode(JPEG).decode()}] if files else []
                     receipt = {"id": cid, "do": cmd.get("do"), "ok": True, "text": text, "files": files}
+                    if cmd.get("do") == "robot":
+                        receipt["robot"] = fake_robot(cmd)
                 api(base, "POST", f"/api/agent/v1/relay?box={urlq('遥控/' + DEVICE + '/回执/' + cid)}",
                     json.dumps(receipt).encode())
         except Exception:
             time.sleep(0.2)
+
+
+def fake_robot(cmd):
+    """robot 指令的模拟回执：把收到的字段原样回给发送端，测试检查发送端拼的指令对不对"""
+    fields = {k: v for k, v in cmd.items() if k not in ("id", "pair", "do")}
+    return {"view": {"shot": cmd.get("shot", "auto"), "orbit": cmd.get("orbit", 0), "tilt": cmd.get("tilt", 0)},
+            "turn": cmd.get("yaw", 0), "got": fields}
 
 
 def fake_run(cmd):
@@ -120,6 +129,8 @@ def handle(base, it, outbox, fdir):
     else:
         text = f"做了：{do}"
     receipt = {"id": cid, "do": do, "ok": True, "text": text, "files": files, "at": "now"}
+    if do == "robot":
+        receipt["robot"] = fake_robot(cmd)
     api(base, "PUT", f"/api/agent/v1/files?path={urlq(outbox + '/' + cid + '.json')}", json.dumps(receipt).encode())
 
 
@@ -191,7 +202,25 @@ def run_suite(relay):
     results.append(("定位", passed, r.stdout.strip().replace("\n", " | ")))
     ok &= passed
 
-    # 5) 口令不对要被拒
+    # 5) 机器人：镜头、转身、动作的字段要原样到被控端，回执里的 robot 要打印出来
+    r = run_sender(base, ["robot", "--robot", "view", "--shot", "特写", "--orbit", "30"], save)
+    passed = r.returncode == 0 and '"shot": "特写"' in r.stdout and '"orbit": 30.0' in r.stdout and '"action": "view"' in r.stdout
+    results.append(("机器人镜头", passed, r.stdout.strip().replace("\n", " | ")))
+    ok &= passed
+    r = run_sender(base, ["robot", "--robot", "turn", "--yaw", "90"], save)
+    passed = r.returncode == 0 and '"yaw": 90.0' in r.stdout
+    results.append(("机器人转身", passed, r.stdout.strip().replace("\n", " | ")))
+    ok &= passed
+    r = run_sender(base, ["robot", "--robot", "act", "--name", "跳舞"], save)
+    passed = r.returncode == 0 and '"name": "跳舞"' in r.stdout
+    results.append(("机器人动作", passed, r.stdout.strip().replace("\n", " | ")))
+    ok &= passed
+    r = run_sender(base, ["robot", "--robot", "look", "--x", "0.5", "--hold", "2"], save)
+    passed = r.returncode == 0 and '"ms": 2000' in r.stdout and '"x": 0.5' in r.stdout
+    results.append(("机器人视线", passed, r.stdout.strip().replace("\n", " | ")))
+    ok &= passed
+
+    # 6) 口令不对要被拒
     env_bad = {k: v for k, v in os.environ.items() if k.lower() not in ("http_proxy", "https_proxy", "all_proxy")}
     env_bad.update({"XIAOJU_BASE": base, "XIAOJU_TOKEN": "xa_test", "XIAOJU_PAIR": "wrong",
                     "no_proxy": "*", "NO_PROXY": "*"})
