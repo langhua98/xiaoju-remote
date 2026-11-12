@@ -4,18 +4,19 @@ import * as THREE from 'three';
 export const CAM = {
   fullHeight: 1 / 0.8,     // 全身：画面高度是身高的多少倍
   feetAt: 0.84,            // 全身：脚落在屏幕从上往下多少的地方（背景地板上那圈光环）
-  bustHeight: 0.46,        // 半身：画面高度是身高的多少倍
-  headAt: 0.36,            // 半身：头落在屏幕从上往下多少的地方
+  bustHeight: 0.87,        // 中景（头顶到大腿中部）：画面高度是身高的多少倍
+  headAt: 0.25,            // 中景：头落在屏幕从上往下多少的地方
   ease: 2.6,               // 推拉的快慢（越大越快，大约 1 秒到位）
   backAfter: 10,           // 回到待机多少秒后拉回全身
   drift: 0.003,            // 漂移幅度（身高的多少）
-  bgZoom: 0.12,            // 推近时背景放大多少
+  bgZoom: 0,               // 推近时背景放大多少（固定中景，不放大）
+  fixedMid: true,          // 固定中景机位，不再推拉
 };
 
 export class CameraRig {
   constructor(camera, bg) {
     this.camera = camera; this.bg = bg;
-    this.k = 0;            // 0 全身，1 半身
+    this.k = CAM.fixedMid ? 1 : 0;   // 0 全身，1 半身（固定中景时一开始就在中景）
     this.want = 0; this.idleSince = 0;
     this.full = { dist: 5, y: 0 }; this.bust = { dist: 2, y: 1 };
     this.h = 1.7; this.lastZoom = -1;
@@ -35,9 +36,10 @@ export class CameraRig {
 
   /// 每帧调用。close：现在该不该是近景；t：秒
   update(t, dt, close, enabled) {
-    if (close) { this.want = 1; this.idleSince = t; }
+    if (CAM.fixedMid) this.want = 1;
+    else if (close) { this.want = 1; this.idleSince = t; }
     else if (t - this.idleSince > CAM.backAfter) this.want = 0;
-    if (!enabled) this.want = 0;
+    if (!enabled) this.want = CAM.fixedMid ? 1 : 0;
     this.k += (this.want - this.k) * Math.min(1, dt * CAM.ease);
     const e = this.k * this.k * (3 - 2 * this.k);   // 两头慢中间快
     const dist = this.full.dist + (this.bust.dist - this.full.dist) * e;
