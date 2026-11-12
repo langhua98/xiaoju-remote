@@ -1,7 +1,7 @@
 import SwiftUI
 import WebKit
 
-/// 机器人模式：整个屏幕是 Live2D 角色的脸（打包进 App 的 Robot/live2d 网页）。
+/// 机器人模式：整个屏幕是 3D 角色（Yuki）（打包进 App 的 Robot/live2d 网页）。
 /// 待命循环收到指令时，通过 FaceBridge 告诉脸，让表情跟着变。
 @MainActor
 final class FaceBridge: ObservableObject {
