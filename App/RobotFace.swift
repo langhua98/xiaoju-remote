@@ -88,13 +88,11 @@ final class FaceBridge: ObservableObject {
     }
 }
 
-/// 全屏的脸，App 的主界面。左上角齿轮或者连点三下打开设置；底部一直有一行淡淡的待命状态，被远程使用时看得出来。
+/// 全屏的脸，App 的主界面。左上角齿轮打开设置；底部一直有一行淡淡的待命状态，被远程使用时看得出来。
 struct RobotModeView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var engine: RemoteEngine
     var onSettings: () -> Void
-    @State private var taps: [Date] = []
-    @State private var tapGen = 0
     @State private var draft = ""
     @FocusState private var typing: Bool
 
@@ -157,7 +155,6 @@ struct RobotModeView: View {
     }
 
     /// 点一下：正在打字就收起键盘；她在想、在说、在实时聊天时打断 / 结束；闲着时什么都不做（开始聊天用麦克风按钮）。
-    /// 连点三下：打开设置。等 0.45 秒看还有没有下一下，避免两种操作打架。
     /// 闲着的时候点到她的头或手，页面自己会让她做反应。
     private func handle(_ msg: [String: Any]) {
         if (msg["type"] as? String) == "outfit_done" {
@@ -168,23 +165,8 @@ struct RobotModeView: View {
         }
         guard (msg["type"] as? String) == "touch" else { return }
         if typing { typing = false; return }
-        let now = Date()
-        taps = taps.filter { now.timeIntervalSince($0) < 1.2 } + [now]
-        if taps.count >= 3 {
-            taps = []
-            tapGen += 1
-            engine.talk.cancel()
-            onSettings()
-            return
-        }
-        tapGen += 1
-        let gen = tapGen
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-            guard gen == tapGen else { return }
-            let talk = engine.talk
-            if taps.count == 1 && (talk.phase != .idle || talk.live.phase != .off) { talk.tap() }
-            taps = []
-        }
+        let talk = engine.talk
+        if talk.phase != .idle || talk.live.phase != .off { talk.tap() }
     }
 }
 
