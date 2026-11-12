@@ -157,10 +157,11 @@ export function loadAvatar(id, cfg) {
           const C = (a, b, radius, offset) => (byName[a] && (!b || byName[b]) ? [{ a: byName[a], b: b ? byName[b] : null, radius, offset }] : []);
           const colliders = [
             ...C('Head_M', null, 0.105, headLocal.clone()),
-            ...C('Chest_M', 'Root_M', 0.105), ...C('Hip_L', 'Knee_L', 0.075), ...C('Hip_R', 'Knee_R', 0.075),
-            ...C('Knee_L', 'Ankle_L', 0.055), ...C('Knee_R', 'Ankle_R', 0.055),
+            // 腿要比真实的细一点：裙子本来就贴着大腿，碰撞体粗了会把裙摆整个撑开、往上顶
+            ...C('Chest_M', 'Root_M', 0.105), ...C('Hip_L', 'Knee_L', 0.058), ...C('Hip_R', 'Knee_R', 0.058),
+            ...C('Knee_L', 'Ankle_L', 0.045), ...C('Knee_R', 'Ankle_R', 0.045),
           ];
-          spring = new SpringSystem(list, colliders);
+          spring = new SpringSystem(list, colliders, (b) => trim.still.has(b.name));
         }
         // 道具（手柄、手机、报纸、爆米花）：动画用把它们的父节点缩到 0 的办法藏起来。缩到 0 时干脆不画，省绘制调用。
         const props = [];

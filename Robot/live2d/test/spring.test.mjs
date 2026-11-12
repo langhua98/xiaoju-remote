@@ -54,7 +54,7 @@ function chain(names, parent) {
   return out;
 }
 
-test('只挑没有动画的悬挂物，不碰修正骨骼和有动画的头发', () => {
+test('挑骨骼：没有动画的悬挂物和整条裙子；不碰修正骨骼和有动画的头发', () => {
   const root = new Bone(); root.name = 'Root_M';
   const bow = chain(['bow_1', 'bow_2'], root);
   const hair = chain(['hair_1', 'hair_2'], root);          // hair_2 有动画
@@ -64,7 +64,27 @@ test('只挑没有动画的悬挂物，不碰修正骨骼和有动画的头发',
   const all = [root, ...bow, ...hair, ...skirt, ...fix, ...part];
   const moving = new Set(['Root_M', 'hair_2', 'Skirt_1_2']);
   const got = findSpringBones(all, (b) => !moving.has(b.name)).map((b) => b.name);
-  assert.deepEqual(got.sort(), ['B_joint_1', 'bow_1', 'bow_2', 'hair_2'].filter((n) => n !== 'hair_2').sort());
+  assert.deepEqual(got.sort(), ['B_joint_1', 'Skirt_1_1', 'Skirt_1_2', 'bow_1', 'bow_2'].sort());
+  const order = findSpringBones(all, (b) => !moving.has(b.name)).map((b) => b.name);
+  assert.ok(order.indexOf('Skirt_1_1') < order.indexOf('Skirt_1_2'), '父在前子在后');
+});
+
+test('裙子跟着动画走：动画姿势变了，裙子带着惯性追过去，最后停在动画的姿势上', () => {
+  const root = new Bone(); root.name = 'Root_M'; root.position.set(0, 1, 0);
+  const [a, b] = chain(['Skirt_1_1', 'Skirt_1_2'], root);
+  root.updateMatrixWorld(true);
+  const sys = new SpringSystem([a, b], [], (bone) => bone.name === 'Skirt_1_1');   // 第二段有动画
+  assert.equal(sys.joints[1].followAnim, true);
+  const anim = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.8);   // 动画把第二段往前摆了 0.8 弧度
+  const step = () => { b.quaternion.copy(anim); root.updateMatrixWorld(true); sys.update(1 / 30); };   // 每帧 mixer 先写动画值
+  step();
+  assert.ok(b.quaternion.angleTo(anim) < 1e-6, '第一帧直接是动画的样子');
+  anim.setFromAxisAngle(new Vector3(1, 0, 0), -0.8);   // 动画突然摆到另一边
+  step();
+  const lag = b.quaternion.angleTo(anim);
+  assert.ok(lag > 0.3, `应该带着惯性慢一拍，实际只差 ${lag}`);
+  for (let i = 0; i < 200; i++) step();
+  assert.ok(b.quaternion.angleTo(anim) < 0.1, `最后要回到动画的样子附近，还差 ${b.quaternion.angleTo(anim)}`);
 });
 
 test('整套系统：父骨骼一甩，悬挂物跟着晃，最后回到原位；数值不炸', () => {
