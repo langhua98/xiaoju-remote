@@ -26,7 +26,8 @@ export const TOON = {
   hairSpec: 0.3,       // 头发高光带的强度
   hairShadow: { color: [0.93, 0.70, 0.62], offset: [0.004, -0.013], back: 0.004 },   // 刘海的投影：颜色、往哪偏（米）、往后退多少
   eyeShadow: [0.80, 0.74, 0.80],   // 眼睛上沿那片阴影的颜色（乘在眼睛上）
-  neck: { slope: 0.45, radius: 0.11 },   // 下巴的阴影：下巴往后阴影面抬高的斜率、影响范围（米）
+  neck: { slope: 0.45, radius: 0.11 },
+  tuck: 0.045,         // 大腿、臀部的皮肤在深度上退后多少米（裙子抬腿时不被大腿穿出来）；0 关掉   // 下巴的阴影：下巴往后阴影面抬高的斜率、影响范围（米）
 };
 
 export function kindOf(name) {
@@ -48,6 +49,10 @@ varying vec3 vN;
 varying vec3 vP;
 uniform float uOutline;
 uniform vec3 uShadowOff;
+uniform float uTuck;
+#ifdef TUCK
+  attribute float aTuck;
+#endif
 #ifdef AO_UV1
   attribute vec2 uv1;
 #endif
@@ -81,6 +86,11 @@ void main() {
   vN = n;
   vP = mvPosition.xyz;
   gl_Position = projectionMatrix * mvPosition;
+  #ifdef TUCK
+    // 大腿和臀部的皮肤：画的位置不变，只把深度往后退几厘米。裙子贴着腿、甚至陷进腿里一点时，裙子照样盖在皮肤前面。
+    vec4 back = projectionMatrix * (mvPosition + vec4(0.0, 0.0, -uTuck * aTuck, 0.0));
+    gl_Position.z = back.z / back.w * gl_Position.w;
+  #endif
 }`;
 
 const FRAG = /* glsl */`
@@ -195,6 +205,7 @@ function makeMaterial(src, kind, mode) {
   if (kind === 'face') defines.FACE = 1;
   if (kind === 'face' || kind === 'skin') defines.NECK = 1;
   if (kind === 'hair') defines.HAIR = 1;
+  if (kind === 'skin' && !flat && TOON.tuck > 0) defines.TUCK = 1;
   if (src.aoMap && !outline && !flat) { defines.USE_AO = 1; if (src.aoMap.channel === 1) defines.AO_UV1 = 1; }
   const hs = TOON.hairShadow;
   const m = new THREE.ShaderMaterial({
@@ -210,7 +221,7 @@ function makeMaterial(src, kind, mode) {
       uThr: { value: k.thr }, uSoft: { value: k.soft }, uRim: { value: k.rim },
       uSpec: { value: TOON.hairSpec }, uOpacity: { value: src.opacity === undefined ? 1 : src.opacity },
       uHeadC: shared.headC, uHeadUp: shared.headUp, uHeadFwd: shared.headFwd, uChin: shared.chin, uSphere: { value: TOON.sphere },
-      uOutline: { value: TOON.outlineWidth * k.line },
+      uOutline: { value: TOON.outlineWidth * k.line }, uTuck: { value: TOON.tuck },
       uShadowOff: { value: new THREE.Vector3(hs.offset[0], hs.offset[1], -hs.back) },
     },
     side: outline ? THREE.BackSide : flat ? THREE.DoubleSide : src.side,
@@ -228,6 +239,22 @@ function makeMaterial(src, kind, mode) {
   }
   m.userData.toonMap = src.map || null;
   return m;
+}
+
+// 每个顶点「属于大腿和臀部」的程度（0～1）：髋、大腿和臀部的修正骨骼、腰的权重加起来。膝盖以下、手、上身是 0
+const TUCK_BONES = /^(Hip|HipPart\d|thigh\w*|buttocks\w*)_[LR]$|^Root_M$/;
+function addTuck(mesh) {
+  const g = mesh.geometry;
+  if (g.attributes.aTuck || !g.attributes.skinIndex) return;
+  const SI = g.attributes.skinIndex, SW = g.attributes.skinWeight, bones = mesh.skeleton.bones;
+  const is = bones.map((b) => TUCK_BONES.test(b.name));
+  const out = new Float32Array(SI.count);
+  for (let i = 0; i < SI.count; i++) {
+    let w = 0;
+    for (let c = 0; c < 4; c++) if (is[SI.getComponent(i, c)]) w += SW.getComponent(i, c);
+    out[i] = Math.min(1, w);
+  }
+  g.setAttribute('aTuck', new THREE.BufferAttribute(out, 1));
 }
 
 function skinnedCopy(mesh, material, tag) {
@@ -260,6 +287,7 @@ export function applyToon(root, opts) {
       continue;
     }
     const kind = kindOf(src.name);
+    if (kind === 'skin' && mesh.isSkinnedMesh) addTuck(mesh);
     if (!done.has(src)) {
       done.set(src, makeMaterial(src, kind, ''));
       // 用不到的贴图马上放掉，省内存（底色和环境遮蔽留着）
