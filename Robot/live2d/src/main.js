@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { OUTFITS, loadAvatar, disposeAvatar } from './avatar.js';
 import { updateToon, makeGroundShadow } from './toon.js';
 import { Face, STATES, EMOTIONS } from './face.js';
-import { CameraRig } from './camera.js';
+import { CameraRig, SHOTS } from './camera.js';
 import { ACTIONS } from './motion.js';
 
 // ───────── 配置（网址参数），每个新功能都能单独关掉 ─────────
@@ -21,18 +21,22 @@ const CFG = {
   tex: Number(Q.get('tex')) || 2048,   // 贴图最长边上限（iPhone 内存小，大图缩小）
   toon: flag('toon', 1),       // 卡通材质；0 回到标准材质
   outline: flag('outline', 1), // 描边；2 = 连顶点特别多的裙子也描
+  shadow: flag('shadow', 1),   // 刘海在额头上的投影、眼睛上沿的阴影
   spring: flag('spring', 1),   // 悬挂物物理
   hair: flag('hair', 1),       // 头发物理（在动画上面加惯性和碰撞；要先开 spring）
   helpers: flag('helpers', 1), // 辅助骨骼
   cam: flag('cam', 1),         // 自动机位
   fidget: flag('fidget', 1),   // 待机时自己做小动作
   debug: flag('debug', 0),     // 调试面板
+  ankle: Q.has('ankle') ? Number(Q.get('ankle')) : NaN,   // 高跟鞋脚踝掰多少度（调试用，默认按 avatar.js 的 MESH_FIX）
 };
 
 const S = {
   state: 'idle', emotion: 'neutral', emotionUntil: 0, emotionBack: 'neutral',
   gaze: { x: 0, y: 0, at: -1e9 }, gimbal: { x: 0, y: 0, at: -1e9 },
   mouth: 0, bands: null, mouthAt: -1e9, speaking: false, link: CFG.ws ? 'connecting' : 'none', lastInput: 0,
+  look: { x: 0, y: 0, until: 0 },   // 指定的视线，一直保持到 until（秒，Infinity = 直到放开）
+  turn: 0, turnCur: 0,              // 身体朝向（度）：0 = 面向屏幕，正 = 转向屏幕右边
 };
 const now = () => performance.now() / 1000;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -66,8 +70,34 @@ function apply(msg) {
     if (msg.name === 'person_detected') { S.gaze = { x: clamp(+msg.x || 0, -1, 1), y: clamp(+msg.y || 0, -1, 1), at: t }; act('wave'); }
   } else if (type === 'action') {
     // {"type":"action","name":"dance"}：name 是 wave、nod、shake、dance、peace、kiss、angry、phone、play、read… 或者动画名
+    // name 是 stop：停下正在做的动作
+    if (msg.name === 'stop') { if (avatar) avatar.motion.stopAction(); send({ type: 'action_done', name: 'stop', ok: true }); return true; }
     const ok = act(String(msg.name || ''), true);
     send({ type: 'action_done', name: String(msg.name || ''), ok });
+    return ok;
+  } else if (type === 'view') {
+    // 镜头：{"type":"view","shot":"auto|full|bust|face","orbit":30,"tilt":10}，没给的不变
+    return rig.set(msg);
+  } else if (type === 'turn') {
+    // 转身：{"type":"turn","yaw":45}（转到某个朝向）或 {"type":"turn","by":-30}（在现在的基础上再转）
+    if (msg.by !== undefined && Number.isFinite(+msg.by)) S.turn += +msg.by;
+    else if (msg.yaw !== undefined && Number.isFinite(+msg.yaw)) S.turn = +msg.yaw;
+    S.turn = clamp(S.turn, -180, 180);
+    return { yaw: Math.round(S.turn) };
+  } else if (type === 'look') {
+    // 看哪里：{"type":"look","x":0.5,"y":-0.2,"ms":8000}；x、y 是 -1～1；ms 不给默认 10 秒，0 = 一直看；{"type":"look","free":true} 放开
+    if (msg.free) S.look.until = 0;
+    else {
+      const ms = msg.ms === undefined ? 10000 : +msg.ms || 0;
+      S.look = { x: clamp(+msg.x || 0, -1, 1), y: clamp(+msg.y || 0, -1, 1), until: ms > 0 ? t + ms / 1000 : Infinity };
+    }
+    return { x: S.look.x, y: S.look.y, hold: S.look.until > t };
+  } else if (type === 'reset') {
+    // 回到默认：自动镜头、面向屏幕、视线放开、平静、停下动作
+    rig.set({ shot: 'auto', orbit: 0, tilt: 0 });
+    S.turn = 0; S.look.until = 0; S.gaze.at = -1e9;
+    setEmotion('neutral');
+    if (avatar) avatar.motion.stopAction();
   } else if (type === 'speak' && msg.url) {
     setState('speaking'); S.speaking = true;
     speakUrl(String(msg.url));
@@ -137,7 +167,7 @@ function audioMouth() {
 
 // ───────── 画面 ─────────
 const canvas = document.getElementById('stage');
-const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' });
+const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, stencil: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
 renderer.setClearColor(0x000000, 0);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -220,13 +250,14 @@ function frame(dt) {
   const idle = S.state === 'idle' && !S.speaking;
   a.motion.setBase(baseClip());
   a.motion.update(t, dt, idle && CFG.fidget && t - S.lastInput > 6);
-  a.gaze.resetBones();
-  if (a.spring) a.spring.restore();
   a.mixer.update(dt);
+  a.animBase.restore();   // 动画这一帧没重新写的骨骼，放回动画的值，再往上叠加
   let t1 = dbg ? performance.now() : 0;
 
-  // 2. 辅助骨骼；没拿在手上的道具不画
+  // 2. 高跟鞋掰平、辅助骨骼；没拿在手上的道具不画
+  if (a.foot) a.foot.update();
   if (a.twist) a.twist.update();
+  if (a.fix) a.fix.update();
   for (const p of a.props) { const on = p.node.scale.x > 0.01; for (const m of p.meshes) m.visible = on; }
 
   // 3. 嘴：有真实音频用它；有 mouth_level 用它；都没有时用合成的音节节奏
@@ -235,12 +266,16 @@ function frame(dt) {
   else if (t - S.mouthAt < 0.5) { mouth = S.mouth; bands = S.bands; }
   else if (S.state === 'speaking' && !S.speaking) mouth = Math.max(0, Math.sin(t * 9.3) * Math.sin(t * 3.7 + 1)) * 0.9;
 
-  // 4. 视线：x 向屏幕右为正，y 向下为正
+  // 4. 身体朝向（整个角色绕竖直轴转），视线：x 向屏幕右为正，y 向下为正
+  S.turnCur += (S.turn - S.turnCur) * Math.min(1, dt * 2.2);
+  a.root.rotation.y = S.turnCur * Math.PI / 180;
   let gx = 0, gy = 0;
-  if (t - S.gaze.at < 4) { gx = S.gaze.x; gy = S.gaze.y; }
+  if (t < S.look.until) { gx = S.look.x; gy = S.look.y; }
+  else if (t - S.gaze.at < 4) { gx = S.gaze.x; gy = S.gaze.y; }
   else if (t - S.gimbal.at < 6) { gx = S.gimbal.x; gy = S.gimbal.y; }
   else if (S.state === 'thinking') { gx = 0.5 * Math.sin(t * 0.5); gy = -0.5; }
   else if (S.state === 'observing') { gx = 0.7 * Math.sin(t * 0.45); }
+  else if (Math.abs(S.turnCur) > 3) gx = clamp(-S.turnCur / 38, -1, 1) * 0.8;   // 身体转开了：回头看着屏幕前的人
 
   // 5. 表情（算出头的额外姿态和眼球微跳），再做视线分配
   const head = face.update(t, dt, { state: S.state, emotion: S.emotion, mouth, bands, gx, gy });
@@ -251,13 +286,14 @@ function frame(dt) {
   let t2 = dbg ? performance.now() : 0;
   scene.updateMatrixWorld();
   if (a.spring) a.spring.update(dt);
+  a.animBase.commit();
   let t3 = dbg ? performance.now() : 0;
 
   // 7. 镜头
   const close = (S.state === 'listening' || S.state === 'thinking' || S.state === 'speaking' || S.speaking) && !a.motion.wide;
   rig.update(t, dt, close, !!CFG.cam);
   camera.updateMatrixWorld();
-  if (CFG.toon) updateToon(camera, a.head, a.headLocal);
+  if (CFG.toon) updateToon(camera, a.toonHead);
 
   renderer.render(scene, camera);
   if (dbg) {
@@ -354,7 +390,23 @@ function partAt(x, y) {
   if (y > top && Math.abs(x - cx) < 0.3 * px) return 'body';
   return 'other';
 }
+// 手指左右滑：转动她的身体（和「转身」指令是同一个朝向）。滑过的不算点击。
+const DRAG = { id: -1, x: 0, moved: 0, perPx: 0.45 };   // perPx：每滑一个像素转多少度
+addEventListener('pointerdown', (e) => { DRAG.id = e.pointerId; DRAG.x = e.clientX; DRAG.moved = 0; });
+addEventListener('pointermove', (e) => {
+  if (e.pointerId !== DRAG.id) return;
+  const dx = e.clientX - DRAG.x;
+  DRAG.x = e.clientX; DRAG.moved += Math.abs(dx);
+  if (DRAG.moved < 8) return;   // 手指抖一下不算
+  // 转过 180° 接着转（从背面绕回来），所以两个数一起折回 -180～180
+  S.turn += dx * DRAG.perPx; S.turnCur += dx * DRAG.perPx * 0.6;   // 大半直接跟手，剩下的平滑补上
+  if (S.turn > 180) { S.turn -= 360; S.turnCur -= 360; } else if (S.turn < -180) { S.turn += 360; S.turnCur += 360; }
+});
+addEventListener('pointercancel', () => { DRAG.id = -1; });
 addEventListener('pointerup', (e) => {
+  const dragged = e.pointerId === DRAG.id && DRAG.moved >= 8;
+  DRAG.id = -1;
+  if (dragged) return;
   const part = partAt(e.clientX, e.clientY);
   // 闲着的时候才有反应；正在聊天时点一下是「打断」，不要乱动
   if (S.state === 'idle' && !S.speaking && avatar && !avatar.motion.busy) {
@@ -374,7 +426,8 @@ window.YunlaiFace = {
   get: () => ({
     state: S.state, emotion: S.emotion, link: S.link, loaded: !!avatar, outfit: avatar && avatar.id,
     action: avatar && avatar.motion.one ? avatar.motion.one.getClip().name : '', stats: avatar && avatar.stats,
-    actions: Object.keys(ACTIONS), clips: avatar ? Object.keys(avatar.clips) : [],
+    view: rig.get(), turn: Math.round(S.turn), look: S.look.until > now() ? { x: S.look.x, y: S.look.y } : null,
+    actions: Object.keys(ACTIONS), shots: SHOTS, clips: avatar ? Object.keys(avatar.clips) : [],
   }),
   // 调试用：把某个动画定在某一秒（截图看姿势）
   _pose: (clip, time) => { if (!avatar || !avatar.clips[clip] || avatar.clips[clip].faceOnly) return false; CFG.fidget = 0; avatar.motion.play(clip, true); avatar.motion.one.time = time; avatar.motion.one.paused = true; return true; },
