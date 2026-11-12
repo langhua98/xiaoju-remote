@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Vector3, Bone, Quaternion } from 'three';
-import { verletStep, constrainLength, pushOutSphere, pushOutCapsule, findSpringBones, SpringSystem, STEP } from '../src/spring.js';
+import { limitAngle, verletStep, constrainLength, pushOutSphere, pushOutCapsule, findSpringBones, SpringSystem, STEP, FOLLOW_NO_HAIR } from '../src/spring.js';
 
 const P = { stiffness: 1.2, drag: 0.4, gravity: 0, radius: 0.01 };
 
@@ -54,7 +54,7 @@ function chain(names, parent) {
   return out;
 }
 
-test('只挑没有动画的悬挂物，不碰修正骨骼和有动画的头发', () => {
+test('挑骨骼：没有动画的悬挂物、整条裙子、整条头发；不碰修正骨骼；关掉头发物理时不碰有动画的头发', () => {
   const root = new Bone(); root.name = 'Root_M';
   const bow = chain(['bow_1', 'bow_2'], root);
   const hair = chain(['hair_1', 'hair_2'], root);          // hair_2 有动画
@@ -64,7 +64,30 @@ test('只挑没有动画的悬挂物，不碰修正骨骼和有动画的头发',
   const all = [root, ...bow, ...hair, ...skirt, ...fix, ...part];
   const moving = new Set(['Root_M', 'hair_2', 'Skirt_1_2']);
   const got = findSpringBones(all, (b) => !moving.has(b.name)).map((b) => b.name);
-  assert.deepEqual(got.sort(), ['B_joint_1', 'bow_1', 'bow_2', 'hair_2'].filter((n) => n !== 'hair_2').sort());
+  assert.deepEqual(got.sort(), ['B_joint_1', 'Skirt_1_1', 'Skirt_1_2', 'bow_1', 'bow_2', 'hair_1', 'hair_2'].sort());
+  const noHair = findSpringBones(all, (b) => !moving.has(b.name), FOLLOW_NO_HAIR).map((b) => b.name);
+  assert.deepEqual(noHair.sort(), ['B_joint_1', 'Skirt_1_1', 'Skirt_1_2', 'bow_1', 'bow_2'].sort());
+  const order = findSpringBones(all, (b) => !moving.has(b.name)).map((b) => b.name);
+  assert.ok(order.indexOf('Skirt_1_1') < order.indexOf('Skirt_1_2'), '父在前子在后');
+});
+
+test('裙子跟着动画走：动画姿势变了，裙子带着惯性追过去，最后停在动画的姿势上', () => {
+  const root = new Bone(); root.name = 'Root_M'; root.position.set(0, 1, 0);
+  const [a, b] = chain(['Skirt_1_1', 'Skirt_1_2'], root);
+  root.updateMatrixWorld(true);
+  const sys = new SpringSystem([a, b], [], (bone) => bone.name === 'Skirt_1_1');   // 第二段有动画
+  assert.equal(sys.joints[1].followAnim, true);
+  const anim = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), 0.8);   // 动画把第二段往前摆了 0.8 弧度
+  const step = () => { b.quaternion.copy(anim); root.updateMatrixWorld(true); sys.update(1 / 30); };   // 每帧 mixer 先写动画值
+  step();
+  assert.ok(b.quaternion.angleTo(anim) < 1e-6, '第一帧直接是动画的样子');
+  anim.setFromAxisAngle(new Vector3(1, 0, 0), -0.8);   // 动画突然摆到另一边
+  step();
+  const lag = b.quaternion.angleTo(anim);
+  assert.ok(lag > 0.02, `应该带着惯性慢一拍，实际只差 ${lag}`);
+  assert.ok(lag < 0.13, `两节加起来偏离动画不能超过两倍上限（上限 0.06 弧度），实际 ${lag}`);
+  for (let i = 0; i < 200; i++) step();
+  assert.ok(b.quaternion.angleTo(anim) < 0.1, `最后要回到动画的样子附近，还差 ${b.quaternion.angleTo(anim)}`);
 });
 
 test('整套系统：父骨骼一甩，悬挂物跟着晃，最后回到原位；数值不炸', () => {
@@ -99,4 +122,40 @@ test('原姿势就在碰撞体里的骨骼，不和那个碰撞体算碰撞', ()
   for (let i = 0; i < 30; i++) sys.update(1 / 30);
   assert.ok(a.quaternion.angleTo(rest) < 0.2);
   assert.ok(new Quaternion().copy(a.quaternion).length() > 0.99);
+});
+
+test('偏离上限：超过了拉回到上限，没超过不动', () => {
+  const center = new Vector3(0, 1, 0), dir = new Vector3(0, -1, 0);
+  const cur = new Vector3(0.1, 1, 0), prev = cur.clone();   // 偏了 90°
+  assert.equal(limitAngle(cur, prev, center, dir, 0.1, 0.2), true);
+  const d = cur.clone().sub(center);
+  assert.ok(Math.abs(d.length() - 0.1) < 1e-9);
+  assert.ok(Math.abs(d.normalize().angleTo(dir) - 0.2) < 1e-6);
+  const ok = new Vector3(0.005, 0.9, 0);
+  assert.equal(limitAngle(ok, ok.clone(), center, dir, 0.1, 0.2), false);
+});
+
+test('头发：跟着动画走，发根紧发梢松，头一甩有滞后，偏离不超过上限，数值不炸', () => {
+  const head = new Bone(); head.name = 'Head_M'; head.position.set(0, 1.5, 0);
+  const bones = chain(['Emi_hair_B_1_0', 'Emi_hair_B_1_1', 'Emi_hair_B_1_2', 'Emi_hair_B_1_3'], head);
+  head.updateMatrixWorld(true);
+  assert.deepEqual(findSpringBones([head, ...bones], () => false).map((b) => b.name), bones.map((b) => b.name), '有动画的头发也要收进来');
+  const sys = new SpringSystem(bones, [], () => false);
+  assert.ok(sys.joints.every((j) => j.followAnim && j.follow > 0 && j.limit > 0));
+  assert.ok(sys.joints[0].follow > sys.joints[3].follow, '发根跟得紧，发梢跟得松');
+  assert.ok(sys.joints[0].limit < sys.joints[3].limit, '发梢能偏得比发根多');
+  const anim = bones.map((b) => b.quaternion.clone());
+  // 每帧：动画先把骨骼写回动画姿势（真实运行时由 AnimBase 和动画系统保证），再算物理
+  const frame = () => { bones.forEach((b, i) => b.quaternion.copy(anim[i])); head.updateMatrixWorld(true); sys.update(1 / 60); };
+  for (let i = 0; i < 120; i++) frame();
+  assert.ok(bones[3].quaternion.angleTo(anim[3]) < 0.1, '静止时贴着动画姿势');
+  head.position.x = 0.3; frame();
+  assert.ok(bones[3].quaternion.angleTo(anim[3]) > 0.02, '头一甩，发梢应该落在后面');
+  for (let i = 0; i < 40; i++) {
+    head.position.x += 0.05; frame();
+    sys.joints.forEach((j, k) => assert.ok(bones[k].quaternion.angleTo(anim[k]) <= j.limit + 2e-3, '偏离不能超过上限'));
+  }
+  for (let i = 0; i < 240; i++) frame();
+  assert.ok(bones[3].quaternion.angleTo(anim[3]) < 0.1, '停下来以后回到动画姿势附近');
+  for (const b of bones) for (const v of b.quaternion.toArray()) assert.ok(Number.isFinite(v));
 });

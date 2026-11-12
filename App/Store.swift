@@ -18,6 +18,8 @@ final class Store: ObservableObject {
     @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
     /// 机器人穿哪套衣服（default = Yuki_outfit1.glb，outfit2 = Yuki_outfit2.glb，见 Robot/live2d/src/avatar.js 的 OUTFITS）
     @Published var outfit: String { didSet { save("outfit", outfit) } }
+    /// 打开 App 时自动开始待命（令牌填了才会开）
+    @Published var autoStandby: Bool { didSet { save("autoStandby", autoStandby ? "1" : "") } }
     /// 机器人的画质：high = 全部效果，low = 省电（不描边、不算物理、贴图缩到 1024）
     @Published var faceQuality: String { didSet { save("faceQuality", faceQuality) } }
 
@@ -94,6 +96,7 @@ final class Store: ObservableObject {
         gimbalAuto = d.object(forKey: "gimbalAuto") is Bool ? d.bool(forKey: "gimbalAuto") : (load("gimbalAuto") == "1")
         outfit = load("outfit").flatMap { id in Store.outfits.contains { $0.id == id } ? id : nil } ?? "default"
         faceQuality = load("faceQuality") == "low" ? "low" : "high"
+        autoStandby = load("autoStandby") == "1"
     }
 
     // 处理过的指令 id（避免重复执行）

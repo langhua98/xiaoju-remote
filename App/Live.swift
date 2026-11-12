@@ -11,6 +11,8 @@ import Foundation
 final class LiveTalk: NSObject, ObservableObject {
     enum Phase { case off, connecting, listening, speaking }
     @Published private(set) var phase: Phase = .off
+    /// 她正在说的话（Gemini 给的文字稿），聊天框上面当字幕
+    @Published private(set) var caption = ""
 
     /// 连不上时调用（参数是原因），Talk 用它退回 DeepSeek + 语音合成的普通模式
     var onFail: ((String) -> Void)?
@@ -211,7 +213,7 @@ final class LiveTalk: NSObject, ObservableObject {
             heard += t
             lastActivity = Date()
         }
-        if let t = (sc["outputTranscription"] as? [String: Any])?["text"] as? String { said += t }
+        if let t = (sc["outputTranscription"] as? [String: Any])?["text"] as? String { said += t; caption = Self.tidy(said) }
         if let parts = (sc["modelTurn"] as? [String: Any])?["parts"] as? [[String: Any]] {
             for p in parts {
                 guard let inline = p["inlineData"] as? [String: Any], let b64 = inline["data"] as? String,
@@ -233,7 +235,6 @@ final class LiveTalk: NSObject, ObservableObject {
                 let want = (args["name"] as? String) ?? ""
                 if let id = Store.outfitID(named: want) {
                     self.store.outfit = id
-                    self.face.send(["type": "outfit", "id": id])
                     self.usedOutfitTool = true
                     result = "换好了：\(Store.outfitName(id))"
                 } else {
@@ -249,6 +250,21 @@ final class LiveTalk: NSObject, ObservableObject {
                     result = "不会这个动作，只会：\(Body.actionNames)"
                 }
                 self.log("动作（工具）：\(result)")
+            } else if name == "turn_body" {
+                let dir = (args["direction"] as? String) ?? "center"
+                let yaw = Body.turnYaw(direction: dir, degrees: (args["degrees"] as? NSNumber)?.doubleValue)
+                self.face.send(["type": "turn", "yaw": yaw])
+                result = yaw == 0 ? "转回来了" : "转好了（\(Int(yaw))°）"
+                self.log("转身（工具）：\(Int(yaw))°")
+            } else if name == "set_camera" {
+                let want = (args["shot"] as? String) ?? ""
+                if let shot = Body.shotID(named: want) {
+                    self.face.send(["type": "view", "shot": shot])
+                    result = "镜头换成\(want)了"
+                } else {
+                    result = "没有这种镜头，只有：\(Body.shotNames)"
+                }
+                self.log("镜头（工具）：\(result)")
             } else if name == "move_gimbal" {
                 let dir = (args["direction"] as? String) ?? "center"
                 let deg = (args["degrees"] as? NSNumber)?.doubleValue
@@ -293,6 +309,17 @@ final class LiveTalk: NSObject, ObservableObject {
         }
     }
 
+    /// 聊天框里打的字：当成你说的一句话发给 Gemini（她用声音回答）。没连上返回 false
+    @discardableResult
+    func sendText(_ text: String) -> Bool {
+        guard phase == .listening || phase == .speaking else { return false }
+        heard += text
+        caption = ""
+        lastActivity = Date()
+        send(["clientContent": ["turns": [["role": "user", "parts": [["text": text]]]], "turnComplete": true]])
+        return true
+    }
+
     private func turnComplete() {
         let h = Self.tidy(heard)
         let s = Self.tidy(said)
@@ -300,7 +327,6 @@ final class LiveTalk: NSObject, ObservableObject {
         if !s.isEmpty { log("回答：\(s)") }
         if !usedOutfitTool, let id = Store.outfitCommand(h, current: store.outfit) {
             store.outfit = id
-            face.send(["type": "outfit", "id": id])
             log("换装：\(Store.outfitName(id))")
         }
         if Self.byeWords.contains(where: { h.contains($0) }) { ending = true }

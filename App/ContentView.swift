@@ -5,17 +5,42 @@ import SwiftUI
 
 let brandOrange = Color(red: 1.0, green: 0.48, blue: 0.09)
 
-struct ContentView: View {
+/// 主界面：打开 App 就是机器人（全屏的 3D 角色），左上角的齿轮打开设置。
+/// 第一次用（云盘令牌和大模型密钥都没填）时自动打开设置。
+struct MainView: View {
     @EnvironmentObject var store: Store
     @EnvironmentObject var engine: RemoteEngine
+    @State private var showSettings = false
+    @State private var started = false
+
+    var body: some View {
+        RobotModeView(onSettings: { showSettings = true })
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+                    .environmentObject(store)
+                    .environmentObject(engine)
+            }
+            .onAppear {
+                guard !started else { return }
+                started = true
+                if store.token.isEmpty && store.llmKey.isEmpty && store.geminiKey.isEmpty { showSettings = true }
+                if store.autoStandby && !store.token.isEmpty && !engine.running { engine.start() }
+            }
+    }
+}
+
+/// 设置页：云盘、待命、对话、云台、机器人的画面、记录。
+struct SettingsView: View {
+    @EnvironmentObject var store: Store
+    @EnvironmentObject var engine: RemoteEngine
+    @Environment(\.dismiss) private var dismiss
     @State private var locMgr = CLLocationManager()
-    @State private var showFace = false
 
     var body: some View {
         NavigationView {
             Form {
                 Section {
-                    Text("这台 iPhone 开「待命」后，等另一台设备发来的指令：拍照、录音、定位、手电筒、震动、响铃。被远程使用时屏幕会一直亮着，动作都记在下面。")
+                    Text("这台 iPhone 开「待命」后，等另一台设备发来的指令：拍照、录音、定位、手电筒、震动、响铃，还能遥控屏幕里的机器人（robot 指令）。被远程使用时屏幕会一直亮着，动作都记在下面。")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
 
@@ -36,6 +61,7 @@ struct ContentView: View {
                     }
                     .font(.body.weight(.semibold))
                     .foregroundStyle(engine.running ? Color.red : brandOrange)
+                    Toggle("打开 App 时自动待命", isOn: $store.autoStandby)
                 } footer: {
                     Text(engine.running ? "● 待命中（设备名：\(store.device)）" : "○ 未运行")
                         .foregroundStyle(engine.running ? .green : .secondary)
@@ -67,7 +93,6 @@ struct ContentView: View {
                 GimbalSection(gimbal: engine.gimbal, auto: $store.gimbalAuto)
 
                 Section {
-                    Button("打开机器人的脸") { showFace = true }
                     Picker("衣服", selection: $store.outfit) {
                         ForEach(Store.outfits.indices, id: \.self) { i in
                             Text(Store.outfits[i].name).tag(Store.outfits[i].id)
@@ -78,9 +103,9 @@ struct ContentView: View {
                         Text("省电").tag("low")
                     }
                 } header: {
-                    Text("机器人模式")
+                    Text("机器人")
                 } footer: {
-                    Text("整个屏幕变成 3D 角色（Yuki），待命照常进行。点一下屏幕开始聊天，之后像打电话一样轮流说，不用每句都点，说「再见」结束；收到遥控指令时表情会跟着变；拍照、录音、听你说话时屏幕上方会提示。也可以对她说「换上洋装」「换回校服」来换衣服，让她「跳个舞」「挥挥手」。闲着的时候点她的头或手，她会有反应。画面卡就把画质改成「省电」（不描边、不算飘动、贴图缩小）。连点三下退出。")
+                    Text("打开 App 就是 3D 角色（Yuki），待命照常进行。点一下屏幕开始聊天，之后像打电话一样轮流说，不用每句都点，说「再见」结束；收到遥控指令时表情会跟着变；拍照、录音、听你说话时屏幕上方会提示。可以对她说「换上洋装」「跳个舞」「转过去」「让我看看你的脸」。闲着的时候点她的头或手，她会有反应。画面卡就把画质改成「省电」（不描边、不算飘动、贴图缩小）。左上角齿轮打开这里。")
                 }
 
                 Section("记录") {
@@ -93,15 +118,14 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("小橘遥控")
+            .navigationTitle("设置")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+            }
         }
         .navigationViewStyle(.stack)
         .tint(brandOrange)
-        .fullScreenCover(isPresented: $showFace) {
-            RobotModeView { showFace = false }
-                .environmentObject(store)
-                .environmentObject(engine)
-        }
     }
 
     private func requestPermissions() {

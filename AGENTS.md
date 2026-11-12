@@ -68,6 +68,7 @@
 | `ring` | `seconds` | 响铃（用来找手机） |
 | `shell` | — | iOS 不支持，返回一段说明 |
 | `gimbal` | `action`、`yaw`、`pitch`、`ms` | 大疆 OM 云台（见下面「云台」） |
+| `robot` | `action` 和它的参数 | 屏幕里的 3D 角色（见下面「机器人」），只有 iPhone 被控端有 |
 
 `pair` 和 B 的配对口令不一样时，回执是 `{"id", "ok": false, "text": "配对口令不对"}`。
 
@@ -105,10 +106,33 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 
 用之前先在 DJI Mimo 里断开云台（同一时间只能连一台手机）。安卓被控端（S4，Android 4.2.2）系统里没有蓝牙低功耗接口，接不了云台。
 
+## 机器人（`robot` 指令）
+
+打开 App 就是全屏的 3D 角色（Yuki），设置在左上角齿轮里。`robot` 指令从另一台设备控制她，回执里多一个 `robot`（现在的状态：`outfit`、`state`、`emotion`、`view`、`turn`、`look`、`action`、`actions`、`shots`）。
+页面没加载好（App 不在前台）时回执是「机器人的脸没打开」。代码在 `App/RobotCommand.swift`，页面一侧的消息见 `Robot/README.md`。
+
+| action | 参数 | 说明 |
+|--------|------|------|
+| `status` | — | 状态（默认） |
+| `act` | `name` | 做动作：挥手 点头 摇头 跳舞 比耶 飞吻 生气 玩手机 打游戏 看报纸 吃爆米花（或英文 `wave` `nod` `shake` `dance` `peace` `kiss` `angry` `phone` `play` `read` `popcorn` `call` `pose` `touch_head`…，或者动画名） |
+| `view` | `shot`、`orbit`、`tilt` | 镜头。`shot`：`auto`（聊天时半身、闲着全身）/ `full` 全身 / `bust` 半身 / `face` 特写，中文也行。`orbit`：绕着她转多少度（-180～180，正 = 往屏幕右边绕，看到她的左侧）。`tilt`：俯仰（-25～45，正 = 从上往下看）。没给的不变，手动设的景别一直保持到改回 `auto` |
+| `turn` | `yaw` 或 `by` 或 `direction`+`degrees` | 身体转身（不是云台）。`yaw` 转到某个朝向（-180～180，0 面向屏幕，正 = 转向屏幕右边，180 背对）；`by` 在现在的基础上再转；`direction` 是 `left`（她的左边）/ `right` / `back` / `center`。身体转开时她会回头看着屏幕前的人 |
+| `look` | `x`、`y`、`ms` 或 `free` | 看哪里。`x`、`y` 是 -1～1（正 = 屏幕右、下），`ms` 保持多久（默认 10 秒，0 一直看），`"free": true` 放开 |
+| `emotion` | `name`、`ms` | 表情：`neutral` `happy` `alert` `surprised` `confused`；带 `ms` 是临时的 |
+| `outfit` | `name` 或 `id` | 换装：校服（`default`）/ 洋装（`outfit2`） |
+| `say` | `text`、`emotion` | 让她说一句话（用语音合成），`text` 里可以带 `[动作 挥手]` 这样的标签。实时语音聊天进行中不插话 |
+| `reset` | — | 回到默认：自动镜头、面向屏幕、视线放开、平静、停下动作 |
+
+例子：`{"do":"robot","action":"view","shot":"face","orbit":20}`、`{"do":"robot","action":"turn","yaw":180}`、`{"do":"robot","action":"act","name":"跳舞"}`。
+
+和她说话时，大模型也能控制这些：普通模式在回答里写 `[动作 跳舞]`、`[镜头 特写]`、`[转身 左 90]`（`右`、`背对`、`回正`），实时模式用工具 `play_action`、`set_camera`、`turn_body`（定义在 `App/Body.swift`）。
+
 ## 代码地图
 
 - `App/XiaojuRemoteApp.swift`：入口。
-- `App/ContentView.swift`：设置界面（云盘地址、令牌、设备名、口令、授权、待命开关）和运行记录。
+- `App/ContentView.swift`：主界面 `MainView`（打开 App 就是机器人，左上角齿轮打开设置；第一次用时自动打开设置）和设置页 `SettingsView`（云盘地址、令牌、设备名、口令、授权、待命开关、对话、云台、机器人的衣服和画质、运行记录）。
+- `App/RobotCommand.swift`：`robot` 遥控指令。
+- `App/RobotFace.swift`：机器人画面 `RobotModeView`，下面是聊天框 `ChatBar`（打字聊天、快捷动作菜单、麦克风）和字幕 `Captions`；`FaceBridge` 给页面发消息、取状态。
 - `App/Store.swift`：设置。令牌和口令存在钥匙串，其他存 UserDefaults；处理过的指令 id 也记在这里，防止重复执行。
 - `App/Cloud.swift`：云盘客户端，包括文件接口和即时信箱（`relayWait` / `relaySend` / `relayMissing`）。
 - `App/RemoteEngine.swift`：待命循环（先走即时信箱，没有就退回文件信箱）、`execute` 执行指令并原路回执、`RemoteBox` 信箱名。
@@ -154,6 +178,7 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 
 ## 安装包
 
+- William 的要求：**每次出新版 ipa，都要改版本号**：`project.yml` 里的 `MARKETING_VERSION`（0.2 → 0.3 …），和改动放在同一次提交里。构建号不用管，workflow 会自动用运行编号。回复里说清楚这次是哪个版本。
 - William 的要求：**每次有新的 ipa，都在回复里把直接下载链接发给他**：
   https://github.com/langhua98/xiaoju-remote/releases/download/latest/Vania-latest.ipa
 - 安卓 APK：https://github.com/langhua98/xiaoju-remote/releases/download/xiaoju-remote-android/xiaoju-remote-latest.apk
