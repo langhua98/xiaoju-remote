@@ -249,8 +249,8 @@ function frame(dt) {
   const idle = S.state === 'idle' && !S.speaking;
   a.motion.setBase(baseClip());
   a.motion.update(t, dt, idle && CFG.fidget && t - S.lastInput > 6);
-  a.gaze.resetBones();
   a.mixer.update(dt);
+  a.animBase.restore();   // 动画这一帧没重新写的骨骼，放回动画的值，再往上叠加
   let t1 = dbg ? performance.now() : 0;
 
   // 2. 高跟鞋掰平、辅助骨骼；没拿在手上的道具不画
@@ -285,6 +285,7 @@ function frame(dt) {
   let t2 = dbg ? performance.now() : 0;
   scene.updateMatrixWorld();
   if (a.spring) a.spring.update(dt);
+  a.animBase.commit();
   let t3 = dbg ? performance.now() : 0;
 
   // 7. 镜头

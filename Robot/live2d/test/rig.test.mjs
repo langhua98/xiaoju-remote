@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Vector3, Quaternion, Bone, Euler } from 'three';
-import { twistAbout, TwistHelpers, Gaze, addWorldRotation, GAZE } from '../src/rig.js';
+import { twistAbout, TwistHelpers, Gaze, addWorldRotation, GAZE, AnimBase } from '../src/rig.js';
 
 const Y = new Vector3(0, 1, 0), X = new Vector3(1, 0, 0);
 
@@ -62,16 +62,29 @@ test('视线分配：眼睛先到，头后到，最后眼睛让回一部分', ()
   root.updateMatrixWorld(true);
   const g = new Gaze({ chest, neck, head, eyeL, eyeR });
   const none = { yaw: 0, pitch: 0, roll: 0 };
-  g.resetBones(); g.update(1 / 30, 1, 0, none, [0, 0], 1);
+  const base = new AnimBase(g.bones);
+  base.restore(); g.update(1 / 30, 1, 0, none, [0, 0], 1); base.commit();
   const eyeEarly = g.cur.eye[0], headEarly = g.cur.head[0];
   assert.ok(eyeEarly > headEarly * 2, '一开始眼睛转得比头多');
-  for (let i = 0; i < 120; i++) { g.resetBones(); g.update(1 / 30, 1, 0, none, [0, 0], 1); }
+  for (let i = 0; i < 120; i++) { base.restore(); g.update(1 / 30, 1, 0, none, [0, 0], 1); base.commit(); }
   const body = g.body[0], eye = g.cur.eye[0];
   assert.ok(Math.abs(body - GAZE.maxYaw * 0.7) < 0.01, '头、脖子、胸一共转 70%');
   assert.ok(Math.abs(body + eye - GAZE.maxYaw) < 0.01, '加上眼睛正好看到目标');
   assert.ok(eye < eyeEarly, '头跟上以后眼睛回正一些');
-  // 每帧先 resetBones，骨骼上的转动不会越叠越多
+  // 动画没重新写骨骼，叠加也不会越叠越多
   const q1 = head.quaternion.clone();
-  g.resetBones(); g.update(1 / 30, 1, 0, none, [0, 0], 1);
+  base.restore(); g.update(1 / 30, 1, 0, none, [0, 0], 1); base.commit();
   assert.ok(head.quaternion.angleTo(q1) < 1e-3);
+});
+
+test('动画不重新写骨骼的帧，叠加不会越转越多；动画写了新值就跟着新值', () => {
+  const b = new Bone();
+  const base = new AnimBase([b]);
+  const add = new Quaternion().setFromAxisAngle(X, 0.3);
+  for (let i = 0; i < 50; i++) { base.restore(); b.quaternion.multiply(add); base.commit(); }   // 动画一直没写
+  assert.ok(Math.abs(b.quaternion.angleTo(new Quaternion()) - 0.3) < 1e-6, '只叠了一次');
+  const anim = new Quaternion().setFromAxisAngle(Y, 1);
+  b.quaternion.copy(anim);   // 动画写了新值
+  base.restore(); b.quaternion.multiply(add); base.commit();
+  assert.ok(b.quaternion.angleTo(anim.clone().multiply(add)) < 1e-6);
 });

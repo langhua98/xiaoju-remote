@@ -7,6 +7,31 @@ const IDENT = new Quaternion();
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const RAD = Math.PI / 180;
 
+// ───────── 动画的值和我们叠加的值分开记 ─────────
+// 动画系统（AnimationMixer）有个省事的做法：一条轨道这一帧算出来的值和上一帧一样，就不往骨骼上写。
+// 我们又要在动画之后往骨骼上叠加转动（视线、高跟鞋、裙子物理）。动画不重新写的那些帧，叠加就会叠在自己上一帧的结果上，
+// 越转越多（高跟鞋的脚趾轨道是常数，于是一直在翻）。
+// 办法：每根要叠加的骨骼记下「我上一帧写的结果」和「当时动画的值」。动画之后先看一眼：
+// 骨骼上还是我写的那个结果，说明动画这一帧没写，就放回记下的动画值；不是，说明动画写了新值，记下来。
+export class AnimBase {
+  constructor(bones) {
+    this.items = [...new Set(bones.filter(Boolean))].map((bone) => ({ bone, out: new Quaternion(NaN, 0, 0, 1), base: bone.quaternion.clone() }));
+  }
+
+  /// 动画更新之后、叠加之前调用：骨骼回到动画的值
+  restore() {
+    for (const it of this.items) {
+      const q = it.bone.quaternion, o = it.out;
+      if (q.x === o.x && q.y === o.y && q.z === o.z && q.w === o.w) q.copy(it.base); else it.base.copy(q);
+    }
+  }
+
+  /// 这一帧全部叠加完之后调用：记下结果
+  commit() {
+    for (const it of this.items) it.out.copy(it.bone.quaternion);
+  }
+}
+
 /// swing-twist 分解：取出 q 绕 axis（单位向量）的那部分转动，写进 out
 export function twistAbout(q, axis, out) {
   const d = q.x * axis.x + q.y * axis.y + q.z * axis.z;
@@ -152,7 +177,9 @@ export class FootFix {
     return this;
   }
 
-  /// 每帧在 mixer.update 之后调用（脚踝、脚趾每帧都会被动画或下面的 reset 重新写，所以不会越转越多）
+  /// 每帧在动画之后调用。脚踝、脚趾要先由 AnimBase 放回动画的值（见 bones），不然会越转越多
+  get bones() { return this.feet.flatMap((f) => [f.ankle, f.toes]); }
+
   update() {
     if (!this.deg) return;
     for (const f of this.feet) { f.ankle.quaternion.multiply(f.qa); f.toes.quaternion.multiply(f.qt); }
@@ -189,10 +216,8 @@ export class Gaze {
     this.body = [0, 0];   // 头、脖子、胸现在一共转了多少
   }
 
-  /// 动画更新之前调用：把这几根骨骼放回原始姿势。有动画轨道的会被动画重新写上，没有的不会越叠越多。
-  resetBones() {
-    for (const [k, v] of Object.entries(this.b)) if (v) v.quaternion.copy(this.rest[k]);
-  }
+  /// 要叠加转动的骨骼（交给 AnimBase 管，保证每帧从动画的值开始叠）
+  get bones() { return Object.values(this.b).filter(Boolean); }
 
   /// x、y：-1～1（x 正 = 屏幕右，y 正 = 向下）。extra：头的额外姿态 { yaw, pitch, roll }（弧度）。
   /// eyeOffset：眼球微跳 [yaw, pitch]（弧度）。weight：播一次性动作时调低，避免和动画打架。

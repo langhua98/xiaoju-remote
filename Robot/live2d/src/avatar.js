@@ -4,7 +4,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { applyToon, setChin } from './toon.js';
-import { TwistHelpers, Correctives, Gaze, FootFix } from './rig.js';
+import { TwistHelpers, Correctives, Gaze, FootFix, AnimBase } from './rig.js';
 import { SpringSystem, findSpringBones } from './spring.js';
 import { Motion, BANNED } from './motion.js';
 
@@ -182,7 +182,10 @@ export function loadAvatar(id, cfg) {
           props.push({ node, meshes: list });
         }
         const motion = new Motion(mixer, clips);
+        // 我们要在动画之后叠加转动的骨骼：视线、高跟鞋、跟着动画走的裙子
+        const animBase = new AnimBase([...gaze.bones, ...(foot ? foot.bones : []), ...(spring ? spring.joints.filter((j) => j.followAnim).map((j) => j.bone) : [])]);
         ok({
+          animBase,
           id, root, mixer, clips, faces, box, byName, bones, headLocal, headY, head,
           toonHead: { bone: head, center: headLocal, up: headUp, fwd: headFwd },
           twist, fix, foot, gaze, spring, motion, props, outlines: toon.outlines,
