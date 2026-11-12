@@ -1,15 +1,13 @@
 #!/bin/sh
-# 下载第三方素材（不放进仓库，各有各的授权）：
-# - Live2D Cubism Core：Live2D 官方运行库，属于「可再分发代码」，
-#   授权见 https://www.live2d.com/eula/live2d-proprietary-software-license-agreement_en.html
-# - 桃濑日和（Hiyori）FREE：Live2D 官方示例模型，个人和小规模企业可商用，
-#   授权见 https://www.live2d.com/zh-CHS/download/sample-data/ 。这里用 AIRI 项目的镜像下载。
+# 下载角色模型（不放进仓库，每个约 30～60 MB）：
+# Yuki 的两套衣服，同一个角色，放在公开数据集 langhua1998/yuki-model。
+# 手机模型_含骨骼动画.glb（280 MB）不用，也不下载。
 set -e
 cd "$(dirname "$0")"
-mkdir -p vendor models
-curl -fL -o vendor/live2dcubismcore.min.js https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js
-curl -fL -o models/hiyori.zip https://dist.ayaka.moe/live2d-models/hiyori_free_zh.zip
-rm -rf models/hiyori_free_zh
-unzip -q -o models/hiyori.zip -d models
-rm models/hiyori.zip
-echo "完成：vendor/live2dcubismcore.min.js、models/hiyori_free_zh/"
+mkdir -p models
+BASE=https://huggingface.co/datasets/langhua1998/yuki-model/resolve/main
+for f in Yuki_outfit1.glb Yuki_outfit2.glb; do
+  curl -fL --retry 3 -o "models/$f" "$BASE/$f"
+done
+ls -l models
+echo "完成：models/Yuki_outfit1.glb、models/Yuki_outfit2.glb"

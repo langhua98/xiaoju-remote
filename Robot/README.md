@@ -1,21 +1,21 @@
-# Yunlai Robot 面部（Live2D）
+# Yunlai Robot 角色（Yuki，3D）
 
-手机是机器人的脸。角色用 **Live2D 桃濑日和（Hiyori）**，也就是开源项目 [AIRI](https://github.com/moeru-ai/airi) 默认带的 Live2D 角色。
+手机是机器人的身体和脸。角色是 **Yuki**（3D，GLB 格式，模型放在公开数据集 [langhua1998/yuki-model](https://huggingface.co/datasets/langhua1998/yuki-model)）：
+- `Yuki_outfit1.glb`（校服，默认）和 `Yuki_outfit2.glb`（洋装）是同一个角色的两套衣服，各是一个完整模型。
+- 带 ARKit 的 52 个表情形变（`eyeBlinkLeft`、`jawOpen`、`mouthSmileLeft`…）、骨骼，和 30 个自带动画（我们只用 `idle`、`Yuki_Idle_listening_v3`、`hello`、`Yes`、`No`，其余不加载，省内存）。
+- 数据集里的 `Yuki_手机模型_含骨骼动画.glb`（280 MB）不用。
 
-显示、待机动作、眨眼、头发物理、视线、语音口型都交给开源库：
-- [pixi.js](https://github.com/pixijs/pixijs) 7（MIT）
-- [pixi-live2d-display-lipsyncpatch](https://github.com/RaSan147/pixi-live2d-display)（MIT，带口型同步）
-
-我们自己只写了一层接入代码 `live2d/src/main.js`：把说明书里的 `robot_state` 消息翻译成模型参数，再连上 WebSocket。
+显示交给 [three.js](https://threejs.org/)（MIT，`GLTFLoader`），我们自己只写了一层接入代码 `live2d/src/main.js`（文件夹名沿用旧的 `live2d`）：把说明书里的 `robot_state` 消息翻译成表情形变和头部转动，再连上 WebSocket。
 
 ## 在「小橘遥控」App 里使用（机器人模式）
 
-App 设置页有「机器人模式 → 打开机器人的脸」。打开后整个屏幕是 Hiyori 的脸，待命照常进行，连点三下退出。
+App 设置页有「机器人模式 → 打开机器人的脸」。打开后整个屏幕是 Yuki，待命照常进行，连点三下退出。点一下屏幕她会挥手（`hello` 动画）。
 
-- GitHub Actions 编译前先运行 `fetch-assets.sh`，把模型和 Live2D 运行库下载下来，再把 `Robot/live2d` 整个打进 App。
+- GitHub Actions 编译前先运行 `fetch-assets.sh`，从数据集下载两个 glb（约 90 MB，不进仓库），再把 `Robot/live2d` 整个打进 App。数据集要保持公开，否则编译下载会 401。
 - App 用 `yunlai://face/index.html` 打开这个网页（`App/RobotFace.swift`），通过 `window.YunlaiFace.apply(...)` 发消息。
 - 待命收到指令时：拍照 → 观察，并提示「摄像头工作中」；录音 → 倾听，并提示「麦克风工作中」；响铃 → 说话；其他 → 思考。完成后开心一下，口令不对就疑惑。
 - 屏幕底部一直有一行淡淡的「● 待命中 · 设备名」，被远程使用时看得出来。
+- 内存：iPhone 7 Plus 只有 2 GB。贴图最长边缩到 2048（`?tex=1024` 可再小），一次只加载一套衣服，换装时先加载新的再释放旧的。
 
 ### 对话（`App/Talk.swift`）
 
@@ -44,14 +44,11 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
 - 左右 5～90°，上下 5～45°，`center` 回到归位点。云台没连上就告诉她「转不了」，不会装作转了。
 - 每次转动都记在「记录」里（`云台（left 30）：…`）。真机上左右反了就改 `Body.perform` 里的正负号。
 
-### 换装（`Robot/live2d/outfits/`）
+### 换装
 
-- 每套衣服一个文件夹：`outfits/<id>/clothes.png`，2048×2048，**只有衣服**（衣服范围内不透明，别处透明），不含 Live2D 原贴图。
-- 页面收到 `{"type":"outfit","id":"heibai"}` 时，用 `source-atop` 把衣服层盖到原贴图上再换上去：颜色换成新衣服，透明度沿用原贴图，所以轮廓、动作、物理都不变。`"default"` 换回原版。
-- App：设置页「机器人模式」里选衣服；或者对她说「换上黑白经典」「换回原版」（`Store.outfitCommand`，不经过大模型）。
-- 新加一套：把生图 AI 画好的整张贴图交给 Claude，按衣服遮罩只取衣服部分存成 `clothes.png`；再在 `outfits/index.json` 和 `App/Store.swift` 的 `Store.outfits` 里各加一行。
-- 现在有：`default` 原版、`heibai` 黑白经典、`yeye` 暗夜洋装。
-- 生图 AI 没画满、或者在衣服里画了皮肤的地方，用 OpenCV 按周围布料的颜色补上（暗夜洋装就是这样处理的）。
+- 页面收到 `{"type":"outfit","id":"outfit2"}` 时，加载另一个 glb 换上，旧的释放。`"default"` 是校服（`Yuki_outfit1.glb`）；不认识的 id（比如以前存的 `heibai`、`yeye`）回到校服。
+- App：设置页「机器人模式」里选衣服；或者对她说「换上洋装」「换回校服」（`Store.outfitCommand`，不经过大模型）。
+- 新加一套：把 glb 传到数据集，在 `fetch-assets.sh`、`src/main.js` 的 `OUTFITS`、`App/Store.swift` 的 `Store.outfits` 里各加一行，再重新打包。
 
 ## 在电脑上调试网页
 
@@ -59,12 +56,12 @@ App 设置页有「机器人模式 → 打开机器人的脸」。打开后整�
 
 ```bash
 cd Robot/live2d
-sh fetch-assets.sh     # 下载 Live2D 运行库和 Hiyori 模型（不放进仓库）
-npm install && npm run build   # 只有改了 src/main.js 才需要；live2d.js 已经提交
+sh fetch-assets.sh     # 下载两个 Yuki 模型到 models/（不放进仓库）
+npm install && npm run build   # 只有改了 src/main.js 才需要；yuki.js 已经提交
 python3 -m http.server 8000 -d ..   # 然后打开 http://电脑IP:8000/live2d/
 ```
 
-不带 `?ws=` 打开时自动播放演示。网址参数：`ws=ws://…/ws`（或 `ws=auto`，同一主机的 `/ws`）、`demo=0`、`fps=30|60`、`idle=45`（多少秒没消息回待机）、`model=其他 model3.json 地址`。
+不带 `?ws=` 打开时自动播放演示。网址参数：`ws=ws://…/ws`（或 `ws=auto`，同一主机的 `/ws`）、`demo=0`、`fps=30|60`、`idle=45`（多少秒没消息回待机）、`tex=贴图最长边上限（默认 2048）`。
 
 ## 消息协议（WebSocket 文本帧，JSON）
 
@@ -88,12 +85,11 @@ python3 -m http.server 8000 -d ..   # 然后打开 http://电脑IP:8000/live2d/
 
 | 东西 | 授权 | 是否放进仓库 |
 |------|------|------|
-| pixi.js、pixi-live2d-display-lipsyncpatch | MIT | 打包在 `live2d.js` 里 |
-| Live2D Cubism Core | Live2D 专有软件许可，属于「可再分发代码」 | 否，用脚本下载 |
-| 桃濑日和 FREE | Live2D 免费素材许可：个人和小规模企业可商用，中大型企业只能内部试用 | 否，用脚本下载 |
+| three.js | MIT | 打包在 `yuki.js` 里 |
+| Yuki 模型 | William 自己的模型，放在公开数据集 | 否，用脚本下载 |
 
 ## 还没确认的事
 
-- iPhone 7 Plus（iOS 15）上的流畅度还没实测，默认限 30 FPS。
+- iPhone 7 Plus（iOS 15）上的流畅度和内存还没实测（3D 比以前的 Live2D 重得多），默认限 30 FPS。头转动的正负号、嘴型大小也要真机上看一眼。
 - 云台已经接上（`App/Gimbal.swift`，大疆 OM6）：App 连着云台时每秒把朝向发给脸，远程用 `gimbal` 指令转。
   真机上还没一起试过：脸的左右方向如果和云台转的方向反了，改 `RemoteEngine` 里发 `gimbal` 消息的正负号。

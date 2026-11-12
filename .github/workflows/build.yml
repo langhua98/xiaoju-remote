@@ -44,8 +44,8 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
-      - name: Fetch Live2D assets
-        # 机器人模式的脸：Live2D 运行库和 Hiyori 模型不放仓库，编译前下载（授权见 Robot/README.md）
+      - name: Fetch Yuki models
+        # 机器人模式的脸：Yuki 的两个 glb 模型不放仓库，编译前从公开数据集 langhua1998/yuki-model 下载
         run: |
           sh Robot/live2d/fetch-assets.sh
           rm -rf Robot/live2d/node_modules
