@@ -55,6 +55,34 @@ export class TwistHelpers {
   }
 }
 
+// ───────── 修正骨骼 ─────────
+// 上臂、前臂、手腕、大腿、小腿各带一组修正骨骼（xxxCorrectiveRoot 下面的 …Off / …IN），挂在那一节肢体上。
+// 肩头、腋下、臀部、膝盖这些「关节外面的皮肤和衣服」绑在它们上面。原作引擎实时驱动它们，让这些地方不跟着肢体整个转。
+// 模型里没有这部分数据，这里做一个近似：修正骨骼的根只跟着肢体转一部分（follow），其余留在上一节的朝向。
+// 不驱动的话：手臂从 T 字姿势放下来时，肩头的衣服会跟着手臂整体转上去，挤到脖子两边（第二套衣服最明显）。
+export const CORRECTIVE_FOLLOW = { upperarm: 0.1, lowerarm: 0.5, wrist: 0.5, thigh: 0.35, calf: 0.5 };
+
+export class Correctives {
+  constructor(byName) {
+    this.items = [];
+    for (const [name, bone] of Object.entries(byName)) {
+      const m = /^(upperarm|lowerarm|wrist|thigh|calf)CorrectiveRoot_[LR]$/.exec(name);
+      if (!m || !bone.parent || !bone.parent.isBone) continue;
+      const driver = bone.parent;
+      this.items.push({ bone, driver, driverRest: driver.quaternion.clone(), rest: bone.quaternion.clone(), follow: CORRECTIVE_FOLLOW[m[1]] });
+    }
+  }
+
+  /// 每帧在动画之后调用
+  update() {
+    for (const it of this.items) {
+      // 完全不跟着转时的局部转动：driver⁻¹ · driver 的原始转动 · 自己的原始转动
+      _q.copy(it.driver.quaternion).invert().multiply(it.driverRest).multiply(it.rest);
+      it.bone.quaternion.copy(_q).slerp(it.rest, it.follow);
+    }
+  }
+}
+
 // ───────── 视线分配 ─────────
 // 目标角度先由眼睛到位，头、脖子、胸慢慢跟上各自的份额，眼睛再把多转的让回来。
 export const GAZE = {

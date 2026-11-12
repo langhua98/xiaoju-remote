@@ -9,7 +9,7 @@ import { Vector3, Quaternion, Matrix4 } from 'three';
 export const SPRING_PRESETS = [
   [/skirt/i, { stiffness: 1.1, drag: 0.45, gravity: 0.12, radius: 0.02 }],
   [/cape/i, { stiffness: 1.0, drag: 0.45, gravity: 0.1, radius: 0.02 }],
-  [/ribbon/i, { stiffness: 0.7, drag: 0.35, gravity: 0.15, radius: 0.012 }],
+  [/ribbon/i, { stiffness: 2.2, drag: 0.6, gravity: 0.25, radius: 0.012 }],   // 长丝带太软会甩到身前，收紧一些
   [/bow/i, { stiffness: 1.6, drag: 0.4, gravity: 0.05, radius: 0.012 }],
   [/collar|zipper|rose/i, { stiffness: 2.4, drag: 0.5, gravity: 0.02, radius: 0.01 }],
   [/earring|B_joint/i, { stiffness: 0.9, drag: 0.3, gravity: 0.2, radius: 0.008 }],

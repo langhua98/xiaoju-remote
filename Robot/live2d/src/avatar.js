@@ -4,12 +4,20 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { applyToon, setChin } from './toon.js';
-import { TwistHelpers, Gaze } from './rig.js';
+import { TwistHelpers, Correctives, Gaze } from './rig.js';
 import { SpringSystem, findSpringBones } from './spring.js';
 import { Motion, BANNED } from './motion.js';
 
 // 衣服 id → 模型文件。default 是第一套；以前存的旧 id（heibai、yeye）也回到第一套
 export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yuki_outfit2.glb' };
+
+// 模型文件本身的错位，加载时改回来。
+// outfit2（洋装）：身体、外套、裙子的顶点整体比骨架高 6.25 厘米（和第一套比：同一双手的手腕顶点 1.115 对 1.053，
+// 手指、脚、腰都差这么多），头、脸、头发、头纱却在骨架的高度。结果头陷进衣服里，像缩着脖子。
+// 应该是这套衣服穿高跟鞋，导出时身体按踩高跟的高度放了，骨架和头没有跟着抬。这里把身体和衣服往下挪回骨架上。
+const MESH_FIX = {
+  outfit2: [{ match: /Outfit_02_(Body|ClothingTop|ClothingBott)(?!_Transp)/, dy: -0.0625 }],
+};
 
 const loader = new GLTFLoader();
 
@@ -80,6 +88,10 @@ export function loadAvatar(id, cfg) {
       try {
         const root = gltf.scene;
         shrinkTextures(root, cfg.tex);
+        for (const fix of MESH_FIX[id] || []) {
+          const seen = new Set();
+          root.traverse((o) => { if (o.isMesh && fix.match.test(o.name) && !seen.has(o.geometry)) { seen.add(o.geometry); o.geometry.translate(0, fix.dy, 0); } });
+        }
         const byName = {}, faces = [];
         let skeleton = null, faceMesh = null;
         root.traverse((o) => {
@@ -137,6 +149,7 @@ export function loadAvatar(id, cfg) {
         const mixer = new THREE.AnimationMixer(root);
         const bones = skeleton ? skeleton.bones : [];
         const twist = cfg.helpers ? new TwistHelpers(byName) : null;
+        const fix = cfg.helpers ? new Correctives(byName) : null;
         const gaze = new Gaze({ chest: byName.Chest_M, neck: byName.Neck_M, head, eyeL: byName.Eye_L, eyeR: byName.Eye_R });
         let spring = null;
         if (cfg.spring) {
@@ -163,7 +176,7 @@ export function loadAvatar(id, cfg) {
         ok({
           id, root, mixer, clips, faces, box, byName, bones, headLocal, headY, head,
           toonHead: { bone: head, center: headLocal, up: headUp, fwd: headFwd },
-          twist, gaze, spring, motion, props, outlines: toon.outlines,
+          twist, fix, gaze, spring, motion, props, outlines: toon.outlines,
           stats: { bones: bones.length, tracks: `${trim.after}/${trim.before}`, springs: spring ? spring.joints.length : 0, twists: twist ? twist.items.length : 0 },
         });
       } catch (e) { fail(e); }

@@ -226,6 +226,7 @@ function frame(dt) {
 
   // 2. 辅助骨骼；没拿在手上的道具不画
   if (a.twist) a.twist.update();
+  if (a.fix) a.fix.update();
   for (const p of a.props) { const on = p.node.scale.x > 0.01; for (const m of p.meshes) m.visible = on; }
 
   // 3. 嘴：有真实音频用它；有 mouth_level 用它；都没有时用合成的音节节奏
