@@ -68,6 +68,7 @@ enum Body {
                 ("看我", ["type": "look", "free": true]),
             ]),
             ("换装", outfitsMenu),
+            ("背景", Store.backgrounds.map { ("背景 " + $0.name, nil) }),
             ("其他", [("停下", ["type": "action", "name": "stop"]), ("重置", ["type": "reset"])]),
         ]
     }()

@@ -8,6 +8,7 @@ import { updateToon, makeGroundShadow } from './toon.js';
 import { Face, STATES, EMOTIONS } from './face.js';
 import { CameraRig, SHOTS } from './camera.js';
 import { ACTIONS } from './motion.js';
+import { Scene, SCENE_IDS } from './scene.js';
 
 // ───────── 配置（网址参数），每个新功能都能单独关掉 ─────────
 const Q = new URLSearchParams(location.search);
@@ -75,6 +76,9 @@ function apply(msg) {
     const ok = act(String(msg.name || ''), true);
     send({ type: 'action_done', name: String(msg.name || ''), ok });
     return ok;
+  } else if (type === 'bg') {
+    // 背景：{"type":"bg","id":"room_night"}；auto = 卧室跟着时间变
+    return { id: scene3.set(String(msg.id || 'auto')), want: scene3.want };
   } else if (type === 'view') {
     // 镜头：{"type":"view","shot":"auto|full|bust|face","orbit":30,"tilt":10}，没给的不变
     return rig.set(msg);
@@ -184,6 +188,8 @@ if (!CFG.toon) {
   const rim = new THREE.DirectionalLight(0x7fe9ff, 0.8); rim.position.set(-2, 1.5, -2); scene.add(rim);
 }
 const rig = new CameraRig(camera, document.getElementById('bg'));
+const scene3 = new Scene(document.getElementById('bg'), () => layout());
+scene3.set(Q.get('bg') || 'auto');
 const shadow = makeGroundShadow(0.42);
 scene.add(shadow);
 
@@ -192,6 +198,7 @@ function resize() {
   W = innerWidth; H = innerHeight;
   renderer.setSize(W, H, false);
   camera.aspect = W / H; camera.updateProjectionMatrix();
+  scene3.layout();
   layout();
 }
 addEventListener('resize', resize);
@@ -206,7 +213,11 @@ function layout() {
   if (!avatar) return;
   avatar.root.position.set(-(avatar.box.min.x + avatar.box.max.x) / 2, -avatar.box.min.y, 0);
   rig.layout(avatar.box.max.y - avatar.box.min.y, avatar.headY - avatar.box.min.y);
-  shadow.position.set(0, 0.012, -0.12);
+  // 背景里站的点没能放到屏幕正中时（图到边了），把人往那边挪
+  const viewH = rig.shots.full.dist * 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const dx = (scene3.shiftX || 0) * viewH * camera.aspect;
+  avatar.root.position.x += dx;
+  shadow.position.set(dx, 0.012, -0.12);
 }
 
 async function setOutfit(id) {
@@ -456,7 +467,7 @@ window.YunlaiFace = {
   get: () => ({
     state: S.state, emotion: S.emotion, link: S.link, loaded: !!avatar, outfit: avatar && avatar.id,
     action: avatar && avatar.motion.one ? avatar.motion.one.getClip().name : '', stats: avatar && avatar.stats,
-    view: rig.get(), turn: Math.round(wrapDeg(S.turn)), look: S.look.until > now() ? { x: S.look.x, y: S.look.y } : null,
+    bg: scene3.current, bgWant: scene3.want, bgs: SCENE_IDS, view: rig.get(), turn: Math.round(wrapDeg(S.turn)), look: S.look.until > now() ? { x: S.look.x, y: S.look.y } : null,
     actions: Object.keys(ACTIONS), shots: SHOTS, clips: avatar ? Object.keys(avatar.clips) : [],
   }),
   // 调试用：把某个动画定在某一秒（截图看姿势）

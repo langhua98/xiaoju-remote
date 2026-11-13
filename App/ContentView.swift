@@ -98,6 +98,11 @@ struct SettingsView: View {
                             Text(Store.outfits[i].name).tag(Store.outfits[i].id)
                         }
                     }
+                    Picker("背景", selection: $store.background) {
+                        ForEach(Store.backgrounds.indices, id: \.self) { i in
+                            Text(Store.backgrounds[i].name).tag(Store.backgrounds[i].id)
+                        }
+                    }
                     Picker("画质", selection: $store.faceQuality) {
                         Text("高").tag("high")
                         Text("省电").tag("low")
