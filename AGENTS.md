@@ -119,7 +119,8 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 | `turn` | `yaw` 或 `by` 或 `direction`+`degrees` | 身体转身（不是云台）。`yaw` 转到某个朝向（-180～180，0 面向屏幕，正 = 转向屏幕右边，180 背对）；`by` 在现在的基础上再转；`direction` 是 `left`（她的左边）/ `right` / `back` / `center`。身体转开时她会回头看着屏幕前的人 |
 | `look` | `x`、`y`、`ms` 或 `free` | 看哪里。`x`、`y` 是 -1～1（正 = 屏幕右、下），`ms` 保持多久（默认 10 秒，0 一直看），`"free": true` 放开 |
 | `emotion` | `name`、`ms` | 表情：`neutral` `happy` `alert` `surprised` `confused`；带 `ms` 是临时的 |
-| `outfit` | `name` 或 `id` | 换装：校服（`default`）/ 洋装（`outfit2`） |
+| `outfit` | `name` 或 `id` | 换装：校服（`default`）/ 洋装（`outfit2`）/ 运动装（`sporty`） |
+| `bg` | `name` 或 `id` | 背景：`auto`（卧室跟着时间变）/ `room_dawn` / `room_day` / `room_night` / `gothic`（哥特大厅）/ `city`（城市夜景），中文名也行 |
 | `say` | `text`、`emotion` | 让她说一句话（用语音合成），`text` 里可以带 `[动作 挥手]` 这样的标签。实时语音聊天进行中不插话 |
 | `reset` | — | 回到默认：自动镜头、面向屏幕、视线放开、平静、停下动作 |
 
