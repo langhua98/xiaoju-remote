@@ -187,9 +187,11 @@ export function loadAvatar(id, cfg) {
         }
         const motion = new Motion(mixer, clips);
         // 我们要在动画之后叠加转动的骨骼：视线、高跟鞋、跟着动画走的裙子
-        const animBase = new AnimBase([...gaze.bones, ...(foot ? foot.bones : []), ...(spring ? spring.joints.filter((j) => j.followAnim).map((j) => j.bone) : [])]);
+        // 活气（呼吸、上身的晃动）要动的骨骼，见 life.js
+        const lifeBones = { waist: byName.RootPart1_M, spine: byName.Spine1_M, chest: byName.Chest_M, head, scapL: byName.Scapula_L, scapR: byName.Scapula_R };
+        const animBase = new AnimBase([...gaze.bones, ...Object.values(lifeBones), ...(foot ? foot.bones : []), ...(spring ? spring.joints.filter((j) => j.followAnim).map((j) => j.bone) : [])]);
         ok({
-          animBase,
+          animBase, lifeBones,
           id, root, mixer, clips, faces, box, byName, bones, headLocal, headY, head,
           toonHead: { bone: head, center: headLocal, up: headUp, fwd: headFwd },
           twist, fix, foot, gaze, spring, motion, props, outlines: toon.outlines,

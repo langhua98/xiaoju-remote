@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { OUTFITS, loadAvatar, disposeAvatar } from './avatar.js';
 import { updateToon, makeGroundShadow } from './toon.js';
 import { Face, STATES, EMOTIONS } from './face.js';
+import { Life, applyLife } from './life.js';
 import { CameraRig, SHOTS } from './camera.js';
 import { ACTIONS } from './motion.js';
 
@@ -24,6 +25,7 @@ const CFG = {
   shadow: flag('shadow', 1),   // 刘海在额头上的投影、眼睛上沿的阴影
   spring: flag('spring', 1),   // 悬挂物物理
   hair: flag('hair', 1),       // 头发物理（在动画上面加惯性和碰撞；要先开 spring）
+  life: flag('life', 1),       // 活气：呼吸、眼神游走、微表情、头和上身的轻微晃动
   helpers: flag('helpers', 1), // 辅助骨骼
   cam: flag('cam', 1),         // 自动机位
   fidget: flag('fidget', 1),   // 待机时自己做小动作
@@ -233,11 +235,16 @@ async function setOutfit(id) {
   }
 }
 
-function baseClip() { return S.state === 'listening' && avatar.clips.Yuki_Idle_listening_v3 ? 'Yuki_Idle_listening_v3' : 'idle'; }
+function baseClip() {
+  if (S.state === 'listening' && avatar.clips.Yuki_Idle_listening_v3) return 'Yuki_Idle_listening_v3';
+  // 闲着时两个待机动画轮着来，站姿隔一会儿换一下；说话、思考时固定用平时那个
+  return S.state === 'idle' && CFG.life ? avatar.motion.idleBase(now(), ['idle', 'Yuki_Idle_listening_v3']) : 'idle';
+}
 
 // ───────── 每帧 ─────────
 const perf = { anim: 0, rig: 0, phys: 0, draw: 0, n: 0 };
 const eyeNone = [0, 0];
+const life = new Life(), headSum = { yaw: 0, pitch: 0, roll: 0 };
 
 function frame(dt) {
   if (!avatar) return;
@@ -254,7 +261,11 @@ function frame(dt) {
   a.animBase.restore();   // 动画这一帧没重新写的骨骼，放回动画的值，再往上叠加
   let t1 = dbg ? performance.now() : 0;
 
-  // 2. 高跟鞋掰平、辅助骨骼；没拿在手上的道具不画
+  // 2. 活气（呼吸、上身的晃动）、高跟鞋掰平、辅助骨骼；没拿在手上的道具不画
+  const talking = S.speaking || S.state === 'speaking';
+  const lookFree = !(t < S.look.until || t - S.gaze.at < 4 || t - S.gimbal.at < 6 || S.state === 'thinking' || S.state === 'observing');
+  const alive = CFG.life ? life.update(t, dt, { idle, speaking: talking, busy: a.motion.busy, lookFree }) : null;
+  if (alive) applyLife(a.lifeBones, a.root.quaternion, alive);
   if (a.foot) a.foot.update();
   if (a.twist) a.twist.update();
   if (a.fix) a.fix.update();
@@ -276,10 +287,14 @@ function frame(dt) {
   else if (S.state === 'thinking') { gx = 0.5 * Math.sin(t * 0.5); gy = -0.5; }
   else if (S.state === 'observing') { gx = 0.7 * Math.sin(t * 0.45); }
   else if (Math.abs(S.turnCur) > 3) gx = clamp(-S.turnCur / 38, -1, 1) * 0.8;   // 身体转开了：回头看着屏幕前的人
+  if (alive && alive.glance && lookFree) { gx = clamp(gx + alive.gx, -1, 1); gy = clamp(gy + alive.gy, -1, 1); }   // 闲着时自己到处看看
 
   // 5. 表情（算出头的额外姿态和眼球微跳），再做视线分配
-  const head = face.update(t, dt, { state: S.state, emotion: S.emotion, mouth, bands, gx, gy });
-  a.gaze.update(dt, gx, gy, head, a.motion.busy ? eyeNone : face.saccade, a.motion.overlay);
+  const fh = face.update(t, dt, { state: S.state, emotion: S.emotion, mouth, bands, gx, gy, extra: alive && S.emotion === 'neutral' ? alive.shapes : null });
+  let head = fh;
+  if (alive) { headSum.yaw = fh.yaw + alive.head.yaw; headSum.pitch = fh.pitch + alive.head.pitch; headSum.roll = fh.roll + alive.head.roll; head = headSum; }
+  // 只是瞟一眼的时候头少跟一点，让眼睛去看
+  a.gaze.update(dt, gx, gy, head, a.motion.busy ? eyeNone : face.saccade, a.motion.overlay * (alive && alive.glance && !alive.big ? 0.45 : 1));
   face.apply(a.faces);
 
   // 6. 世界矩阵（整棵树只在这里算一次），然后是物理
@@ -416,6 +431,7 @@ addEventListener('pointerup', (e) => {
     else act('wave');
   }
   if (avatar) avatar.motion.touch();
+  life.attend(now());   // 被碰了：马上看回来
   send({ type: 'touch', part });
 });
 addEventListener('message', (e) => { if (e.data && typeof e.data === 'object' && e.data.type) apply(e.data); });

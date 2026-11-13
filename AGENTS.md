@@ -144,7 +144,7 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 - `.github/workflows/build.yml`：在 GitHub 的 Mac 上编译出没签名的 ipa，发到 Release「latest」。
 - `scripts/遥控.py`：电脑上的控制端。
 - `scripts/test/`：本地链路测试，`mock_cloud.py` 是假云盘，`test_remote.py` 是测试本身。
-- `Robot/live2d/`：Yunlai Robot 的 3D 角色 Yuki（文件夹名沿用旧的）。显示用 three.js，我们的代码在 `src/`（卡通渲染 `toon.js`、悬挂物物理 `spring.js`、辅助骨骼和视线 `rig.js`、表情口型 `face.js`、动作状态机 `motion.js`、镜头 `camera.js`、加载 `avatar.js`、入口 `main.js`），`yuki.js` 是打包结果（改了要重新 `npm run build` 一起提交，并跑 `npm test`）。每个效果都有网址参数开关。两套衣服的 glb 模型来自公开数据集 `langhua1998/yuki-model`，用 `fetch-assets.sh` 下载，不进仓库。说明见 `Robot/README.md`。
+- `Robot/live2d/`：Yunlai Robot 的 3D 角色 Yuki（文件夹名沿用旧的）。显示用 three.js，我们的代码在 `src/`（卡通渲染 `toon.js`、悬挂物物理 `spring.js`、活气 `life.js`、辅助骨骼和视线 `rig.js`、表情口型 `face.js`、动作状态机 `motion.js`、镜头 `camera.js`、加载 `avatar.js`、入口 `main.js`），`yuki.js` 是打包结果（改了要重新 `npm run build` 一起提交，并跑 `npm test`）。每个效果都有网址参数开关。两套衣服的 glb 模型来自公开数据集 `langhua1998/yuki-model`，用 `fetch-assets.sh` 下载，不进仓库。说明见 `Robot/README.md`。
 - `App/RobotFace.swift`：机器人模式。全屏 WKWebView 通过 `yunlai://face/` 读 App 里的 `live2d` 文件夹（里面是 Yuki 网页）（project.yml 把 `Robot/live2d` 打进 App，workflow 编译前先跑 `fetch-assets.sh`）。`RemoteEngine` 执行指令时通过 `FaceBridge` 让脸变表情。网页进程被系统关掉时用省电画质自动重开。
 - `App/Talk.swift`：机器人对话。点屏幕 → iOS 语音识别（SFSpeechRecognizer）→ OpenAI 兼容 `/chat/completions`（流式）→ 逐句请求 Kokoro（`Voice`，服务在 `langhua98/xiaoju-video` 的 `streamer/tts_proxy.py`）播放，连不上那句用 AVSpeechSynthesizer。大模型密钥存钥匙串（`llmKey`），不要写进日志。
 - `Robot/`：Yunlai Robot 全屏面部动画（网页）。`avatar/` 是 3D 角色版，`face/` 是 2D 眼睛版，`face_server.py` 是本地调试服务器。说明见 `Robot/README.md`。改了 `Robot/avatar/src/` 要重新打包 `avatar.js`，并跑 `node Robot/test/test_face.js`。
