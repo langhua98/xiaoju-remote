@@ -119,7 +119,8 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 | `turn` | `yaw` 或 `by` 或 `direction`+`degrees` | 身体转身（不是云台）。`yaw` 转到某个朝向（-180～180，0 面向屏幕，正 = 转向屏幕右边，180 背对）；`by` 在现在的基础上再转；`direction` 是 `left`（她的左边）/ `right` / `back` / `center`。身体转开时她会回头看着屏幕前的人 |
 | `look` | `x`、`y`、`ms` 或 `free` | 看哪里。`x`、`y` 是 -1～1（正 = 屏幕右、下），`ms` 保持多久（默认 10 秒，0 一直看），`"free": true` 放开 |
 | `emotion` | `name`、`ms` | 表情：`neutral` `happy` `alert` `surprised` `confused`；带 `ms` 是临时的 |
-| `outfit` | `name` 或 `id` | 换装：校服（`default`）/ 洋装（`outfit2`） |
+| `outfit` | `name` 或 `id` | 换装：校服（`default`）/ 洋装（`outfit2`）/ 运动装（`sporty`） |
+| `bg` | `name` 或 `id` | 背景：`auto`（卧室跟着时间变）/ `room_dawn` / `room_day` / `room_night` / `gothic`（哥特大厅）/ `city`（城市夜景），中文名也行 |
 | `say` | `text`、`emotion` | 让她说一句话（用语音合成），`text` 里可以带 `[动作 挥手]` 这样的标签。实时语音聊天进行中不插话 |
 | `reset` | — | 回到默认：自动镜头、面向屏幕、视线放开、平静、停下动作 |
 
@@ -144,7 +145,7 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 - `.github/workflows/build.yml`：在 GitHub 的 Mac 上编译出没签名的 ipa，发到 Release「latest」。
 - `scripts/遥控.py`：电脑上的控制端。
 - `scripts/test/`：本地链路测试，`mock_cloud.py` 是假云盘，`test_remote.py` 是测试本身。
-- `Robot/live2d/`：Yunlai Robot 的 3D 角色 Yuki（文件夹名沿用旧的）。显示用 three.js，我们的代码在 `src/`（卡通渲染 `toon.js`、悬挂物物理 `spring.js`、辅助骨骼和视线 `rig.js`、表情口型 `face.js`、动作状态机 `motion.js`、镜头 `camera.js`、加载 `avatar.js`、入口 `main.js`），`yuki.js` 是打包结果（改了要重新 `npm run build` 一起提交，并跑 `npm test`）。每个效果都有网址参数开关。两套衣服的 glb 模型来自公开数据集 `langhua1998/yuki-model`，用 `fetch-assets.sh` 下载，不进仓库。说明见 `Robot/README.md`。
+- `Robot/live2d/`：Yunlai Robot 的 3D 角色 Yuki（文件夹名沿用旧的）。显示用 three.js，我们的代码在 `src/`（卡通渲染 `toon.js`、悬挂物物理 `spring.js`、活气 `life.js`、辅助骨骼和视线 `rig.js`、表情口型 `face.js`、动作状态机 `motion.js`、镜头 `camera.js`、加载 `avatar.js`、入口 `main.js`），`yuki.js` 是打包结果（改了要重新 `npm run build` 一起提交，并跑 `npm test`）。每个效果都有网址参数开关。两套衣服的 glb 模型来自公开数据集 `langhua1998/yuki-model`，用 `fetch-assets.sh` 下载，不进仓库。说明见 `Robot/README.md`。
 - `App/RobotFace.swift`：机器人模式。全屏 WKWebView 通过 `yunlai://face/` 读 App 里的 `live2d` 文件夹（里面是 Yuki 网页）（project.yml 把 `Robot/live2d` 打进 App，workflow 编译前先跑 `fetch-assets.sh`）。`RemoteEngine` 执行指令时通过 `FaceBridge` 让脸变表情。网页进程被系统关掉时用省电画质自动重开。
 - `App/Talk.swift`：机器人对话。点屏幕 → iOS 语音识别（SFSpeechRecognizer）→ OpenAI 兼容 `/chat/completions`（流式）→ 逐句请求 Kokoro（`Voice`，服务在 `langhua98/xiaoju-video` 的 `streamer/tts_proxy.py`）播放，连不上那句用 AVSpeechSynthesizer。大模型密钥存钥匙串（`llmKey`），不要写进日志。
 - `Robot/`：Yunlai Robot 全屏面部动画（网页）。`avatar/` 是 3D 角色版，`face/` 是 2D 眼睛版，`face_server.py` 是本地调试服务器。说明见 `Robot/README.md`。改了 `Robot/avatar/src/` 要重新打包 `avatar.js`，并跑 `node Robot/test/test_face.js`。

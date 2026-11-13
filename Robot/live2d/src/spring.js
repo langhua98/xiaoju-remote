@@ -26,7 +26,7 @@ export const SPRING_PRESETS = [
   [/ribbon/i, { stiffness: 2.2, drag: 0.6, gravity: 0.25, radius: 0.012 }],   // 长丝带太软会甩到身前，收紧一些
   [/bow/i, { stiffness: 1.6, drag: 0.4, gravity: 0.05, radius: 0.012 }],
   [/collar|zipper|rose/i, { stiffness: 2.4, drag: 0.5, gravity: 0.02, radius: 0.01 }],
-  [/earring|B_joint/i, { stiffness: 0.9, drag: 0.3, gravity: 0.2, radius: 0.008 }],
+  [/B_joint/i, { stiffness: 0.9, drag: 0.3, gravity: 0.2, radius: 0.008 }],
   [/hair/i, { stiffness: 1.4, drag: 0.4, gravity: 0.06, radius: 0.012 }],
   [/./, { stiffness: 1.4, drag: 0.4, gravity: 0.06, radius: 0.012 }],
 ];
@@ -34,7 +34,8 @@ export const STEP = 1 / 60;      // 固定步长
 export const MAX_STEPS = 2;      // 每帧最多补几步
 
 // 修正骨骼、扭转骨骼、道具：虽然没有动画，但不是悬挂物，不能加弹簧
-const NOT_DANGLING = /Corrective|(Off|IN)_[LR]$|Part\d+_[LR]$|ForPhysics|^np_joint|^root_Newspaper$|^Joystick|^Cellphone$|^Gamepad|^Popcorn|^phone|^Newspaper|^Props$/;
+// 耳环：两只耳环在同一个网格里，却都绑在右耳那一根骨骼上，一晃左耳的就绕着右耳甩出去了，所以不能晃
+const NOT_DANGLING = /earring|Corrective|(Off|IN)_[LR]$|Part\d+_[LR]$|ForPhysics|^np_joint|^root_Newspaper$|^Joystick|^Cellphone$|^Gamepad|^Popcorn|^phone|^Newspaper|^Props$/;
 
 export function presetFor(name) {
   for (const [re, p] of SPRING_PRESETS) if (re.test(name)) return p;
@@ -240,7 +241,9 @@ export class SpringSystem {
           const c = this.colliders[i], r = c.radius + j.p.radius;
           // 裙子：动画摆出来的位置本身就在碰撞体里（裙腰贴着身体、裙摆贴着腿），就不和它算碰撞，
           // 不然会被一直往外顶，整条裙子撑开、往上翻。只有物理把裙摆甩进腿里时才推出来。
-          if (j.followAnim && (c.b ? closestOnSegment(_rest, c.pa, c.pb, _a) : _a.copy(c.pa)).distanceTo(_rest) < r) continue;
+          // 但如果只是末端插进了腿里、这一节的根还在外面，就照样推出来（不然抬腿时大腿会从裙子里穿出来）
+          if (j.followAnim && (c.b ? closestOnSegment(_rest, c.pa, c.pb, _a) : _a.copy(c.pa)).distanceTo(_rest) < r
+            && (c.b ? closestOnSegment(_center, c.pa, c.pb, _a) : _a.copy(c.pa)).distanceTo(_center) < r) continue;
           if (c.b ? pushOutCapsule(_next, c.pa, c.pb, r) : pushOutSphere(_next, c.pa, r)) hit = true;
         }
         if (hit) constrainLength(_next, _center, len, _dir);

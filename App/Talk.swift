@@ -231,6 +231,12 @@ final class Talk: NSObject, ObservableObject {
         guard !text.isEmpty else { return }
         captionGen += 1
         userLine = text
+        if let id = Store.backgroundCommand(text, current: store.background) {
+            store.background = id   // RobotModeView 看到变化会发给脸
+            log("背景：\(Store.backgroundName(id))")
+            scheduleClearCaptions()
+            return
+        }
         if let q = Body.quickCommand(text) {
             face.send(q.msg)
             log("打字指令：\(q.label)")
@@ -258,7 +264,13 @@ final class Talk: NSObject, ObservableObject {
         subtitle = ""
         captionGen += 1
         phase = .thinking
-        // 换装直接办，不问大模型
+        // 换背景、换装直接办，不问大模型
+        if let id = Store.backgroundCommand(text, current: store.background) {
+            store.background = id
+            log("背景：\(Store.backgroundName(id))")
+            say("好，换到\(Store.backgroundName(id))啦。", emotion: "happy")
+            return
+        }
         if let id = Store.outfitCommand(text, current: store.outfit) {
             store.outfit = id
             log("换装：\(Store.outfitName(id))")

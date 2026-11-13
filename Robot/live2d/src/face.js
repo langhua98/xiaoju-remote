@@ -1,5 +1,7 @@
 // 脸：状态和情绪的表情、眨眼、眼球微跳、口型、说话时的小动作。
 // 动画自带的表情不覆盖：我们的值叠加在动画值上面（眨眼和口型取两者中大的）。
+import { EXPRESSIONS } from './life.js';
+
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const rnd = (a, b) => a + Math.random() * (b - a);
 const RAD = Math.PI / 180;
@@ -25,7 +27,7 @@ export const EMOTIONS = {
 const MOUTH = ['jawOpen', 'mouthFunnel', 'mouthPucker', 'mouthStretchLeft', 'mouthStretchRight', 'mouthLowerDownLeft', 'mouthLowerDownRight', 'mouthUpperUpLeft', 'mouthUpperUpRight', 'mouthClose'];
 const FAST = new Set([...MOUTH, 'eyeBlinkLeft', 'eyeBlinkRight']);
 const LIDS = ['eyeLookUpLeft', 'eyeLookUpRight', 'eyeLookDownLeft', 'eyeLookDownRight'];
-const SHAPES = [...new Set([...Object.values(STATES), ...Object.values(EMOTIONS)].flatMap((o) => Object.keys(o)))].filter((k) => k !== 'head');
+const SHAPES = [...new Set([...Object.values(STATES), ...Object.values(EMOTIONS), ...EXPRESSIONS.map((e) => e[3])].flatMap((o) => Object.keys(o)))].filter((k) => k !== 'head');
 export const DRIVEN = [...new Set([...SHAPES, ...MOUTH, 'eyeBlinkLeft', 'eyeBlinkRight', ...LIDS])];
 
 // 手感参数
@@ -49,7 +51,7 @@ export class Face {
   /// 马上眨一次眼（视线大幅转动时用）
   blink(t) { if (this.blinkT < 0) this.blinkT = t; }
 
-  /// 每帧调用。in：{ state, emotion, mouth 0～1, bands [低, 中, 高] 或 null, gx, gy 视线 }
+  /// 每帧调用。in：{ state, emotion, mouth 0～1, bands [低, 中, 高] 或 null, gx, gy 视线, extra 另外叠加的表情（闲着时的微表情）或 null }
   /// 返回头的额外姿态 { yaw, pitch, roll } 和眼球微跳 saccade，交给视线分配去用
   update(t, dt, inp) {
     const target = { ...STATES[inp.state] };
@@ -58,6 +60,8 @@ export class Face {
     for (const [k, v] of Object.entries(EMOTIONS[inp.emotion])) {
       if (k === 'head') { for (const [a, b] of Object.entries(v)) headT[a] += b; } else target[k] = (target[k] || 0) + v;
     }
+
+    if (inp.extra) for (const [k, v] of Object.entries(inp.extra)) if (v) target[k] = (target[k] || 0) + v;
 
     // ── 口型：张多大看音量；圆还是扁看声音的频段（低频多 = 「哦、呜」，高频多 = 「衣、诶」）
     const m = inp.mouth;

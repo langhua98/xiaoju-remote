@@ -32,7 +32,7 @@ enum Body {
         ("挥手", "wave"), ("点头", "nod"), ("摇头", "shake"), ("跳舞", "dance"), ("比耶", "peace"), ("飞吻", "kiss"),
         ("生气", "angry"), ("玩手机", "phone"), ("打游戏", "play"), ("看报纸", "read"), ("吃爆米花", "popcorn"),
         ("摆姿势", "pose"), ("打电话", "call"), ("边吃边聊", "Popcorn_talking"),
-        ("慢舞", "dance_90bpm"), ("快舞", "dance_120bpm"), ("律动", "f_vibe_dance_60_bpm_002"),
+        ("慢舞", "dance_90bpm"), ("快舞", "dance_120bpm"), ("律动", "f_vibe_dance_60_bpm_002"), ("转圈舞", "vdance"),
         ("摸头", "touch_head"), ("摸左手", "touch_hand_l"), ("摸右手", "touch_hand_r"), ("摸左腿", "touch_leg_l"), ("摸右腿", "touch_leg_r"),
     ]
 
@@ -47,7 +47,7 @@ enum Body {
         }
         return [
             ("动作", act(["挥手", "点头", "摇头", "比耶", "飞吻", "摆姿势", "生气"])),
-            ("舞蹈", act(["跳舞", "慢舞", "快舞", "律动"])),
+            ("舞蹈", act(["跳舞", "慢舞", "快舞", "律动", "转圈舞"])),
             ("道具", act(["玩手机", "打电话", "打游戏", "看报纸", "吃爆米花", "边吃边聊"])),
             ("互动", act(["摸头", "摸左手", "摸右手", "摸左腿", "摸右腿"])),
             ("表情", [emo("开心", "happy"), emo("惊讶", "surprised"), emo("疑惑", "confused"), emo("警觉", "alert"), emo("平静", "neutral")]),
@@ -68,6 +68,7 @@ enum Body {
                 ("看我", ["type": "look", "free": true]),
             ]),
             ("换装", outfitsMenu),
+            ("背景", Store.backgrounds.map { ("背景 " + $0.name, nil) }),
             ("其他", [("停下", ["type": "action", "name": "stop"]), ("重置", ["type": "reset"])]),
         ]
     }()

@@ -7,9 +7,10 @@ import { applyToon, setChin } from './toon.js';
 import { TwistHelpers, Correctives, Gaze, FootFix, AnimBase } from './rig.js';
 import { SpringSystem, findSpringBones, FOLLOW, FOLLOW_NO_HAIR } from './spring.js';
 import { Motion, BANNED } from './motion.js';
+import { addDanceClips } from './dances.js';
 
 // 衣服 id → 模型文件。default 是第一套；以前存的旧 id（heibai、yeye）也回到第一套
-export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yuki_outfit2.glb' };
+export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yuki_outfit2.glb', sporty: 'models/Yuki_sporty.glb' };
 
 // 模型文件本身的错位，加载时改回来。
 // outfit2（洋装）：身体、外套、裙子的顶点整体比骨架高 6.25 厘米（和第一套比：同一双手的手腕顶点 1.115 对 1.053，
@@ -18,6 +19,13 @@ export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yu
 // 同一套的高跟靴：脚是平底姿势，下面垫了一根高跟，要在运行时把脚踝压下去才踩得实（heels: true，见 rig.js 的 FootFix）。
 const MESH_FIX = {
   outfit2: { meshes: [{ match: /Outfit_02_(Body|ClothingTop|ClothingBott)(?!_Transp)/, dy: -0.0625 }], heels: true },
+};
+
+// 哪个动画拿哪个道具（从另外两套衣服的缩放轨道里看出来的），给道具轨道坏了的模型用
+const PROP_CLIPS = {
+  Joystick: ['yuki_play'], Newspaper: ['np'],
+  Phone: ['Phone_talking', 'Tapping_Start', 'Tapping_Idle', 'Tapping_End'],
+  Popcorn: ['Popcorn_talking', 'yuki_popcorn_idle'],
 };
 
 const loader = new GLTFLoader();
@@ -153,6 +161,7 @@ export function loadAvatar(id, cfg) {
           clips[c.name] = c;
         }
 
+        addDanceClips(clips);   // 从视频做的舞蹈（数据要在 loadAvatar 之前下载好）
         const toon = cfg.toon ? applyToon(root, { outline: cfg.outline, shadow: cfg.shadow }) : { outlines: [] };
         const mixer = new THREE.AnimationMixer(root);
         const bones = skeleton ? skeleton.bones : [];
@@ -183,13 +192,17 @@ export function loadAvatar(id, cfg) {
           if (!re) continue;
           const list = [];
           root.traverse((o) => { if (o.isMesh && re.test(o.material.name)) list.push(o); });
-          props.push({ node, meshes: list });
+          // 运动装导出时把「藏道具」的缩放轨道丢了（所有动画里都是 1），只好按动画名决定什么时候显示
+          const scaleAnimated = Object.values(clips).some((c) => c.tracks.some((t) => t.name === node.name + '.scale'));
+          props.push({ node, meshes: list, clips: scaleAnimated ? null : PROP_CLIPS[node.name.replace(/_\d+$/, '')] || [] });
         }
         const motion = new Motion(mixer, clips);
         // 我们要在动画之后叠加转动的骨骼：视线、高跟鞋、跟着动画走的裙子
-        const animBase = new AnimBase([...gaze.bones, ...(foot ? foot.bones : []), ...(spring ? spring.joints.filter((j) => j.followAnim).map((j) => j.bone) : [])]);
+        // 活气（呼吸、上身的晃动）要动的骨骼，见 life.js
+        const lifeBones = { waist: byName.RootPart1_M, spine: byName.Spine1_M, chest: byName.Chest_M, head, scapL: byName.Scapula_L, scapR: byName.Scapula_R };
+        const animBase = new AnimBase([...gaze.bones, ...Object.values(lifeBones), ...(foot ? foot.bones : []), ...(spring ? spring.joints.filter((j) => j.followAnim).map((j) => j.bone) : [])]);
         ok({
-          animBase,
+          animBase, lifeBones,
           id, root, mixer, clips, faces, box, byName, bones, headLocal, headY, head,
           toonHead: { bone: head, center: headLocal, up: headUp, fwd: headFwd },
           twist, fix, foot, gaze, spring, motion, props, outlines: toon.outlines,

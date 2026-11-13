@@ -6,8 +6,11 @@ import * as THREE from 'three';
 import { OUTFITS, loadAvatar, disposeAvatar } from './avatar.js';
 import { updateToon, makeGroundShadow } from './toon.js';
 import { Face, STATES, EMOTIONS } from './face.js';
+import { Life, applyLife } from './life.js';
 import { CameraRig, SHOTS } from './camera.js';
 import { ACTIONS } from './motion.js';
+import { Scene, SCENE_IDS } from './scene.js';
+import { loadDances } from './dances.js';
 
 // ───────── 配置（网址参数），每个新功能都能单独关掉 ─────────
 const Q = new URLSearchParams(location.search);
@@ -24,6 +27,7 @@ const CFG = {
   shadow: flag('shadow', 1),   // 刘海在额头上的投影、眼睛上沿的阴影
   spring: flag('spring', 1),   // 悬挂物物理
   hair: flag('hair', 1),       // 头发物理（在动画上面加惯性和碰撞；要先开 spring）
+  life: flag('life', 1),       // 活气：呼吸、眼神游走、微表情、头和上身的轻微晃动
   helpers: flag('helpers', 1), // 辅助骨骼
   cam: flag('cam', 1),         // 自动机位
   fidget: flag('fidget', 1),   // 待机时自己做小动作
@@ -40,6 +44,7 @@ const S = {
 };
 const now = () => performance.now() / 1000;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const wrapDeg = (d) => ((d % 360) + 540) % 360 - 180;   // 角度换到 -180～180
 const face = new Face();
 
 // ───────── 消息（与说明书一致） ─────────
@@ -75,15 +80,21 @@ function apply(msg) {
     const ok = act(String(msg.name || ''), true);
     send({ type: 'action_done', name: String(msg.name || ''), ok });
     return ok;
+  } else if (type === 'bg') {
+    // 背景：{"type":"bg","id":"room_night"}；auto = 卧室跟着时间变
+    return { id: scene3.set(String(msg.id || 'auto')), want: scene3.want };
   } else if (type === 'view') {
     // 镜头：{"type":"view","shot":"auto|full|bust|face","orbit":30,"tilt":10}，没给的不变
     return rig.set(msg);
   } else if (type === 'turn') {
     // 转身：{"type":"turn","yaw":45}（转到某个朝向）或 {"type":"turn","by":-30}（在现在的基础上再转）
+    drag.spin = 0;
     if (msg.by !== undefined && Number.isFinite(+msg.by)) S.turn += +msg.by;
-    else if (msg.yaw !== undefined && Number.isFinite(+msg.yaw)) S.turn = +msg.yaw;
-    S.turn = clamp(S.turn, -180, 180);
-    return { yaw: Math.round(S.turn) };
+    else if (msg.yaw !== undefined && Number.isFinite(+msg.yaw)) {
+      const yaw = clamp(+msg.yaw, -180, 180);
+      S.turn = yaw + 360 * Math.round((S.turnCur - yaw) / 360);
+    }
+    return { yaw: Math.round(wrapDeg(S.turn)) };
   } else if (type === 'look') {
     // 看哪里：{"type":"look","x":0.5,"y":-0.2,"ms":8000}；x、y 是 -1～1；ms 不给默认 10 秒，0 = 一直看；{"type":"look","free":true} 放开
     if (msg.free) S.look.until = 0;
@@ -95,7 +106,7 @@ function apply(msg) {
   } else if (type === 'reset') {
     // 回到默认：自动镜头、面向屏幕、视线放开、平静、停下动作
     rig.set({ shot: 'auto', orbit: 0, tilt: 0 });
-    S.turn = 0; S.look.until = 0; S.gaze.at = -1e9;
+    S.turn = 360 * Math.round(S.turnCur / 360); drag.spin = 0; S.look.until = 0; S.gaze.at = -1e9;
     setEmotion('neutral');
     if (avatar) avatar.motion.stopAction();
   } else if (type === 'speak' && msg.url) {
@@ -181,6 +192,8 @@ if (!CFG.toon) {
   const rim = new THREE.DirectionalLight(0x7fe9ff, 0.8); rim.position.set(-2, 1.5, -2); scene.add(rim);
 }
 const rig = new CameraRig(camera, document.getElementById('bg'));
+const scene3 = new Scene(document.getElementById('bg'), () => layout());
+scene3.set(Q.get('bg') || 'auto');
 const shadow = makeGroundShadow(0.42);
 scene.add(shadow);
 
@@ -189,6 +202,7 @@ function resize() {
   W = innerWidth; H = innerHeight;
   renderer.setSize(W, H, false);
   camera.aspect = W / H; camera.updateProjectionMatrix();
+  scene3.layout();
   layout();
 }
 addEventListener('resize', resize);
@@ -203,7 +217,11 @@ function layout() {
   if (!avatar) return;
   avatar.root.position.set(-(avatar.box.min.x + avatar.box.max.x) / 2, -avatar.box.min.y, 0);
   rig.layout(avatar.box.max.y - avatar.box.min.y, avatar.headY - avatar.box.min.y);
-  shadow.position.set(0, 0.012, -0.12);
+  // 背景里站的点没能放到屏幕正中时（图到边了），把人往那边挪
+  const viewH = rig.shots.full.dist * 2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  const dx = (scene3.shiftX || 0) * viewH * camera.aspect;
+  avatar.root.position.x += dx;
+  shadow.position.set(dx, 0.012, -0.12);
 }
 
 async function setOutfit(id) {
@@ -233,11 +251,16 @@ async function setOutfit(id) {
   }
 }
 
-function baseClip() { return S.state === 'listening' && avatar.clips.Yuki_Idle_listening_v3 ? 'Yuki_Idle_listening_v3' : 'idle'; }
+function baseClip() {
+  if (S.state === 'listening' && avatar.clips.Yuki_Idle_listening_v3) return 'Yuki_Idle_listening_v3';
+  // 闲着时两个待机动画轮着来，站姿隔一会儿换一下；说话、思考时固定用平时那个
+  return S.state === 'idle' && CFG.life ? avatar.motion.idleBase(now(), ['idle', 'Yuki_Idle_listening_v3']) : 'idle';
+}
 
 // ───────── 每帧 ─────────
 const perf = { anim: 0, rig: 0, phys: 0, draw: 0, n: 0 };
 const eyeNone = [0, 0];
+const life = new Life(), headSum = { yaw: 0, pitch: 0, roll: 0 };
 
 function frame(dt) {
   if (!avatar) return;
@@ -254,11 +277,16 @@ function frame(dt) {
   a.animBase.restore();   // 动画这一帧没重新写的骨骼，放回动画的值，再往上叠加
   let t1 = dbg ? performance.now() : 0;
 
-  // 2. 高跟鞋掰平、辅助骨骼；没拿在手上的道具不画
+  // 2. 活气（呼吸、上身的晃动）、高跟鞋掰平、辅助骨骼；没拿在手上的道具不画
+  const talking = S.speaking || S.state === 'speaking';
+  const lookFree = !(t < S.look.until || t - S.gaze.at < 4 || t - S.gimbal.at < 6 || S.state === 'thinking' || S.state === 'observing');
+  const alive = CFG.life ? life.update(t, dt, { idle, speaking: talking, busy: a.motion.busy, lookFree }) : null;
+  if (alive) applyLife(a.lifeBones, a.root.quaternion, alive);
   if (a.foot) a.foot.update();
   if (a.twist) a.twist.update();
   if (a.fix) a.fix.update();
-  for (const p of a.props) { const on = p.node.scale.x > 0.01; for (const m of p.meshes) m.visible = on; }
+  const nowClip = a.motion.one ? a.motion.one.getClip().name : '';
+  for (const p of a.props) { const on = p.clips ? p.clips.includes(nowClip) : p.node.scale.x > 0.01; for (const m of p.meshes) m.visible = on; }
 
   // 3. 嘴：有真实音频用它；有 mouth_level 用它；都没有时用合成的音节节奏
   let mouth = 0, bands = null;
@@ -267,7 +295,11 @@ function frame(dt) {
   else if (S.state === 'speaking' && !S.speaking) mouth = Math.max(0, Math.sin(t * 9.3) * Math.sin(t * 3.7 + 1)) * 0.9;
 
   // 4. 身体朝向（整个角色绕竖直轴转），视线：x 向屏幕右为正，y 向下为正
-  S.turnCur += (S.turn - S.turnCur) * Math.min(1, dt * 2.2);
+  if (drag.on) S.turnCur = S.turn;   // 手指拖着转：直接跟手
+  else if (Math.abs(drag.spin) > 2) {   // 松手后带着惯性转一会儿，慢慢停
+    S.turn += drag.spin * dt; S.turnCur = S.turn;
+    drag.spin *= Math.exp(-dt * DRAG.friction);
+  } else S.turnCur += (S.turn - S.turnCur) * Math.min(1, dt * 2.2);
   a.root.rotation.y = S.turnCur * Math.PI / 180;
   let gx = 0, gy = 0;
   if (t < S.look.until) { gx = S.look.x; gy = S.look.y; }
@@ -275,11 +307,19 @@ function frame(dt) {
   else if (t - S.gimbal.at < 6) { gx = S.gimbal.x; gy = S.gimbal.y; }
   else if (S.state === 'thinking') { gx = 0.5 * Math.sin(t * 0.5); gy = -0.5; }
   else if (S.state === 'observing') { gx = 0.7 * Math.sin(t * 0.45); }
-  else if (Math.abs(S.turnCur) > 3) gx = clamp(-S.turnCur / 38, -1, 1) * 0.8;   // 身体转开了：回头看着屏幕前的人
+  else {
+    // 身体转开了：回头看着屏幕前的人（转到背对时就不回头了，脖子拧不过去）
+    const w = wrapDeg(S.turnCur);
+    if (Math.abs(w) > 3 && Math.abs(w) < 100) gx = clamp(-w / 38, -1, 1) * 0.8;
+  }
+  if (alive && alive.glance && lookFree) { gx = clamp(gx + alive.gx, -1, 1); gy = clamp(gy + alive.gy, -1, 1); }   // 闲着时自己到处看看
 
   // 5. 表情（算出头的额外姿态和眼球微跳），再做视线分配
-  const head = face.update(t, dt, { state: S.state, emotion: S.emotion, mouth, bands, gx, gy });
-  a.gaze.update(dt, gx, gy, head, a.motion.busy ? eyeNone : face.saccade, a.motion.overlay);
+  const fh = face.update(t, dt, { state: S.state, emotion: S.emotion, mouth, bands, gx, gy, extra: alive && S.emotion === 'neutral' ? alive.shapes : null });
+  let head = fh;
+  if (alive) { headSum.yaw = fh.yaw + alive.head.yaw; headSum.pitch = fh.pitch + alive.head.pitch; headSum.roll = fh.roll + alive.head.roll; head = headSum; }
+  // 只是瞟一眼的时候头少跟一点，让眼睛去看
+  a.gaze.update(dt, gx, gy, head, a.motion.busy ? eyeNone : face.saccade, a.motion.overlay * (alive && alive.glance && !alive.big ? 0.45 : 1));
   face.apply(a.faces);
 
   // 6. 世界矩阵（整棵树只在这里算一次），然后是物理
@@ -390,23 +430,41 @@ function partAt(x, y) {
   if (y > top && Math.abs(x - cx) < 0.3 * px) return 'body';
   return 'other';
 }
-// 手指左右滑：转动她的身体（和「转身」指令是同一个朝向）。滑过的不算点击。
-const DRAG = { id: -1, x: 0, moved: 0, perPx: 0.45 };   // perPx：每滑一个像素转多少度
-addEventListener('pointerdown', (e) => { DRAG.id = e.pointerId; DRAG.x = e.clientX; DRAG.moved = 0; });
-addEventListener('pointermove', (e) => {
-  if (e.pointerId !== DRAG.id) return;
-  const dx = e.clientX - DRAG.x;
-  DRAG.x = e.clientX; DRAG.moved += Math.abs(dx);
-  if (DRAG.moved < 8) return;   // 手指抖一下不算
-  // 转过 180° 接着转（从背面绕回来），所以两个数一起折回 -180～180
-  S.turn += dx * DRAG.perPx; S.turnCur += dx * DRAG.perPx * 0.6;   // 大半直接跟手，剩下的平滑补上
-  if (S.turn > 180) { S.turn -= 360; S.turnCur -= 360; } else if (S.turn < -180) { S.turn += 360; S.turnCur += 360; }
+// ───────── 手指左右滑：转动角色（所有衣服都一样，转的是整个角色） ─────────
+// 往右滑，她的正面跟着手指往右转。滑得快松手后会带着惯性转一会儿。只是轻点（几乎没动）才算点击。
+const DRAG = { degPerPx: 0.6, startPx: 10, friction: 3.5, maxSpin: 900 };
+const drag = { id: null, x: 0, y: 0, lastX: 0, lastT: 0, on: false, spin: 0, v: 0 };
+addEventListener('pointerdown', (e) => {
+  if (drag.id !== null) return;   // 第二根手指不管
+  drag.id = e.pointerId; drag.x = drag.lastX = e.clientX; drag.y = e.clientY; drag.lastT = performance.now();
+  drag.on = false; drag.v = 0; drag.spin = 0;
 });
-addEventListener('pointercancel', () => { DRAG.id = -1; });
+addEventListener('pointermove', (e) => {
+  if (e.pointerId !== drag.id) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (!drag.on && Math.abs(dx) > DRAG.startPx && Math.abs(dx) > Math.abs(dy)) {
+    drag.on = true; drag.lastX = e.clientX; drag.lastT = performance.now();
+    if (avatar) avatar.motion.touch();
+  }
+  if (!drag.on) return;
+  const now2 = performance.now(), step = e.clientX - drag.lastX;
+  S.turn += step * DRAG.degPerPx;
+  const dtm = Math.max(1, now2 - drag.lastT);
+  drag.v = drag.v * 0.6 + (step * DRAG.degPerPx / dtm * 1000) * 0.4;   // 度每秒，平滑一下
+  drag.lastX = e.clientX; drag.lastT = now2;
+});
+function endDrag(e) {
+  if (e.pointerId !== drag.id) return false;
+  drag.id = null;
+  if (!drag.on) return false;
+  drag.on = false;
+  // 停下来再松手就没有惯性
+  drag.spin = performance.now() - drag.lastT > 120 ? 0 : clamp(drag.v, -DRAG.maxSpin, DRAG.maxSpin);
+  return true;
+}
+addEventListener('pointercancel', (e) => { endDrag(e); });
 addEventListener('pointerup', (e) => {
-  const dragged = e.pointerId === DRAG.id && DRAG.moved >= 8;
-  DRAG.id = -1;
-  if (dragged) return;
+  if (endDrag(e)) return;   // 是滑动，不算点击
   const part = partAt(e.clientX, e.clientY);
   // 闲着的时候才有反应；正在聊天时点一下是「打断」，不要乱动
   if (S.state === 'idle' && !S.speaking && avatar && !avatar.motion.busy) {
@@ -416,6 +474,7 @@ addEventListener('pointerup', (e) => {
     else act('wave');
   }
   if (avatar) avatar.motion.touch();
+  life.attend(now());   // 被碰了：马上看回来
   send({ type: 'touch', part });
 });
 addEventListener('message', (e) => { if (e.data && typeof e.data === 'object' && e.data.type) apply(e.data); });
@@ -426,7 +485,7 @@ window.YunlaiFace = {
   get: () => ({
     state: S.state, emotion: S.emotion, link: S.link, loaded: !!avatar, outfit: avatar && avatar.id,
     action: avatar && avatar.motion.one ? avatar.motion.one.getClip().name : '', stats: avatar && avatar.stats,
-    view: rig.get(), turn: Math.round(S.turn), look: S.look.until > now() ? { x: S.look.x, y: S.look.y } : null,
+    bg: scene3.current, bgWant: scene3.want, bgs: SCENE_IDS, view: rig.get(), turn: Math.round(wrapDeg(S.turn)), look: S.look.until > now() ? { x: S.look.x, y: S.look.y } : null,
     actions: Object.keys(ACTIONS), shots: SHOTS, clips: avatar ? Object.keys(avatar.clips) : [],
   }),
   // 调试用：把某个动画定在某一秒（截图看姿势）
@@ -436,7 +495,7 @@ window.YunlaiFace = {
 
 resize();
 tick();
-setOutfit(wantOutfit).then(() => {
+loadDances().then(() => setOutfit(wantOutfit)).then(() => {
   send({ type: 'face_ready', kind: 'yuki' });
   connect();
   setTimeout(demo, 2000);
