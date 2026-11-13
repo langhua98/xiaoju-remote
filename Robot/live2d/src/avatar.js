@@ -7,6 +7,7 @@ import { applyToon, setChin } from './toon.js';
 import { TwistHelpers, Correctives, Gaze, FootFix, AnimBase } from './rig.js';
 import { SpringSystem, findSpringBones } from './spring.js';
 import { Motion, BANNED } from './motion.js';
+import { addDanceClips } from './dances.js';
 
 // 衣服 id → 模型文件。default 是第一套；以前存的旧 id（heibai、yeye）也回到第一套
 export const OUTFITS = { default: 'models/Yuki_outfit1.glb', outfit2: 'models/Yuki_outfit2.glb', sporty: 'models/Yuki_sporty.glb' };
@@ -160,6 +161,7 @@ export function loadAvatar(id, cfg) {
           clips[c.name] = c;
         }
 
+        addDanceClips(clips);   // 从视频做的舞蹈（数据要在 loadAvatar 之前下载好）
         const toon = cfg.toon ? applyToon(root, { outline: cfg.outline, shadow: cfg.shadow }) : { outlines: [] };
         const mixer = new THREE.AnimationMixer(root);
         const bones = skeleton ? skeleton.bones : [];

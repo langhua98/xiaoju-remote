@@ -9,6 +9,7 @@ import { Face, STATES, EMOTIONS } from './face.js';
 import { CameraRig, SHOTS } from './camera.js';
 import { ACTIONS } from './motion.js';
 import { Scene, SCENE_IDS } from './scene.js';
+import { loadDances } from './dances.js';
 
 // ───────── 配置（网址参数），每个新功能都能单独关掉 ─────────
 const Q = new URLSearchParams(location.search);
@@ -477,7 +478,7 @@ window.YunlaiFace = {
 
 resize();
 tick();
-setOutfit(wantOutfit).then(() => {
+loadDances().then(() => setOutfit(wantOutfit)).then(() => {
   send({ type: 'face_ready', kind: 'yuki' });
   connect();
   setTimeout(demo, 2000);

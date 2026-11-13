@@ -17,6 +17,7 @@
 | `spring.js` | 物理：裙子（带着惯性追动画，碰到腿会被推开）、蝴蝶结、丝带、披风、衣领、耳环 |
 | `motion.js` | 动作状态机：待机循环、一次性动作、待机时自己做小动作 |
 | `camera.js` | 镜头：全身和半身两个机位、轻微漂移 |
+| `dances.js` | 从视频做出来的舞蹈（`dances/*.json`），加载时补上头发、裙子、表情；做法见 `Robot/tools/video2dance/` |
 | `scene.js` | 背景：每张图记下地板上人站的点，按屏幕比例换算让脚踩在地上；按场景给角色调光 |
 
 手感和观感的参数都在各文件开头的常量里（`TOON`、`SPRING_PRESETS`、`GAZE`、`FACE`、`MOTION`、`CAM`），按真机上的感觉调。设计思路和模型里查到的数据见 [YUKI_REALISM_PLAN.md](YUKI_REALISM_PLAN.md)。
@@ -74,7 +75,7 @@
 
 | name | 动画 | name | 动画 |
 |---|---|---|---|
-| `wave` | `hello` 挥手 | `dance` | 三个舞蹈里随机一个 |
+| `wave` | `hello` 挥手 | `dance` | 四个舞蹈里随机一个（含视频做的转圈舞） |
 | `nod` | `Yes` 点头 | `phone` | 掏出手机敲一会儿（`Tapping_Start/Idle/End` 连着播） |
 | `shake` | `No` 摇头 | `play` | `yuki_play` 打游戏（手柄） |
 | `peace` | `Peace_hand` 比耶 | `read` | `np` 看报纸 |
