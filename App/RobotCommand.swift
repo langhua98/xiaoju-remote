@@ -5,7 +5,7 @@ import Foundation
 /// 协议说明见 AGENTS.md「机器人（robot 指令）」，网页一侧的消息见 Robot/README.md。
 @MainActor
 enum RobotCommand {
-    static let actionsHelp = "status、act、view、turn、look、emotion、outfit、say、reset"
+    static let actionsHelp = "status、act、view、turn、look、emotion、outfit、bg、say、reset"
 
     static func run(_ cmd: [String: Any], face: FaceBridge, talk: Talk, store: Store) async -> CmdResult {
         let action = (cmd["action"] as? String) ?? "status"
@@ -74,6 +74,14 @@ enum RobotCommand {
             store.outfit = id   // RobotModeView 看到变化会发给脸
             return CmdResult(text: "换装：\(Store.outfitName(id))")
 
+        case "bg":
+            let raw = string(cmd["id"]).isEmpty ? string(cmd["name"]) : string(cmd["id"])
+            guard let b = Store.backgrounds.first(where: { $0.id == raw || $0.name == raw })?.id ?? Store.backgroundCommand("背景 " + raw) else {
+                return CmdResult(text: "没有这个背景：\(raw)（有：\(Store.backgrounds.map { "\($0.name)（\($0.id)）" }.joined(separator: "、"))）")
+            }
+            store.background = b   // RobotModeView 看到变化会发给脸
+            return CmdResult(text: "背景：\(Store.backgroundName(b))")
+
         case "say":
             let text = string(cmd["text"])
             guard !text.isEmpty else { return CmdResult(text: "say 要带 text") }
@@ -102,6 +110,7 @@ enum RobotCommand {
         let view = s["view"] as? [String: Any] ?? [:]
         var lines = [
             "衣服：\(Store.outfitName(s["outfit"] as? String ?? ""))",
+            "背景：\(Store.backgroundName(s["bgWant"] as? String ?? "auto"))",
             "状态：\(s["state"] as? String ?? "")，表情：\(s["emotion"] as? String ?? "")",
             "镜头：\(shotName(view["shot"] as? String))，绕 \(int(view["orbit"]))°，俯仰 \(int(view["tilt"]))°",
             "朝向：\(int(s["turn"]))°",

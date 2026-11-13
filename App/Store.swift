@@ -16,8 +16,39 @@ final class Store: ObservableObject {
     @Published var geminiKey: String { didSet { Keychain.set("geminiKey", geminiKey) } }
     /// 打开 App 时自动连大疆云台
     @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
-    /// 机器人穿哪套衣服（default = Yuki_outfit1.glb，outfit2 = Yuki_outfit2.glb，见 Robot/live2d/src/avatar.js 的 OUTFITS）
+    /// 机器人穿哪套衣服（default = Yuki_outfit1.glb，outfit2 = Yuki_outfit2.glb，sporty = Yuki_sporty.glb，见 Robot/live2d/src/avatar.js 的 OUTFITS）
     @Published var outfit: String { didSet { save("outfit", outfit) } }
+    /// 机器人的背景（见 Robot/live2d/src/scene.js 的 SCENES）。auto = 卧室跟着时间变
+    @Published var background: String { didSet { save("background", background) } }
+
+    /// 背景列表：id、名字、说话时认的叫法
+    static let backgrounds: [(id: String, name: String, words: [String])] = [
+        ("auto", "卧室（跟着时间变）", ["自动", "跟着时间"]),
+        ("room_dawn", "卧室·清晨", ["清晨", "早上", "黄昏", "傍晚"]),
+        ("room_day", "卧室·白天", ["白天", "下午", "中午"]),
+        ("room_night", "卧室·夜晚", ["夜晚", "晚上", "夜里"]),
+        ("room_lamp", "卧室·暖灯", ["暖灯", "小灯", "书架"]),
+        ("gothic", "哥特大厅", ["哥特", "大厅", "城堡", "万圣节"]),
+        ("city", "城市夜景", ["城市", "夜景", "原来的背景"]),
+    ]
+    static func backgroundName(_ id: String) -> String { backgrounds.first { $0.id == id }?.name ?? "卧室" }
+
+    /// 「背景 哥特大厅」「换个背景」「换到卧室夜晚」→ 背景 id；不是换背景的话返回 nil
+    static func backgroundCommand(_ raw: String, current: String = "auto") -> String? {
+        let text = simplified(raw)
+        guard text.contains("背景") || text.hasPrefix("换到") || text.hasPrefix("去") else { return nil }
+        if let b = backgrounds.first(where: { text.contains($0.name) || text.contains($0.id) }) { return b.id }
+        // 叫法从长的开始比，避免「卧室」先把「卧室夜晚」截走
+        let words = backgrounds.flatMap { b in b.words.map { (b.id, $0) } }.sorted { $0.1.count > $1.1.count }
+        if let w = words.first(where: { text.contains($0.1) }) { return w.0 }
+        if text.contains("卧室") { return "auto" }   // 只说了卧室、没说什么时候
+        if text.contains("背景") {
+            let i = backgrounds.firstIndex { $0.id == current } ?? 0
+            return backgrounds[(i + 1) % backgrounds.count].id
+        }
+        return nil
+    }
+
     /// 打开 App 时自动开始待命（令牌填了才会开）
     @Published var autoStandby: Bool { didSet { save("autoStandby", autoStandby ? "1" : "") } }
     /// 机器人的画质：high = 全部效果，low = 省电（不描边、不算物理、贴图缩到 1024）
@@ -31,7 +62,8 @@ final class Store: ObservableObject {
     /// 衣服列表：id、名字、对她说话时认的叫法。新加衣服时这里和 Robot/live2d/src/avatar.js 的 OUTFITS、fetch-assets.sh 一起加
     static let outfits: [(id: String, name: String, words: [String])] = [
         ("default", "校服", ["校服", "原版", "原来", "第一套", "一号"]),
-        ("outfit2", "洋装", ["洋装", "裙子", "婚纱", "第二套", "二号"]),
+        ("outfit2", "洋装", ["洋装", "婚纱", "第二套", "二号"]),
+        ("sporty", "运动装", ["运动装", "运动", "外套", "夹克", "第三套", "三号"]),
     ]
 
     /// 「换上洋装」「穿黑色的」「换回原来的」→ 衣服 id；不是换装的话返回 nil
@@ -97,6 +129,7 @@ final class Store: ObservableObject {
         outfit = load("outfit").flatMap { id in Store.outfits.contains { $0.id == id } ? id : nil } ?? "default"
         faceQuality = load("faceQuality") == "low" ? "low" : "high"
         autoStandby = load("autoStandby") == "1"
+        background = load("background").flatMap { id in Store.backgrounds.contains { $0.id == id } ? id : nil } ?? "auto"
     }
 
     // 处理过的指令 id（避免重复执行）

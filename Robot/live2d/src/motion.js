@@ -13,7 +13,8 @@ export const BANNED = ['Touch_breast', 'Touch_pants', 'Show', 'Hide', 'Hidden'];
 export const ACTIONS = {
   wave: ['hello'], hello: ['hello'], nod: ['Yes'], yes: ['Yes'], shake: ['No'], no: ['No'],
   angry: ['Yuki_Angry_With_Mouth'], kiss: ['Kiss'], peace: ['Peace_hand'], pose: ['Hand_Pose'],
-  dance: ['dance_90bpm', 'dance_120bpm', 'f_vibe_dance_60_bpm_002'],
+  dance: ['dance_90bpm', 'dance_120bpm', 'f_vibe_dance_60_bpm_002', 'video_dance1'],
+  vdance: ['video_dance1'],
   phone: [['Tapping_Start', 'Tapping_Idle', 'Tapping_End']], call: ['Phone_talking'],
   play: ['yuki_play'], read: ['np'], popcorn: ['yuki_popcorn_idle'],
   touch_head: ['Touch_head'], touch_hand_l: ['Touch_hand_L'], touch_hand_r: ['Touch_hand_R'],

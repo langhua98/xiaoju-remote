@@ -325,6 +325,10 @@ final class LiveTalk: NSObject, ObservableObject {
         let s = Self.tidy(said)
         if !h.isEmpty { log("听到：\(h)") }
         if !s.isEmpty { log("回答：\(s)") }
+        if let id = Store.backgroundCommand(h, current: store.background) {
+            store.background = id
+            log("背景：\(Store.backgroundName(id))")
+        }
         if !usedOutfitTool, let id = Store.outfitCommand(h, current: store.outfit) {
             store.outfit = id
             log("换装：\(Store.outfitName(id))")

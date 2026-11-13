@@ -128,10 +128,12 @@ struct RobotModeView: View {
         }
         .statusBar(hidden: true)
         .onChange(of: store.outfit) { id in engine.face.send(["type": "outfit", "id": id]) }
+        .onChange(of: store.background) { id in engine.face.send(["type": "bg", "id": id]) }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             engine.talk.warmUp()
             engine.face.send(["type": "outfit", "id": store.outfit])
+            engine.face.send(["type": "bg", "id": store.background])
         }
         .onDisappear {
             engine.talk.cancel()
@@ -152,6 +154,7 @@ struct RobotModeView: View {
     private func crashed() {
         engine.record("画面进程被系统关掉了（多半是内存不够），已用省电画质重新打开")
         engine.face.send(["type": "outfit", "id": store.outfit])
+        engine.face.send(["type": "bg", "id": store.background])
     }
 
     /// 点一下：正在打字就收起键盘；她在想、在说、在实时聊天时打断 / 结束；闲着时什么都不做（开始聊天用麦克风按钮）。
