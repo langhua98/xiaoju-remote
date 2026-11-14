@@ -55,9 +55,12 @@ class Prefs(ctx: Context) {
         get() = sp.getLong("tgChat", 0L)
         set(v) { sp.edit().putLong("tgChat", v).apply() }
 
-    /** 用户开着待命（更新完 App 被重启后，要接着待命）。用户点「停止」才变 false。 */
+    /**
+     * 用户开着待命（更新完 App 被重启后，要接着待命）。用户点「停止」才变 false。
+     * 0.39 起默认 true（William：被控端要自己更新并启动待命，不用手点）：装好、更新完、开机、打开 App 都自己待命。
+     */
     var standby: Boolean
-        get() = sp.getBoolean("standby", false)
+        get() = sp.getBoolean("standby", true)
         set(v) { sp.edit().putBoolean("standby", v).apply() }
 
     /** 备用通道（ntfy.sh）的密钥，base64。第一次用时随机生成，见 BackupChannel */
