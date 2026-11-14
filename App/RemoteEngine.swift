@@ -29,6 +29,8 @@ final class RemoteEngine: ObservableObject {
         if store.gimbalAuto { gimbal.connect() }
         follower.onLog = { [weak self] s in self?.push(s) }
         follower.onSensing = { [weak face] on in face?.send(["type": "sensing", "camera": on]) }
+        // 跟随开着时前摄被它占着，「看一眼」从它那里借一帧
+        Eyes.borrowFrame = { [weak self] in await self?.follower.snapshot() }
         // 大模型、聊天框开关跟随：改设置里的开关，界面上看得到；真正开关摄像头在 setFollow
         Body.followSwitch = { [weak self] on in
             guard let self = self else { return "没有这个功能" }

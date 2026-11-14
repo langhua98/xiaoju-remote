@@ -90,6 +90,21 @@ struct SettingsView: View {
                     Text("填了就用实时语音聊天：像打电话一样，随时插话打断她，开口更快；声音是 Gemini 自带的女声。免费档有用量上限，数据谷歌可能用来改进产品。连不上时自动改用上面的 DeepSeek。空着就一直用 DeepSeek。")
                 }
 
+                Section {
+                    Toggle("允许她用摄像头看", isOn: $store.allowSee)
+                    if store.allowSee {
+                        TextField("眼睛模型的接口地址（可以不填）", text: $store.eyeBase)
+                            .textInputAutocapitalization(.never).disableAutocorrection(true).keyboardType(.URL)
+                        TextField("模型名（要能看图）", text: $store.eyeModel)
+                            .textInputAutocapitalization(.never).disableAutocorrection(true)
+                        SecureField("API 密钥", text: $store.eyeKey)
+                    }
+                } header: {
+                    Text("眼睛")
+                } footer: {
+                    Text("打开以后，你问她「看到了什么」「我在不在」「看看左边有什么」，她会拍一张照片再回答；拍的时候屏幕上方有摄像头的提示，照片不保存。下面三项不填：用手机自带的识别，不联网，只认得出有没有人、大概是什么东西、看到什么字，比较粗。三项都填（OpenAI 兼容接口、能看图的模型）：照片会发给你填的这个接口，让它描述，细得多。")
+                }
+
                 GimbalSection(gimbal: engine.gimbal, follower: engine.follower, auto: $store.gimbalAuto, follow: $store.follow) { engine.setFollow($0) }
 
                 Section {

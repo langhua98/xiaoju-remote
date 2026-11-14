@@ -16,6 +16,12 @@ final class Store: ObservableObject {
     @Published var geminiKey: String { didSet { Keychain.set("geminiKey", geminiKey) } }
     /// 打开 App 时自动连大疆云台
     @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
+    /// 允许她用摄像头看（Eyes.swift）。默认关
+    @Published var allowSee: Bool { didSet { save("allowSee", allowSee ? "1" : "") } }
+    /// 「眼睛」模型：能看图的大模型（OpenAI 兼容接口）。三项都填了才用，不填就用手机自带的识别。密钥只存钥匙串
+    @Published var eyeBase: String { didSet { save("eyeBase", eyeBase) } }
+    @Published var eyeModel: String { didSet { save("eyeModel", eyeModel) } }
+    @Published var eyeKey: String { didSet { Keychain.set("eyeKey", eyeKey) } }
     /// 跟着人转（用前摄找人脸，见 Follow.swift）。不存：每次打开 App 都是关的，要用再开
     @Published var follow = false
     /// 机器人穿哪套衣服（default = Yuki_outfit1.glb，outfit2 = Yuki_outfit2.glb，sporty = Yuki_sporty.glb，见 Robot/live2d/src/avatar.js 的 OUTFITS）
@@ -127,6 +133,10 @@ final class Store: ObservableObject {
         llmModel = load("llmModel").flatMap { m in Store.llmModels.contains { $0.id == m } ? m : nil } ?? Store.llmModels[0].id
         llmKey = Keychain.get("llmKey") ?? ""
         geminiKey = Keychain.get("geminiKey") ?? ""
+        allowSee = load("allowSee") == "1"
+        eyeBase = load("eyeBase") ?? ""
+        eyeModel = load("eyeModel") ?? ""
+        eyeKey = Keychain.get("eyeKey") ?? ""
         gimbalAuto = d.object(forKey: "gimbalAuto") is Bool ? d.bool(forKey: "gimbalAuto") : (load("gimbalAuto") == "1")
         outfit = load("outfit").flatMap { id in Store.outfits.contains { $0.id == id } ? id : nil } ?? "default"
         faceQuality = load("faceQuality") == "low" ? "low" : "high"

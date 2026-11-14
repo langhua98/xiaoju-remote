@@ -15,7 +15,6 @@ enum Body {
     [看向 右 20 上 10]：转到相对正面的那个方向（可以只写一个，比如 [看向 左 45]）。[回正]：回到正面。[停]：马上停。
     [跟着我]：开始一直面对着主人（用前面的摄像头找主人的脸，手机自己跟，不用你一直转）。[别跟了]：不跟了。主人说「跟着我」「看着我」「别跟了」时用。
     下面「云台现在的状态」会告诉你现在朝哪、每个方向还能转多少，不要超过；主人问你朝哪就照实说。比如主人说「往左边看看」，你回答「好，我看看左边。[左转 45]」。状态里说云台没连上时不要写这些标签，直接告诉主人云台没连上。不需要转的时候不要写标签，标签不会被念出来。
-    你现在看不见东西（摄像头的画面不会给你），主人问你看到了什么就照实说看不见，不要编。
     你还能换衣服：主人让你换衣服时写 [换装 衣服名]，衣服名只能是：\(outfitNames)。比如「好呀，换上啦。[换装 洋装]」。
     你有一个 3D 的身体，能做动作：写 [动作 名字]，名字只能是：\(actionNames)。主人让你跳舞、挥手、比耶时就做；平时表示同意可以 [动作 点头]，不同意可以 [动作 摇头]，一次回答最多一个动作，不要每句都做。
     屏幕里的你还能转身：[转身 左 90] [转身 右 45] [转身 回正]（数字是度数，0～180，背对主人是 180）；主人让你转过去、给他看看背后、侧过身时用。
@@ -27,12 +26,41 @@ enum Body {
     gimbal 的角度是相对正面的度数，右和上为正：action 用 turn 是在现在的基础上再转（right: -30 就是再往左 30°），用 look 是转到那个方向（right: 20, up: 10），center 回正面，stop 马上停，status 只问状态。
     主人说「跟着我」「一直看着我」时用 follow_on：手机会用前面的摄像头找主人的脸，自己一直面对着主人，不用你一直转；主人说「别跟了」时用 follow_off。
     每次调用的结果都会告诉你现在朝哪、每个方向还能转多少，下次不要超过；结果说没连上、到头了、被挡住时照实告诉主人，不要假装转了。
-    你现在看不见东西（摄像头的画面不会给你），主人问你看到了什么就照实说看不见，不要编。
     你还能换衣服：主人让你换衣服时调用 change_outfit 工具，衣服名只能是：\(outfitNames)；主人没说换哪套就换一套和现在不一样的。
     你有一个 3D 的身体，能做动作：主人让你跳舞、挥手、比耶、点头、摇头等时，调用 play_action 工具，动作名只能是：\(actionNames)。
     屏幕里的你还能转身：主人让你转过去、侧过身、给他看看背后时，调用 turn_body 工具。
     屏幕的镜头也能换：主人想看你全身、半身，或者凑近看你的脸时，调用 set_camera 工具。
     """
+
+    /// 关于眼睛的那段提示词。canSee：设置里开没开「允许她用摄像头看」；tool：实时模式（用工具）还是普通模式（写标签）
+    static func eyesNote(canSee: Bool, tool: Bool) -> String {
+        guard canSee else {
+            return "你现在看不见东西：主人没有打开「允许她用摄像头看」。主人问你看到了什么就照实说看不见、可以去设置里打开，不要编。"
+        }
+        if tool {
+            return """
+            你有眼睛：主人问你看到了什么、让你看看某个东西或某个方向、问你他在不在时，调用 see 工具拍一张照片，结果里会告诉你看到了什么，再照着结果回答。
+            camera 用 front 是屏幕朝着的方向（平时主人就在这边），用 back 是手机背面朝着的方向。要看别的方向就先用 gimbal 转过去再 see；找东西可以转几个方向各看一眼，最多看 4 次。
+            只说结果里有的东西；结果说得很粗、看不清的时候照实说，不要编细节。没调用 see 就不要说自己看到了什么。
+            """
+        }
+        return """
+        你有眼睛：主人问你看到了什么、让你看看某个东西或某个方向、问你他在不在时，在回答里写 [看一眼]（看屏幕朝着的方向，平时主人就在这边）或者 [看一眼 后面]（看手机背面朝着的方向）。
+        写了以后 App 会拍一张照片，把看到的东西告诉你，你再回答主人；所以这一句只要说「好，我看看」之类的话加上标签，不要先猜看到了什么。要看别的方向就先写转动的标签再写 [看一眼]，比如「我看看左边。[左转 45][看一眼]」。
+        只说 App 告诉你的东西；说得很粗、看不清的时候照实说，不要编细节。没看过就不要说自己看到了什么。
+        """
+    }
+
+    private static let seePattern = #"\[\s*看一眼\s*[:：]?\s*(前面|后面|背面|前|后)?\s*\]"#
+
+    /// 回答里有没有「看一眼」的标签。有的话返回用前摄还是后摄（true = 前）
+    static func seeTag(in text: String) -> Bool? {
+        guard let re = try? NSRegularExpression(pattern: seePattern) else { return nil }
+        let ns = text as NSString
+        guard let m = re.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        let which = m.range(at: 1).location == NSNotFound ? "" : ns.substring(with: m.range(at: 1))
+        return !(which.hasPrefix("后") || which.hasPrefix("背"))
+    }
 
     static var outfitNames: String { Store.outfits.map { $0.name }.joined(separator: "、") }
 
@@ -170,6 +198,16 @@ enum Body {
                     "up": ["type": "NUMBER", "description": "上下的度数，抬头为正、低头为负。不动就不填"],
                 ],
                 "required": ["action"],
+            ],
+        ], [
+            "name": "see",
+            "description": "用摄像头看一眼：拍一张照片，结果里用文字告诉你看到了什么。",
+            "parameters": [
+                "type": "OBJECT",
+                "properties": [
+                    "camera": ["type": "STRING", "enum": ["front", "back"],
+                               "description": "front 屏幕朝着的方向（主人平时在这边），back 手机背面朝着的方向。不填就是 front"],
+                ],
             ],
         ], [
             "name": "move_gimbal",
@@ -407,6 +445,7 @@ enum Body {
     static func strip(_ text: String) -> String {
         text.replacingOccurrences(of: tagPattern, with: "", options: .regularExpression)
             .replacingOccurrences(of: lookPattern, with: "", options: .regularExpression)
+            .replacingOccurrences(of: seePattern, with: "", options: .regularExpression)
             .replacingOccurrences(of: outfitPattern, with: "", options: .regularExpression)
             .replacingOccurrences(of: actionPattern, with: "", options: .regularExpression)
             .replacingOccurrences(of: viewPattern, with: "", options: .regularExpression)

@@ -114,7 +114,8 @@ final class LiveTalk: NSObject, ObservableObject {
         socket = ws
         ws.resume()
         receive()
-        let system: String = Self.persona + "\n" + Body.personaForTool + "\n云台现在的状态：" + gimbal.stateText()
+        let eyes: String = Body.eyesNote(canSee: store.allowSee, tool: true)
+        let system: String = Self.persona + "\n" + Body.personaForTool + "\n" + eyes + "\n云台现在的状态：" + gimbal.stateText()
         let setup: [String: Any] = ["setup": [
             "model": modelName,
             "generationConfig": [
@@ -266,6 +267,10 @@ final class LiveTalk: NSObject, ObservableObject {
                     result = "没有这种镜头，只有：\(Body.shotNames)"
                 }
                 self.log("镜头（工具）：\(result)")
+            } else if name == "see" {
+                let seen = await Eyes.look(front: (args["camera"] as? String) != "back", store: self.store, face: self.face)
+                result = seen.text
+                self.log("眼睛：\(seen.log)")
             } else if name == "gimbal" || name == "move_gimbal" {
                 let move: Body.GimbalMove
                 if name == "gimbal" {

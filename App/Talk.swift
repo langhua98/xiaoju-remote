@@ -56,6 +56,8 @@ final class Talk: NSObject, ObservableObject {
     /// 机器人的身体（大疆云台）：大模型回答里的动作标签会让它转
     private let gimbal: Gimbal
     private var gimbalChain: Task<Void, Never>?
+    /// 这一轮回答里写了 [看一眼]：true 用前摄，false 用后摄，nil 没写
+    private var lookWanted: Bool?
 
     init(store: Store, face: FaceBridge, gimbal: Gimbal, log: @escaping (String) -> Void) {
         self.store = store
@@ -318,18 +320,33 @@ final class Talk: NSObject, ObservableObject {
     private func ask(_ text: String) async {
         history.append(["role": "user", "content": text])
         if history.count > 12 { history.removeFirst(history.count - 12) }
-        let system: String = Chat.persona + "\n" + Body.personaForTags + "\n云台现在的状态：" + gimbal.stateText()
-        let messages = [["role": "system", "content": system]] + history
         beginSpeaking()
-        buffer = ""; reply = ""; emotion = "neutral"; emotionKnown = false
         do {
-            try await Chat.stream(base: store.llmBase, key: store.llmKey, model: store.llmModel, messages: messages) { piece in
-                self.onPiece(piece)
+            // 她写了 [看一眼] 就拍一张，把看到的告诉她，让她接着回答；一句话里最多看 4 次（转几个方向找东西）
+            var looks = 0
+            while true {
+                let eyes: String = Body.eyesNote(canSee: store.allowSee, tool: false)
+                let system: String = Chat.persona + "\n" + Body.personaForTags + "\n" + eyes + "\n云台现在的状态：" + gimbal.stateText()
+                let messages = [["role": "system", "content": system]] + history
+                buffer = ""; reply = ""; emotionKnown = false; lookWanted = nil
+                if looks == 0 { emotion = "neutral" }
+                try await Chat.stream(base: store.llmBase, key: store.llmKey, model: store.llmModel, messages: messages) { piece in
+                    self.onPiece(piece)
+                }
+                guard !Task.isCancelled else { return }
+                flush(final: true)
+                history.append(["role": "assistant", "content": reply.isEmpty ? "嗯。" : reply])
+                log("回答：\(reply)")
+                guard let front = lookWanted, looks < 4 else { break }
+                looks += 1
+                await gimbalChain?.value   // 先等云台转到位再拍
+                guard !Task.isCancelled else { return }
+                let seen = await Eyes.look(front: front, store: store, face: face)
+                log("眼睛：\(seen.log)")
+                guard !Task.isCancelled else { return }
+                let more = looks < 4 ? "" : "已经看了 4 次，不要再写 [看一眼] 了。"
+                history.append(["role": "user", "content": "（这是 App 告诉你的，不是主人说的：\(seen.text)\n现在照着这个回答主人刚才的话。\(more)）"])
             }
-            guard !Task.isCancelled else { return }
-            flush(final: true)
-            history.append(["role": "assistant", "content": reply.isEmpty ? "嗯。" : reply])
-            log("回答：\(reply)")
         } catch {
             guard !Task.isCancelled else { return }
             history.removeLast()
@@ -452,6 +469,7 @@ final class Talk: NSObject, ObservableObject {
                 self.log("云台（\(Body.describe(move))）：\(r)")
             }
         }
+        if let front = Body.seeTag(in: raw) { lookWanted = front }
         for name in Body.outfitTags(in: raw) { applyOutfit(name) }
         for name in Body.viewTags(in: raw) {
             guard let shot = Body.shotID(named: name) else { log("镜头：没有「\(name)」"); continue }

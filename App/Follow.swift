@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreImage
 import Foundation
 import Vision
 
@@ -42,6 +43,7 @@ final class FaceFollower: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
     // 下面这几个只在 queue 上用
     private var configured = false
     private var lastFrame = Date.distantPast
+    private var shotWaiters: [(Data?) -> Void] = []   // 有人要借一帧（「看一眼」）
     private var fov = [48.0, 62.0]   // 竖屏时画面左右、上下各看多少度（打开摄像头时按镜头算）
 
     // 下面这些只在主线程用
@@ -161,9 +163,28 @@ final class FaceFollower: NSObject, ObservableObject, AVCaptureVideoDataOutputSa
         return true
     }
 
+    /// 借一帧画面（JPEG）。跟随开着的时候前摄被这里占着，「看一眼」从这里拿。没在跑、1.5 秒没等到都返回 nil
+    func snapshot() async -> Data? {
+        guard wanted, phase == .searching || phase == .following else { return nil }
+        return await withCheckedContinuation { (c: CheckedContinuation<Data?, Never>) in
+            queue.async { self.shotWaiters.append { c.resume(returning: $0) } }
+            queue.asyncAfter(deadline: .now() + 1.5) {
+                let late = self.shotWaiters
+                self.shotWaiters = []
+                for w in late { w(nil) }
+            }
+        }
+    }
+
     // MARK: 每一帧（在 queue 上）
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        if !shotWaiters.isEmpty, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            let waiting = shotWaiters
+            shotWaiters = []
+            let jpeg = CIContext().jpegRepresentation(of: CIImage(cvPixelBuffer: pixels), colorSpace: CGColorSpaceCreateDeviceRGB(), options: [:])
+            for w in waiting { w(jpeg) }
+        }
         let now = Date()
         guard now.timeIntervalSince(lastFrame) >= Self.every else { return }
         lastFrame = now
