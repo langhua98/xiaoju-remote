@@ -38,6 +38,7 @@ class StreamClient(private val client: OkHttpClient, private val url: String, pr
     override val isClosed get() = closed
     override val sentFrames get() = sent
     override val droppedFrames get() = dropped
+    override val queuedBytes: Long get() = ws?.queueSize() ?: 0L
 
     @Volatile private var needKey = true   // H.264：丢过帧，等关键帧
     @Volatile private var everWatched = false

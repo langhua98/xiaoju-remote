@@ -22,6 +22,8 @@ interface LiveSink {
     fun send(frame: ByteArray): Boolean
     fun sendH264(msg: ByteArray, key: Boolean, limit: Long): Boolean
     fun sendAudio(msg: ByteArray): Boolean
+    /** 发送队列里还压着多少字节（声音排在它们后面，看声音会晚多少） */
+    val queuedBytes: Long get() = 0
     /** 实测数据（类型 5，见 CameraHub.liveStats）。只有直连的发；云盘通道的看的一端要回 ok 才接着发，不能多塞消息 */
     fun sendStats(msg: ByteArray) {}
     fun close()
@@ -190,6 +192,7 @@ class LanViewer(private val sock: Socket, private val input: InputStream) : Live
     private val out = BufferedOutputStream(sock.getOutputStream(), 64 * 1024)
 
     override val watchers get() = if (closed) 0 else 1
+    override val queuedBytes: Long get() = queued.get()
     override val isClosed get() = closed
     override val sentFrames get() = sent
     override val droppedFrames get() = dropped

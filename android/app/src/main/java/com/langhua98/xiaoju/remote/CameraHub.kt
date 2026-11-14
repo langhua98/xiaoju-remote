@@ -88,6 +88,7 @@ class CameraHub(
 
     // 码率自适应：网络跟不上（丢帧）就降，稳了再升
     @Volatile private var rateScale = 1.0
+    private val audioPrio = AudioPriority()   // 声音先走（录音线程上用）
     @Volatile private var restartEnc = false
     @Volatile private var keyAt = 0L
     private val drops = java.util.concurrent.ConcurrentLinkedQueue<Long>()
@@ -195,6 +196,7 @@ class CameraHub(
         live = l
         kick()   // 间歇守望正歇着：马上开相机
         rateScale = 1.0
+        audioPrio.reset()
         if (!lanServer.start()) Bus.push("局域网直连开不了（端口被占用），只能经云盘看")
         forceKey()
         ensure()
@@ -627,6 +629,19 @@ class CameraHub(
         return (framesOut.get() - a) * 1000.0 / windowMs
     }
 
+    /**
+     * 声音一直排在画面后面（AudioPriority）：画面码率降到 70%（最低 30%，3 秒最多降一次），给声音让路。
+     * 不丢帧、不要关键帧；网络好了照常 15 秒后慢慢升回去。
+     */
+    private fun onAudioLate() {
+        val now = System.currentTimeMillis()
+        lastDrop = now
+        if (now - rateChangedAt > 3_000 && rateScale > 0.3) {
+            rateScale = maxOf(0.3, rateScale * 0.7); rateChangedAt = now
+            Bus.push("声音排在画面后面了，画面码率降到 ${(rateScale * 100).toInt()}%")
+        }
+    }
+
     /** 丢了帧：要一个关键帧；5 秒里丢了 3 次以上就把码率降到 70%（最低 30%）。 */
     private fun onDrop() {
         val now = System.currentTimeMillis()
@@ -828,7 +843,15 @@ class CameraHub(
         val l = live
         if (l != null && l.audio) {
             val sinks = l.watched()
-            if (sinks.isNotEmpty()) { val msg = StreamClient.audio(data, codec, ts); for (s in sinks) s.sendAudio(msg) }
+            if (sinks.isNotEmpty()) {
+                // 网络很差时声音改成 8 kHz（只改直播的，侦测录像还是原来的格式）
+                if (audioPrio.onRate(rateScale)) Bus.push(if (audioPrio.narrow) "网络差，直播的声音改成 8 kHz（省一半流量）" else "网络好了，直播的声音换回 16 kHz")
+                val narrow = audioPrio.narrow && codec == StreamClient.AUDIO_ULAW_16K
+                val msg = if (narrow) StreamClient.audio(Ulaw.halve(data), StreamClient.AUDIO_ULAW_8K, ts) else StreamClient.audio(data, codec, ts)
+                var queued = 0L
+                for (s in sinks) { s.sendAudio(msg); queued = maxOf(queued, s.queuedBytes) }
+                if (audioPrio.onPacket(queued)) onAudioLate()
+            }
         }
         if (monitor.on && monitor.audio) {
             val rate = if (codec == StreamClient.AUDIO_ULAW_8K) 8000 else 16000
