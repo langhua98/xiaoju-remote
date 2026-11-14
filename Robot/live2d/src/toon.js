@@ -17,13 +17,19 @@ export const TOON = {
     //        底色再乘一个颜色（原作的皮肤和头发更暖）  阴影色（乘在底色上）   明暗分界 柔边   边缘光 描边粗细 描边颜色（乘在底色上）  环境遮蔽从多暗到多亮算阴影
     skin:  { tint: [0.99, 0.955, 0.90], shade: [0.93, 0.66, 0.57], thr: 0.22, soft: 0.012, rim: 0.10, line: 0.8, lineCol: [0.42, 0.20, 0.16], ao: [0.45, 0.8] },
     face:  { tint: [0.99, 0.955, 0.90], shade: [0.93, 0.68, 0.60], thr: -0.35, soft: 0.05, rim: 0.0, line: 0.5, lineCol: [0.45, 0.22, 0.18], ao: [0.45, 0.8] },
-    hair:  { tint: [1.0, 0.93, 0.76], shade: [0.82, 0.60, 0.46], thr: 0.18, soft: 0.02, rim: 0.12, line: 0.9, lineCol: [0.30, 0.17, 0.12], ao: [0.35, 0.75] },
+    hair:  { tint: [1.0, 0.92, 0.74], shade: [0.76, 0.54, 0.40], thr: 0.12, soft: 0.02, rim: 0.12, line: 0.9, lineCol: [0.30, 0.17, 0.12], ao: [0.35, 0.75] },
     cloth: { tint: [1, 1, 1], shade: [0.74, 0.68, 0.72], thr: 0.12, soft: 0.02, rim: 0.10, line: 1.0, lineCol: [0.20, 0.15, 0.17], ao: [0.5, 0.92] },
     prop:  { tint: [1, 1, 1], shade: [0.76, 0.70, 0.74], thr: 0.12, soft: 0.02, rim: 0.10, line: 0, lineCol: [0, 0, 0], ao: [0.5, 0.9] },
     eye:   { tint: [1, 1, 1], shade: [1, 1, 1], thr: 0, soft: 0.1, rim: 0, line: 0, lineCol: [0, 0, 0], ao: [0, 1] },
   },
   sphere: 0.8,         // 脸的法线往球面靠多少（0 不靠，1 完全是球）
-  hairSpec: 0.3,       // 头发高光带的强度
+  hairSpec: 0.3,       // 头发高光带的强度（旧的，按法线算；现在由下面的天使环代替）
+  // 头发：模型里每一缕的法线朝向乱，直接按法线算明暗会出一块块的碎影；环境遮蔽贴图分辨率低，硬切会出锯齿状的色块。
+  // round：法线往「以头为中心的球（头以下是竖着的圆柱）」靠多少，明暗按整个头的形状走，像手绘的大块面。
+  // ao：环境遮蔽从多暗到多亮算阴影（范围拉宽，边缘就软了）；aoMix：遮蔽最多压暗多少（不再一刀切成阴影色）。
+  // ring：天使环。h 在头中心以上多少米、w 宽度、s 强度、j 顺着发丝的锯齿（米）、side 环往两边延伸到多少（1 = 整圈）。
+  // top / under：头顶亮一点、发梢和底下暗一点（米：从头中心往上、往下多远开始变）
+  hair: { round: 0.45, ao: [0.25, 0.85], aoMix: 0.8, ring: { h: 0.075, w: 0.014, s: 0.9, j: 0.012, side: 0.55 }, top: 0.06, under: [0.05, 0.45] },
   hairShadow: { color: [0.93, 0.70, 0.62], offset: [0.004, -0.013], back: 0.004 },   // 刘海的投影：颜色、往哪偏（米）、往后退多少
   eyeShadow: [0.80, 0.74, 0.80],   // 眼睛上沿那片阴影的颜色（乘在眼睛上）
   neck: { slope: 0.45, radius: 0.11 },
@@ -116,6 +122,9 @@ uniform vec3 uHeadUp;
 uniform vec3 uHeadFwd;
 uniform vec3 uChin;
 uniform float uSphere;
+uniform vec4 uHair;    // round, aoMix, top, 0
+uniform vec4 uRing;    // h, w, s, j
+uniform vec3 uHairExt; // under 开始, under 结束, ring side
 varying vec2 vUv;
 varying vec2 vUvAo;
 varying vec3 vN;
@@ -144,10 +153,23 @@ void main() {
       #ifdef FACE
         N = normalize(mix(N, normalize(vP - uHeadC), uSphere));
       #endif
+      #ifdef HAIR
+        // 头的形状：头中心以上是球，以下是竖着的圆柱（长发顺着往下垂）
+        vec3 hr = vP - uHeadC;
+        float hh = dot(hr, uHeadUp);
+        vec3 shape = hr - uHeadUp * min(hh, 0.0);
+        N = normalize(mix(N, normalize(shape), uHair.x));
+      #endif
       vec3 V = normalize(-vP);
       float lit = smoothstep(uThr - uSoft, uThr + uSoft, dot(N, uLight));
       #ifdef USE_AO
-        lit = min(lit, smoothstep(uAo.x, uAo.y, texture2D(aoMap, vUvAo).r));
+        #ifdef HAIR
+          // 头发：遮蔽软软地压暗，不切成阴影色
+          float aoK = smoothstep(uAo.x, uAo.y, texture2D(aoMap, vUvAo).r);
+          lit *= mix(1.0 - uHair.y, 1.0, aoK);
+        #else
+          lit = min(lit, smoothstep(uAo.x, uAo.y, texture2D(aoMap, vUvAo).r));
+        #endif
       #endif
       #ifdef NECK
         // 下巴的阴影：下巴尖往后、一个向后抬高的斜面以下的皮肤都算在阴影里
@@ -162,10 +184,16 @@ void main() {
       float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 3.0);
       col += uRimCol * (fres * smoothstep(0.0, 0.6, dot(N, uRimDir)) * uRim);
       #ifdef HAIR
-        // 高光带：把法线横向压扁，高光就连成一圈
-        vec3 Ns = normalize(vec3(N.x * 0.25, N.y, N.z));
-        float s = pow(max(dot(Ns, normalize(uLight + V)), 0.0), 40.0);
-        col += base * (smoothstep(0.3, 0.6, s) * uSpec * lit);
+        // 头顶亮一点，越往下（长发的下半截、底下那层）越暗一点
+        col *= 1.0 + 0.08 * smoothstep(0.0, uHair.z, hh) - 0.16 * smoothstep(-uHairExt.x, -uHairExt.y, hh);
+        // 天使环：头顶下面一圈、朝着镜头的那一面，亮带的边顺着发丝有锯齿（用贴图的明暗错开）
+        float lum = dot(tex.rgb, vec3(0.33));
+        float jag = ((lum - 0.6) * 2.0 + 0.3 * sin(vUv.x * 900.0)) * uRing.w;
+        float band = 1.0 - smoothstep(0.0, uRing.y, abs(hh - uRing.x + jag));
+        vec3 ax = normalize(shape - uHeadUp * dot(shape, uHeadUp));   // 水平方向上朝哪
+        float face = smoothstep(uHairExt.z - 1.0, 1.0, dot(ax, normalize(V - uHeadUp * dot(V, uHeadUp))));
+        float ring = band * face * smoothstep(0.0, 0.25, dot(normalize(vN), V)) * uRing.z;
+        col = mix(col, base * 1.25 + vec3(0.10, 0.09, 0.07), clamp(ring * (0.55 + 0.45 * lit), 0.0, 1.0));
       #endif
     #endif
     gl_FragColor = vec4(col * uGrade, tex.a * uOpacity);
@@ -217,8 +245,11 @@ function makeMaterial(src, kind, mode) {
       uLineCol: { value: new THREE.Vector3(...k.lineCol) },
       uLight: { value: TOON.light }, uRimDir: { value: TOON.rimDir }, uRimCol: { value: TOON.rimColor }, uGrade: { value: TOON.grade },
       uFlat: { value: new THREE.Vector3(...(mode === 'cast' ? hs.color : TOON.eyeShadow)) },
-      uAo: { value: new THREE.Vector2(...k.ao) },
+      uAo: { value: new THREE.Vector2(...(kind === 'hair' ? TOON.hair.ao : k.ao)) },
       uThr: { value: k.thr }, uSoft: { value: k.soft }, uRim: { value: k.rim },
+      uHair: { value: new THREE.Vector4(TOON.hair.round, TOON.hair.aoMix, TOON.hair.top, 0) },
+      uRing: { value: new THREE.Vector4(TOON.hair.ring.h, TOON.hair.ring.w, TOON.hair.ring.s, TOON.hair.ring.j) },
+      uHairExt: { value: new THREE.Vector3(TOON.hair.under[0], TOON.hair.under[1], TOON.hair.ring.side) },
       uSpec: { value: TOON.hairSpec }, uOpacity: { value: src.opacity === undefined ? 1 : src.opacity },
       uHeadC: shared.headC, uHeadUp: shared.headUp, uHeadFwd: shared.headFwd, uChin: shared.chin, uSphere: { value: TOON.sphere },
       uOutline: { value: TOON.outlineWidth * k.line }, uTuck: { value: TOON.tuck },
