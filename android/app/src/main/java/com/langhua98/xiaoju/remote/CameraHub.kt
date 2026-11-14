@@ -65,6 +65,10 @@ class CameraHub(
     private val notifier = Notifier(cloud, prefs, device)
     val uploader = Uploader(cloud, store, device, enabled = { monitor.upload }, busy = { watching() })
     private val work = Executors.newSingleThreadExecutor()   // 截图、存小图、发提醒（不卡相机）
+    // 侦测录像的声音：放到自己的线程写（录像切段、写文件时会占着 recorder 的锁，录音线程不能等它，
+    // 等久了麦克风的数据就丢了，直播的声音也跟着一卡一卡）。最多排 4 秒，再多丢最旧的。
+    private val recAudio = java.util.concurrent.ThreadPoolExecutor(1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+        java.util.concurrent.ArrayBlockingQueue<Runnable>(100), java.util.concurrent.ThreadPoolExecutor.DiscardOldestPolicy())
 
     @Volatile private var thread: Thread? = null
 
@@ -307,6 +311,7 @@ class CameraHub(
         thread?.let { runCatching { it.join(5_000) } }
         uploader.close()
         work.shutdown()
+        recAudio.shutdown()
         detect.shutdown()
         synchronized(engineLock) { engine.close() }
     }
@@ -811,16 +816,21 @@ class CameraHub(
             if (a.start()) mic = a else { micFailedAt = System.currentTimeMillis(); Bus.push("声音没开成：${a.error}") }
         } else if (!on && m != null) {
             m.stop(); mic = null
+            if (m.resyncs > 0) Bus.push("声音：这次录音中途对了 ${m.resyncs} 次钟（麦克风被耽误、丢过声音）")
         }
     }
 
+    /** 在录音线程上调：只做不会卡的事（发出去只是排进发送队列），写录像交给 recAudio。 */
     private fun onAudio(data: ByteArray, codec: Int, ts: Long) {
         val l = live
         if (l != null && l.audio) {
             val sinks = l.watched()
             if (sinks.isNotEmpty()) { val msg = StreamClient.audio(data, codec, ts); for (s in sinks) s.sendAudio(msg) }
         }
-        if (monitor.on && monitor.audio) recorder.audio(data, if (codec == StreamClient.AUDIO_ULAW_8K) 8000 else 16000, ts)
+        if (monitor.on && monitor.audio) {
+            val rate = if (codec == StreamClient.AUDIO_ULAW_8K) 8000 else 16000
+            recAudio.execute { recorder.audio(data, rate, ts) }
+        }
     }
 
     private fun applyMonitor() {
