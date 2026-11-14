@@ -3,6 +3,7 @@ import Foundation
 /// 让大模型控制机器人的身体（大疆 OM 云台，见 Gimbal.swift）。
 /// - 普通模式（DeepSeek）：回答里写动作标签 [左转 30] [右转 30] [抬头 15] [低头 15] [看向 右 20 上 10] [回正] [停]，App 照着转，标签不念出来。
 /// - 实时模式（Gemini Live）：工具调用 gimbal(action, right, up)，转完把结果（现在朝哪、还能转多少）告诉模型。旧的 move_gimbal 还认。
+/// 跟着人转（Follow.swift）是手机本地的反射动作，大模型只管开关：gimbal 的 follow_on / follow_off，标签 [跟着我] [别跟了]。
 /// 角度只有一套：相对正面（连上云台时的朝向，可以重设），右、上为正，单位是度。见 Robot/GIMBAL_MODEL_PLAN.md。
 /// 同样的办法也用来换衣服（[换装 洋装] / change_outfit）、让 3D 角色做动作（[动作 跳舞] / play_action）、
 /// 转身（[转身 左 90] / turn_body）和换镜头（[镜头 特写] / set_camera）。
@@ -12,6 +13,7 @@ enum Body {
     你能控制自己的身体：手机夹在大疆云台上，云台能左右转、上下抬头低头。主人让你转头、看某个方向、抬头低头时，在回答里写动作标签，App 会照着转：
     [左转 30] [右转 30] [抬头 15] [低头 15]：在现在的基础上再转这么多度。
     [看向 右 20 上 10]：转到相对正面的那个方向（可以只写一个，比如 [看向 左 45]）。[回正]：回到正面。[停]：马上停。
+    [跟着我]：开始一直面对着主人（用前面的摄像头找主人的脸，手机自己跟，不用你一直转）。[别跟了]：不跟了。主人说「跟着我」「看着我」「别跟了」时用。
     下面「云台现在的状态」会告诉你现在朝哪、每个方向还能转多少，不要超过；主人问你朝哪就照实说。比如主人说「往左边看看」，你回答「好，我看看左边。[左转 45]」。状态里说云台没连上时不要写这些标签，直接告诉主人云台没连上。不需要转的时候不要写标签，标签不会被念出来。
     你现在看不见东西（摄像头的画面不会给你），主人问你看到了什么就照实说看不见，不要编。
     你还能换衣服：主人让你换衣服时写 [换装 衣服名]，衣服名只能是：\(outfitNames)。比如「好呀，换上啦。[换装 洋装]」。
@@ -23,6 +25,7 @@ enum Body {
     static let personaForTool = """
     你能控制自己的身体：手机夹在大疆云台上，云台能左右转、上下抬头低头。主人让你转头、看某个方向、抬头低头、回到正面、停下时，调用 gimbal 工具真的去转，再告诉主人。
     gimbal 的角度是相对正面的度数，右和上为正：action 用 turn 是在现在的基础上再转（right: -30 就是再往左 30°），用 look 是转到那个方向（right: 20, up: 10），center 回正面，stop 马上停，status 只问状态。
+    主人说「跟着我」「一直看着我」时用 follow_on：手机会用前面的摄像头找主人的脸，自己一直面对着主人，不用你一直转；主人说「别跟了」时用 follow_off。
     每次调用的结果都会告诉你现在朝哪、每个方向还能转多少，下次不要超过；结果说没连上、到头了、被挡住时照实告诉主人，不要假装转了。
     你现在看不见东西（摄像头的画面不会给你），主人问你看到了什么就照实说看不见，不要编。
     你还能换衣服：主人让你换衣服时调用 change_outfit 工具，衣服名只能是：\(outfitNames)；主人没说换哪套就换一套和现在不一样的。
@@ -122,6 +125,7 @@ enum Body {
         // 「停」：云台和屏幕里的动作一起停，不等大模型
         let bare = t.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "。！!.，,？? "))   // 语音识别会带标点
         if ["停", "停下", "别动", "停下来", "别转了", "不要动", "stop"].contains(bare) { return (["type": "body", "action": "stop"], "停下") }
+        if ["别跟了", "不跟了", "不要跟了", "别跟着我", "别看着我了"].contains(bare) { return (["type": "body", "action": "follow_off"], "别跟了") }
         // 「云台 左转 30」「云台 看向 右 20 上 10」「云台回正」：直接转，不问大模型
         if t.hasPrefix("云台"), let m = gimbalMoves(in: "[" + t.dropFirst(2).trimmingCharacters(in: .whitespaces) + "]").first {
             return (bodyMsg(m), "云台：" + describe(m))
@@ -160,8 +164,8 @@ enum Body {
             "parameters": [
                 "type": "OBJECT",
                 "properties": [
-                    "action": ["type": "STRING", "enum": ["turn", "look", "center", "stop", "status"],
-                               "description": "turn 在现在的基础上再转；look 转到相对正面的那个方向；center 回正面；stop 马上停；status 只问现在的状态"],
+                    "action": ["type": "STRING", "enum": ["turn", "look", "center", "stop", "status", "follow_on", "follow_off"],
+                               "description": "turn 在现在的基础上再转；look 转到相对正面的那个方向；center 回正面；stop 马上停；status 只问现在的状态；follow_on 开始一直面对着主人；follow_off 不跟了"],
                     "right": ["type": "NUMBER", "description": "左右的度数，右为正、左为负。turn 时是再转多少，look 时是转到哪。不动就不填"],
                     "up": ["type": "NUMBER", "description": "上下的度数，抬头为正、低头为负。不动就不填"],
                 ],
@@ -280,9 +284,13 @@ enum Body {
         ("云台抬头", GimbalMove(action: "turn", right: nil, up: 15)), ("云台低头", GimbalMove(action: "turn", right: nil, up: -15)),
         ("云台回正", GimbalMove(action: "center", right: nil, up: nil)), ("云台停", GimbalMove(action: "stop", right: nil, up: nil)),
         ("云台设为正面", GimbalMove(action: "home", right: nil, up: nil)),
+        ("跟着我", GimbalMove(action: "follow_on", right: nil, up: nil)), ("别跟了", GimbalMove(action: "follow_off", right: nil, up: nil)),
     ]
 
-    private static let tagPattern = #"\[\s*(左转|右转|抬头|低头|回正|回中|停下|停|别动|设为正面)\s*(\d+(?:\.\d+)?)?\s*度?\s*\]"#
+    /// 开关「跟着人转」。RemoteEngine 启动时填上；返回一句给模型 / 记录看的结果
+    static var followSwitch: ((Bool) -> String)?
+
+    private static let tagPattern = #"\[\s*(左转|右转|抬头|低头|回正|回中|停下|停|别动|设为正面|跟着我|看着我|别跟了|不跟了)\s*(\d+(?:\.\d+)?)?\s*度?\s*\]"#
     private static let lookPattern = #"\[\s*看向\s*[:：]?\s*([^\]]*?)\s*\]"#
     private static let lookPart = #"(左|右|上|下)\s*(\d+(?:\.\d+)?)"#
 
@@ -302,6 +310,8 @@ enum Body {
                 case "低头": move = GimbalMove(action: "turn", right: nil, up: -(deg ?? 15))
                 case "回正", "回中": move = GimbalMove(action: "center", right: nil, up: nil)
                 case "设为正面": move = GimbalMove(action: "home", right: nil, up: nil)
+                case "跟着我", "看着我": move = GimbalMove(action: "follow_on", right: nil, up: nil)
+                case "别跟了", "不跟了": move = GimbalMove(action: "follow_off", right: nil, up: nil)
                 default: move = GimbalMove(action: "stop", right: nil, up: nil)
                 }
                 found.append((m.range.location, move))
@@ -364,6 +374,8 @@ enum Body {
         case "center": return "回正"
         case "stop": return "停"
         case "home": return "设为正面"
+        case "follow_on": return "跟着我"
+        case "follow_off": return "别跟了"
         default: return "问状态"
         }
     }
@@ -380,6 +392,8 @@ enum Body {
         case "stop":
             gimbal.halt()
             return "停了。" + gimbal.stateText()
+        case "follow_on", "follow_off":
+            return followSwitch?(m.action == "follow_on") ?? "这台手机上没有跟随功能。"
         case "home":
             guard gimbal.connected else { return gimbal.stateText() }
             gimbal.setHomeHere()

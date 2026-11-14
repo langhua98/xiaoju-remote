@@ -75,6 +75,11 @@ final class Gimbal: NSObject, ObservableObject {
     private(set) var owner: Owner = .nobody
     /// 刚下的指令要转到哪（姿态大约一秒才来一帧，转完马上问朝向时用这个）
     private var aimed: (yaw: Double, pitch: Double, at: Date)?
+    /// 主人、遥控端、大模型刚让云台转过：这个时间之前自动跟随不动它
+    private var heldUntil = Date.distantPast
+    private var tracking = false
+    /// 别人转完以后，自动跟随过几秒再接着跟
+    static let followHold = 6.0
     /// 这个轴的速度正负已经用实测确认过（闭环转过一次）。没确认过的轴不走「先快后准」，直接闭环
     private var dirKnown: Set<Axis> = []
 
@@ -452,6 +457,9 @@ final class Gimbal: NSObject, ObservableObject {
         guard let now = heading, pose != nil else { return "还没收到云台的朝向，等一两秒再试。" }
         if busy, owner > who { return "\(owner.label)正在转云台，这次没转。" + stateText() }
         owner = who
+        tracking = false
+        if who > .follow { heldUntil = Date().addingTimeInterval(Self.followHold + 4) }
+        defer { if who > .follow { heldUntil = Date().addingTimeInterval(Self.followHold) } }
 
         var tr = right.map { relative ? now.right + $0 : $0 } ?? now.right
         var tu = up.map { relative ? now.up + $0 : $0 } ?? now.up
@@ -508,6 +516,28 @@ final class Gimbal: NSObject, ObservableObject {
         stopNow()
         owner = .nobody
         aimed = nil
+        tracking = false
+        heldUntil = Date().addingTimeInterval(Self.followHold + 4)   // 主人说了停：自动跟随也先别动
+    }
+
+    /// 自动跟随用：按速度转一小会儿（°/s，右、上为正），要一直叫才会一直转，不叫了半秒内自己停。
+    /// 别人正在转、或者刚转完没几秒，返回 nil（让开）。否则返回真正发出去的速度（到限位的那个方向是 0）。
+    func track(right: Double, up: Double) -> (right: Double, up: Double)? {
+        guard connected, !asleep, !busy, Date() >= heldUntil else { tracking = false; return nil }
+        var r = right, u = up
+        if let h = heading {
+            if (h.right >= Self.limitYaw && r > 0) || (h.right <= -Self.limitYaw && r < 0) { r = 0 }
+            if (h.up >= Self.limitUp && u > 0) || (h.up <= -Self.limitDown && u < 0) { u = 0 }
+        }
+        if r == 0 && u == 0 {
+            if tracking { stopNow(); tracking = false }
+            return (0, 0)
+        }
+        owner = .follow
+        aimed = nil
+        tracking = true
+        move(yawSpeed: r, pitchSpeed: u * upSign, seconds: 0.45)
+        return (r, u)
     }
 
     /// 把现在的朝向记成正面
@@ -519,6 +549,8 @@ final class Gimbal: NSObject, ObservableObject {
     func manualMove(right: Double, up: Double, seconds: Double) {
         owner = .manual
         aimed = nil
+        tracking = false
+        heldUntil = Date().addingTimeInterval(Self.followHold)
         move(yawSpeed: right, pitchSpeed: up * upSign, seconds: seconds)
     }
 
@@ -569,6 +601,9 @@ final class Gimbal: NSObject, ObservableObject {
             stopNow()   // 大模型或自动跟随在转：遥控端优先，直接顶掉
         }
         owner = .remote; aimed = nil
+        tracking = false
+        heldUntil = Date().addingTimeInterval(Self.followHold + 15)   // 闭环最长 15 秒
+        defer { heldUntil = Date().addingTimeInterval(Self.followHold) }
 
         switch action {
         case "stop":

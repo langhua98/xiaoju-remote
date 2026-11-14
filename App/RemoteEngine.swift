@@ -11,6 +11,8 @@ final class RemoteEngine: ObservableObject {
     private(set) lazy var talk = Talk(store: store, face: face, gimbal: gimbal, log: { [weak self] in self?.push($0) })
     /// 大疆 OM 云台：机器人的身体（见 Gimbal.swift）
     let gimbal = Gimbal()
+    /// 跟着人转（见 Follow.swift）
+    private(set) lazy var follower = FaceFollower(gimbal: gimbal)
 
     private let store: Store
     private var task: Task<Void, Never>?
@@ -25,6 +27,26 @@ final class RemoteEngine: ObservableObject {
             }
         }
         if store.gimbalAuto { gimbal.connect() }
+        follower.onLog = { [weak self] s in self?.push(s) }
+        follower.onSensing = { [weak face] on in face?.send(["type": "sensing", "camera": on]) }
+        // 大模型、聊天框开关跟随：改设置里的开关，界面上看得到；真正开关摄像头在 setFollow
+        Body.followSwitch = { [weak self] on in
+            guard let self = self else { return "没有这个功能" }
+            if on, let why = self.follower.blocker() { return why }
+            self.store.follow = on
+            self.setFollow(on)
+            return on ? "好，开始跟着主人了：前面的摄像头在找主人的脸，手机会自己一直面对着主人。" : "不跟了，摄像头已经关掉。"
+        }
+    }
+
+    /// 开关「跟着人转」。设置页的开关变了也走这里
+    func setFollow(_ on: Bool) {
+        if on {
+            if let why = follower.blocker() { push("跟随：" + why); store.follow = false; return }
+            follower.start()
+        } else {
+            follower.stop()
+        }
     }
 
     func start() {

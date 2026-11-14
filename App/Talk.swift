@@ -274,13 +274,21 @@ final class Talk: NSObject, ObservableObject {
         subtitle = ""
         captionGen += 1
         // 「停」「别动」：云台和屏幕里的动作马上停，不等大模型
-        if let q = Body.quickCommand(text), q.msg["type"] as? String == "body", q.msg["action"] as? String == "stop" {
-            face.send(["type": "action", "name": "stop"])
-            gimbalChain?.cancel()
-            gimbal.halt()
-            log("停下（主人说的）")
-            say("好，停了。", emotion: "neutral")
-            return
+        if let q = Body.quickCommand(text), q.msg["type"] as? String == "body" {
+            let action = q.msg["action"] as? String
+            if action == "stop" {
+                face.send(["type": "action", "name": "stop"])
+                gimbalChain?.cancel()
+                gimbal.halt()
+                log("停下（主人说的）")
+                say("好，停了。", emotion: "neutral")
+                return
+            }
+            if action == "follow_off" {
+                log("跟随：" + (Body.followSwitch?(false) ?? "没有这个功能"))
+                say("好，不跟了。", emotion: "neutral")
+                return
+            }
         }
         phase = .thinking
         // 换背景、换装直接办，不问大模型
