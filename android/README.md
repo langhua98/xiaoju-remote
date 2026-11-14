@@ -52,7 +52,8 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 | `torch` | `on` true/false | 开关手电筒 |
 | `vibrate` | `ms` | 震动 |
 | `ring` | `seconds` | 响铃（找手机） |
-| `shell` | `cmd` | 在 App 沙盒里跑一条 shell（非 root，只有 App 自己的权限） |
+| `shell` | `cmd` | 在 App 沙盒里跑一条 shell（非 root，只有 App 自己的权限）。0.37 起默认关着，要在手机 App 里勾上「允许远程跑命令」才能用；最多跑 60 秒 |
+| `log` | `lines`（默认 200，最多 2000） | 远程看运行记录（0.37）：最近几行（App 重启前的也在）和最近一次闪退的原因。回执多 `crash`、`version`、`build` |
 | `video` | `transport`=ws、`room`、`codec`=h264/jpeg、`lens`、`width`、`fps`、`quality`、`audio` | 实时画面（走云盘的直播通道） |
 | `video_set` | 同上加 `exposure`、`zoom`、`torch`、`flip`、`stamp` | 直播 / 侦测中调相机；`flip` 上下翻转（转 180°，手机倒装时用）、`stamp` 印日期时间（默认开），这两个记在手机上（0.17） |
 | `monitor` | `on`、`sensitivity` 1–100、`regions` [[x,y,w,h]…]、`pre`、`post`、`notify`、`people`（只在认出人时提醒，0.12）、`eco`（省电侦测，0.14，默认开）、`duty`、`duty_on`、`duty_off`（间歇守望，0.18，默认开，看 2 秒歇 4 秒）、`engine`（kotlin / native / ab，0.29，默认 kotlin）、`standby_fps` 1–4、`confirm` 2–6、`cooldown`、`audio`、`upload`、`lens`、`width`、`fps`、`quality` | 移动侦测设置（只改给了的字段），回执带状态 |
@@ -66,6 +67,28 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 | `cancel` | `target`（要取消的那条指令的 id） | 打断一条还在做的慢指令（测速、录音…），替它回「已取消」 |
 
 | `update` | `check`（只看不下载）、`owner`=`release`（不再当设备所有者） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）；云盘连不上时改从 GitHub 查（0.30）。回执多 `version`、`build` |
+
+### 0.37：按排查清单优化
+
+0.36 排查时列了 12 条要优化的地方，William 让都做。这一版做了只改手机这端、不影响别的的那几条：
+
+- **远程看运行记录**（第 4、10 条）：新指令 `log`，回最近几行运行记录和最近一次闪退。运行记录同时存到手机文件里
+  （`LogFile.kt`，两份各 256 KB 轮着用），App 重启、直播半小时以后也找得回来。电脑上：`python3 scripts/遥控.py A log --lines 300`。
+  小橘推送还没有这个按钮，要加的话发 `{"do":"log","lines":200}`。
+- **shell 默认关**（第 3 条，William 选的）：令牌打在安装包里，谁拆了安装包都能远程跑命令。现在要在手机 App 里勾上
+  「允许远程跑命令」才行，没勾回「没打开」。
+- **录像写文件不卡编码器**（第 6 条）：录像开头一次写好几秒画面、切段时写目录，以前都在锁里做，编码器和录音线程要等磁盘，
+  直播画面在录像开始、切段时会顿一下。现在写文件放在单独的线程（`EventRecorder` 的 `io`，CameraHub 给 `rec-io`），结果和以前一样（有单元测试比对）。
+- **录像备份边读边传**（第 5 条）：以前一段录像（最多十几 MB）整个读进内存再传，老手机内存紧时会出错。现在边读边传（`Net.requestFile`）。
+- **录音指令文件小一半**（第 9 条）：`audio` 改成 22 kHz、32 kbps（以前 44.1 kHz、64 kbps），听人说话够用，回得快。
+- **通知不再每次重建**（第 12 条）：文字没变不重建，通知渠道只建一次。
+
+没做的，和原因：
+
+- 第 1、7 条（弱网时声音优先、声音包大一点）：只改手机这端的话，要么画面丢帧更多，要么不知道小橘推送收不收得了，等看的一端一起改。
+- 第 2 条（看的一端的声音缓冲）：在 meta-work 的小橘推送里，这个仓库改不了。
+- 第 8 条（新手机上不一直拿着 CPU 锁）：S4 用不上，改动大，等真换新手机再做。
+- 第 11 条（安装包压缩混淆）：挡不住拆令牌，还可能把 Conscrypt、ncnn 弄坏，收益太小。
 
 ### 0.36：直播的声音一卡一卡
 

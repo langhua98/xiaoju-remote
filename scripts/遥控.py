@@ -94,7 +94,7 @@ def main():
     ap = argparse.ArgumentParser(description="小橘遥控发送端")
     ap.add_argument("device", help="B 设备的名字，和 App 里填的一样")
     ap.add_argument("action", choices=["info", "photo", "audio", "location", "torch", "vibrate", "ring", "shell", "gimbal",
-                                       "monitor", "monitor_status", "update", "robot"])
+                                       "monitor", "monitor_status", "update", "robot", "log"])
     ap.add_argument("--lens", choices=["back", "front"], default="back")
     ap.add_argument("--seconds", type=int, default=5)
     ap.add_argument("--on", action="store_true")
@@ -122,6 +122,7 @@ def main():
     ap.add_argument("--save", default=".", help="回执里的文件下载到哪个目录")
     ap.add_argument("--timeout", type=int, default=90, help="等回执最多多少秒")
     ap.add_argument("--check", action="store_true", help="update：只看有没有新版本，不下载")
+    ap.add_argument("--lines", type=int, default=200, help="log：要最近多少行运行记录（安卓 0.37）")
     ap.add_argument("--set", default="", help='monitor：要改的字段（JSON），例如 \'{"duty": false}\'')
     a = ap.parse_args()
 
@@ -144,6 +145,8 @@ def main():
         a.timeout = max(a.timeout, 300)  # 要下载安装包，慢一点
     elif a.action == "monitor" and a.set:
         cmd.update({k: v for k, v in json.loads(a.set).items() if k not in ("id", "pair", "do")})
+    elif a.action == "log":
+        cmd["lines"] = a.lines
     elif a.action == "shell":
         if not a.cmd:
             sys.exit("shell 要用 --cmd 给命令")

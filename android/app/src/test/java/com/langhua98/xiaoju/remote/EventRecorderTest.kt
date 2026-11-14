@@ -84,6 +84,32 @@ class EventRecorderTest {
         System.getenv("EVENT_KEEP")?.let { mov.copyTo(File(it), overwrite = true) }
     }
 
+    @Test fun writesOnItsOwnThreadSameResult() {
+        // 0.37：写文件放到单独的线程（CameraHub 的 rec-io），结果要和直接写一模一样
+        assumeTrue(hasFfmpeg())
+        val dir = Files.createTempDirectory("ev").toFile()
+        val au = gop(dir)
+        val store = EventStore(File(dir, "events"))
+        val c = Clock()
+        val io = java.util.concurrent.Executors.newSingleThreadExecutor()
+        val r = EventRecorder(store, clock = { c.t }, wall = { 1_700_000_000_000L + c.t }, io = io)
+        r.preMs = 2_000; r.postMs = 3_000
+        val closed = java.util.Collections.synchronizedList(ArrayList<EventInfo>())
+        val ioThread = java.util.concurrent.atomic.AtomicBoolean(false)
+        r.onClosed = { closed += it; ioThread.set(Thread.currentThread().name.startsWith("pool-")) }
+        feed(r, c, au, 0, 20_000, setOf(10_000L, 11_000L, 12_000L))
+        io.shutdown()
+        assertTrue(io.awaitTermination(20, TimeUnit.SECONDS))
+        assertEquals(1, closed.size)
+        assertTrue("onClosed 在写文件的线程上", ioThread.get())
+        val e = closed[0]
+        assertTrue(e.video)
+        assertTrue(e.durMs in 6_500L..7_500L)
+        val n = frames(store.mov(e.name))
+        assertTrue("frames $n", n in 68..72)
+        assertEquals(listOf(e.name), store.list().map { it.name })
+    }
+
     @Test fun longEventIsSplitAtKeyframes() {
         assumeTrue(hasFfmpeg())
         val dir = Files.createTempDirectory("ev").toFile()

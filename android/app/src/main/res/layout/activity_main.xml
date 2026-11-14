@@ -89,6 +89,13 @@
             android:layout_height="wrap_content"
             android:text="检查更新" />
 
+        <CheckBox
+            android:id="@+id/allowShell"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:text="允许远程在这台手机上跑命令（shell 指令，平时别开）" />
+
         <TextView
             android:id="@+id/version"
             android:layout_width="match_parent"

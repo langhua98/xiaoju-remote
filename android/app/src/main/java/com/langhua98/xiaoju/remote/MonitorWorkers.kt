@@ -93,7 +93,7 @@ class Uploader(
     /** 现在就传这一段（iPhone 要看一段还没备份的大视频时），返回云盘路径。 */
     fun uploadNow(e: EventInfo): String {
         val p = pathFor(e)
-        cloud.uploadSlow(p, store.mov(e.name).readBytes(), FAST_BPS)
+        cloud.uploadFileSlow(p, store.mov(e.name), FAST_BPS)
         store.markUploaded(e.name, p)
         dropLocal(e, p)
         return p
@@ -149,7 +149,7 @@ class Uploader(
         if (!f.exists()) return day to count
         return try {
             val p = pathFor(e)
-            cloud.uploadSlow(p, f.readBytes(), SLOW_BPS)
+            cloud.uploadFileSlow(p, f, SLOW_BPS)
             store.markUploaded(e.name, p)
             plan.done()
             dropLocal(e, p)

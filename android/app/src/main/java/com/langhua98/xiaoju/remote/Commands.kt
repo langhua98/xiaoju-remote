@@ -39,7 +39,8 @@ object Commands {
             "location" -> location(ctx)
             "vibrate" -> vibrate(ctx, cmd.optLong("ms", 800))
             "ring" -> ring(ctx, cmd.optInt("seconds", 5).coerceIn(1, 60))
-            "shell" -> shell(cmd.optString("cmd"))
+            "shell" -> if (Prefs(ctx).allowShell) shell(cmd.optString("cmd"))
+                       else CmdResult("这台手机没打开「允许远程跑命令」（安全起见默认关着），要在手机 App 里勾上才能用")
             else -> CmdResult("不认识的指令：${cmd.optString("do")}")
         }
     } catch (e: Throwable) {
@@ -78,8 +79,9 @@ object Commands {
             rec.setAudioSource(MediaRecorder.AudioSource.MIC)
             rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            rec.setAudioSamplingRate(44100)
-            rec.setAudioEncodingBitRate(64000)
+            // 22 kHz、32 kbps（0.37，以前 44.1 kHz、64 kbps）：听人说话、听动静够了，文件小一半，回得快
+            rec.setAudioSamplingRate(22050)
+            rec.setAudioEncodingBitRate(32000)
             rec.setOutputFile(f.absolutePath)
             rec.prepare()
             rec.start()
