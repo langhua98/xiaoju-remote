@@ -6,7 +6,7 @@ import android.media.MediaRecorder
 import android.os.Process
 
 /**
- * 直播的声音：AudioRecord 录单声道 16 位，每 40 ms 一包压成 μ-law 交给 onChunk(数据, 格式, 采集时间)。
+ * 直播的声音：AudioRecord 录单声道 16 位，每 80 ms 一包压成 μ-law 交给 onChunk(数据, 格式, 采集时间)。
  * 先试 16 kHz，不行退到 8 kHz（4.2 的手机都支持其中之一）。在自己的线程里跑，stop() 后结束。
  *
  * 声音一卡一卡的（0.36 修）：
@@ -43,7 +43,9 @@ class AudioCapture(private val onChunk: (ByteArray, Int, Long) -> Unit) {
 
     private fun loop(rec: AudioRecord, rate: Int, codec: Int) {
         runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO) }
-        val n = rate / 25  // 40 ms 一包：包越小，声音（和跟着它对齐的画面）越早到
+        // 80 ms 一包（0.38，以前 40 ms）：每秒的消息少一半（25 → 12.5 条），每条的头和加密开销也少一半，
+        // 多 40 ms 延迟听不出来；看的一端（小橘推送 LiveAudio）不管一包多长都能播
+        val n = rate * PACKET_MS / 1000
         val buf = ShortArray(n)
         val clock = AudioClock(rate)
         try {
@@ -76,5 +78,7 @@ class AudioCapture(private val onChunk: (ByteArray, Int, Long) -> Unit) {
     companion object {
         /** 系统录音缓冲区多长（毫秒）：录音线程被耽误这么久也不丢声音 */
         const val BUFFER_MS = 1000
+        /** 一包声音多长（毫秒） */
+        const val PACKET_MS = 80
     }
 }

@@ -1,7 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<!-- 0.38：William 要求界面上只有一个按钮（开始 / 停止待命）。设置都还在，藏在下面的 settings 里：长按按钮打开 -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <Button
+        android:id="@+id/toggle"
+        android:layout_width="240dp"
+        android:layout_height="240dp"
+        android:layout_gravity="center"
+        android:textSize="26sp"
+        android:text="开始待命" />
+
+<ScrollView
+    android:id="@+id/settings"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:background="?android:attr/colorBackground"
+    android:visibility="gone"
     android:fillViewport="true">
 
     <LinearLayout
@@ -76,11 +92,11 @@
                 android:text="授权硬件" />
             <Space android:layout_width="12dp" android:layout_height="wrap_content" />
             <Button
-                android:id="@+id/toggle"
+                android:id="@+id/hideSettings"
                 android:layout_width="0dp"
                 android:layout_weight="1"
                 android:layout_height="wrap_content"
-                android:text="开始待命" />
+                android:text="收起设置" />
         </LinearLayout>
 
         <Button
@@ -121,3 +137,4 @@
             android:text="" />
     </LinearLayout>
 </ScrollView>
+</FrameLayout>

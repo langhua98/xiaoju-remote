@@ -27,6 +27,14 @@ object Ulaw {
         return if (u and 0x80 != 0) -sample else sample
     }
 
+    /**
+     * 16 kHz 的 μ-law → 8 kHz 的 μ-law（0.38，网络差时直播的声音减半，128 → 64 kbps）。
+     * 相邻两个样本取平均：既是降采样，也顺便滤掉一点 4 kHz 以上的声音（人说话听得清）。
+     */
+    fun halve(ulaw16k: ByteArray): ByteArray = ByteArray(ulaw16k.size / 2) {
+        encode((decode(ulaw16k[2 * it]) + decode(ulaw16k[2 * it + 1])) / 2)
+    }
+
     /** 一段 16 位小端 PCM（n 个样本）→ μ-law */
     fun encode(pcm: ShortArray, n: Int): ByteArray = ByteArray(n) { encode(pcm[it].toInt()) }
 }
