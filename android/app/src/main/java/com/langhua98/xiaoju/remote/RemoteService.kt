@@ -411,7 +411,7 @@ class RemoteService : Service() {
         val wantAudio = av && cmd.optBoolean("audio", false)
         val micOk = checkPermission(android.Manifest.permission.RECORD_AUDIO, Process.myPid(), Process.myUid()) == PackageManager.PERMISSION_GRANTED
         val withAudio = wantAudio && micOk
-        val client = StreamClient(Net.okHttp(), StreamClient.pubUrl(p.base, room), p.token)
+        val client = StreamClient(Net.okHttpStream(), StreamClient.pubUrl(p.base, room), p.token)
         if (!client.connect()) {
             fail(if (client.error == "HTTP 404") "云盘服务端还没有直播通道（要先更新服务端）" else "连不上直播通道：${client.error}")
             return
@@ -439,11 +439,19 @@ class RemoteService : Service() {
         val s = h.settings
         val c = if (action == "torch") JSONObject().put("torch", cmd.optBoolean("on", true)) else cmd
         s.codecNote = ""
+        s.lensNote = ""
+        val before = s.version
         val changed = h.adjust(c)
-        // 等相机设好：换镜头 / 清晰度 / 编码要重开相机（大约 1 秒），手电、亮度、变焦一下就好
-        val reopen = c.has("lens") || c.has("width") || c.has("codec")
-        try { Thread.sleep(if (reopen) 1200 else 300) } catch (e: InterruptedException) { }
-        val notes = listOf(s.unsupported, s.codecNote).filter { it.isNotEmpty() }
+        // 等相机设好：换镜头 / 清晰度 / 编码要重开相机，等它真的开好（S4 换镜头有时要好几秒，以前固定等 1.2 秒），
+        // 最多 6 秒（看的一端等回执 15 秒）；手电、亮度、变焦一下就好
+        if (s.version != before) {
+            val end = System.currentTimeMillis() + 6_000
+            while (System.currentTimeMillis() < end && s.openedVersion < s.version && h.cameraOn) {
+                try { Thread.sleep(100) } catch (e: InterruptedException) { break }
+            }
+            try { Thread.sleep(300) } catch (e: InterruptedException) { }   // 等硬件编码器换好（尺寸变了要重开）
+        } else try { Thread.sleep(300) } catch (e: InterruptedException) { }
+        val notes = listOf(s.lensNote, s.unsupported, s.codecNote).filter { it.isNotEmpty() }
         val text = (if (changed.isEmpty()) "没有要改的" else "已调整：" + changed.joinToString("、")) +
             (if (notes.isEmpty()) "" else "（${notes.joinToString("；")}）")
         reply(JSONObject().put("id", id).put("do", action).put("ok", true).put("text", text))

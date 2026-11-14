@@ -36,6 +36,16 @@ class LiveSettings(front: Boolean, width: Int, quality: Int, fps: Int, codec: St
     @Volatile var unsupported = ""
     /** 硬件 H.264 用不了、退回 JPEG 的原因（给回执用） */
     @Volatile var codecNote = ""
+    /** 相机按哪一版设置开好了（开好、出了第一帧以后等于 version），换镜头的回执等它 */
+    @Volatile var openedVersion = -1
+    /** 换镜头没换成（新镜头打不开，换回原来的）的原因（给回执用） */
+    @Volatile var lensNote = ""
+
+    /** 新镜头打不开：换回原来的镜头（重开相机），记下原因 */
+    fun revertLens(front: Boolean, why: String) {
+        lensNote = why
+        if (front != this.front) { this.front = front; version++ }
+    }
 
     /** 按指令里出现的字段改，返回改了哪些（中文，给回执用） */
     fun apply(cmd: JSONObject): List<String> {
