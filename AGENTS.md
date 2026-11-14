@@ -139,7 +139,8 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 - `App/RemoteEngine.swift`：待命循环（先走即时信箱，没有就退回文件信箱）、`execute` 执行指令并原路回执、`RemoteBox` 信箱名。
 - `App/Commands.swift`：硬件指令，用到 AVFoundation 和 CoreLocation。
 - `App/Duml.swift`：大疆 DUML 协议（帧、CRC、拆帧、速度指令、姿态解算）。只用 Foundation。
-- `App/Gimbal.swift`：用 iOS 蓝牙连大疆 OM 云台，速度驱动、按姿态闭环转到指定角度、`gimbal` 指令。
+- `App/Gimbal.swift`：用 iOS 蓝牙连大疆 OM 云台，速度驱动、按姿态闭环转到指定角度、`gimbal` 指令。`aim` 是给大模型和聊天框用的转动（右、上为正，软限位，先快后准），`Owner` 是谁在控制。
+- `App/Body.swift`：大模型怎么控制身体：回答里的标签和 Gemini 的工具（云台、换装、动作、转身、镜头）、聊天框短指令、快捷菜单。云台的计划和进度见 `Robot/GIMBAL_MODEL_PLAN.md`。
 - `Tests/main.swift`：DUML 协议自测，编译前在 Mac 上跑（`swiftc App/Duml.swift Tests/main.swift`）。
 - `project.yml`：XcodeGen 工程定义，最低 iOS 15.0。
 - `.github/workflows/build.yml`：在 GitHub 的 Mac 上编译出没签名的 ipa，发到 Release「latest」。

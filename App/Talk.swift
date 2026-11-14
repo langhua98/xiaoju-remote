@@ -238,7 +238,17 @@ final class Talk: NSObject, ObservableObject {
             return
         }
         if let q = Body.quickCommand(text) {
-            face.send(q.msg)
+            if q.msg["type"] as? String == "body" {
+                // 云台的短指令：主人亲自下的，优先级最高；「停」连屏幕里的动作一起停
+                let move = Body.gimbalMove(from: q.msg)
+                if move.action == "stop" { face.send(["type": "action", "name": "stop"]); gimbalChain?.cancel() }
+                Task { @MainActor in
+                    let r = await Body.perform(self.gimbal, move, by: .manual)
+                    self.log("云台（\(Body.describe(move))）：\(r)")
+                }
+            } else {
+                face.send(q.msg)
+            }
             log("打字指令：\(q.label)")
             scheduleClearCaptions()
             return
@@ -263,6 +273,15 @@ final class Talk: NSObject, ObservableObject {
         userLine = text
         subtitle = ""
         captionGen += 1
+        // 「停」「别动」：云台和屏幕里的动作马上停，不等大模型
+        if let q = Body.quickCommand(text), q.msg["type"] as? String == "body", q.msg["action"] as? String == "stop" {
+            face.send(["type": "action", "name": "stop"])
+            gimbalChain?.cancel()
+            gimbal.halt()
+            log("停下（主人说的）")
+            say("好，停了。", emotion: "neutral")
+            return
+        }
         phase = .thinking
         // 换背景、换装直接办，不问大模型
         if let id = Store.backgroundCommand(text, current: store.background) {
@@ -291,7 +310,8 @@ final class Talk: NSObject, ObservableObject {
     private func ask(_ text: String) async {
         history.append(["role": "user", "content": text])
         if history.count > 12 { history.removeFirst(history.count - 12) }
-        let messages = [["role": "system", "content": Chat.persona + "\n" + Body.personaForTags]] + history
+        let system: String = Chat.persona + "\n" + Body.personaForTags + "\n云台现在的状态：" + gimbal.stateText()
+        let messages = [["role": "system", "content": system]] + history
         beginSpeaking()
         buffer = ""; reply = ""; emotion = "neutral"; emotionKnown = false
         do {
@@ -415,12 +435,13 @@ final class Talk: NSObject, ObservableObject {
 
     private func enqueue(_ raw: String) {
         // 动作标签：一个接一个转（上一个转完再转下一个），不耽误说话
-        for tag in Body.tags(in: raw) {
+        for move in Body.gimbalMoves(in: raw) {
             let previous = gimbalChain
             gimbalChain = Task { @MainActor in
                 await previous?.value
-                let r = await Body.perform(self.gimbal, direction: tag.direction, degrees: tag.degrees)
-                self.log("云台（\(tag.direction) \(tag.degrees.map { String(Int($0)) } ?? "")）：\(r)")
+                if Task.isCancelled { return }   // 主人说了「停」，后面排着的不转了
+                let r = await Body.perform(self.gimbal, move)
+                self.log("云台（\(Body.describe(move))）：\(r)")
             }
         }
         for name in Body.outfitTags(in: raw) { applyOutfit(name) }

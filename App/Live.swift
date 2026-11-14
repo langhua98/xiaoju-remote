@@ -114,13 +114,14 @@ final class LiveTalk: NSObject, ObservableObject {
         socket = ws
         ws.resume()
         receive()
+        let system: String = Self.persona + "\n" + Body.personaForTool + "\n云台现在的状态：" + gimbal.stateText()
         let setup: [String: Any] = ["setup": [
             "model": modelName,
             "generationConfig": [
                 "responseModalities": ["AUDIO"],
                 "speechConfig": ["voiceConfig": ["prebuiltVoiceConfig": ["voiceName": Self.voice]]],
             ],
-            "systemInstruction": ["parts": [["text": Self.persona + "\n" + Body.personaForTool]]],
+            "systemInstruction": ["parts": [["text": system]]],
             "tools": [Body.toolDeclaration],
             "inputAudioTranscription": [String: Any](),
             "outputAudioTranscription": [String: Any](),
@@ -265,11 +266,16 @@ final class LiveTalk: NSObject, ObservableObject {
                     result = "没有这种镜头，只有：\(Body.shotNames)"
                 }
                 self.log("镜头（工具）：\(result)")
-            } else if name == "move_gimbal" {
-                let dir = (args["direction"] as? String) ?? "center"
-                let deg = (args["degrees"] as? NSNumber)?.doubleValue
-                result = await Body.perform(self.gimbal, direction: dir, degrees: deg)
-                self.log("云台（\(dir) \(deg.map { String(Int($0)) } ?? "")）：\(result)")
+            } else if name == "gimbal" || name == "move_gimbal" {
+                let move: Body.GimbalMove
+                if name == "gimbal" {
+                    move = Body.GimbalMove(action: (args["action"] as? String) ?? "status",
+                                           right: (args["right"] as? NSNumber)?.doubleValue, up: (args["up"] as? NSNumber)?.doubleValue)
+                } else {
+                    move = Body.gimbalMove(direction: (args["direction"] as? String) ?? "center", degrees: (args["degrees"] as? NSNumber)?.doubleValue)
+                }
+                result = await Body.perform(self.gimbal, move)
+                self.log("云台（\(Body.describe(move))）：\(result)")
             }
             self.lastActivity = Date()
             self.send(["toolResponse": ["functionResponses": [["id": id, "name": name, "response": ["result": result]]]]])

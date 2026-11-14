@@ -159,11 +159,11 @@ private struct GimbalSection: View {
                 Text(gimbal.status()).font(.footnote).foregroundStyle(.secondary)
                 HStack(spacing: 18) {
                     Spacer()
-                    pad("arrow.left") { gimbal.move(yawSpeed: -25, pitchSpeed: 0, seconds: 0.6) }
-                    pad("arrow.up") { gimbal.move(yawSpeed: 0, pitchSpeed: 20, seconds: 0.6) }
-                    pad("arrow.down") { gimbal.move(yawSpeed: 0, pitchSpeed: -20, seconds: 0.6) }
-                    pad("arrow.right") { gimbal.move(yawSpeed: 25, pitchSpeed: 0, seconds: 0.6) }
-                    pad("scope") { Task { _ = await gimbal.command(["action": "center"]) } }
+                    pad("arrow.left") { gimbal.manualMove(right: -25, up: 0, seconds: 0.6) }
+                    pad("arrow.up") { gimbal.manualMove(right: 0, up: 20, seconds: 0.6) }
+                    pad("arrow.down") { gimbal.manualMove(right: 0, up: -20, seconds: 0.6) }
+                    pad("arrow.right") { gimbal.manualMove(right: 25, up: 0, seconds: 0.6) }
+                    pad("scope") { Task { _ = await gimbal.aim(right: 0, up: 0, relative: false, by: .manual) } }
                     Spacer()
                 }
             } else if !gimbal.note.isEmpty {
@@ -174,10 +174,11 @@ private struct GimbalSection: View {
                 else { gimbal.disconnect() }
             }
             Toggle("打开 App 时自动连", isOn: $auto)
+            Toggle("抬头低头反了", isOn: Binding(get: { gimbal.pitchFlipped }, set: { gimbal.pitchFlipped = $0 }))
         } header: {
             Text("云台（大疆 OM）")
         } footer: {
-            Text("把这台 iPhone 夹在大疆 OM 云台上，它就是机器人的身体：别的设备可以远程让它转头（gimbal 指令），机器人的脸也跟着云台的朝向看。用之前先在 DJI Mimo 里断开云台。箭头试着转一下，靶心回到归位点（连上时的朝向）。")
+            Text("把这台 iPhone 夹在大疆 OM 云台上，它就是机器人的身体：别的设备可以远程让它转头（gimbal 指令），机器人的脸也跟着云台的朝向看。用之前先在 DJI Mimo 里断开云台。箭头试着转一下，靶心回到正面（连上时的朝向）。她自己也能转：说「往左看看」「看右边 20 度」「回正」「停」，或者在聊天框打「云台 左转 30」。左右最多各转 120°，抬头 35°、低头 20°。点上箭头她却低头的话，打开「抬头低头反了」。")
         }
     }
 
