@@ -27,6 +27,27 @@ class FramePacer {
         return true
     }
 
+    private var srcGap = 0.0
+    private var seenAt = 0L
+    private var skipped = 0
+
+    /**
+     * 直播 / 录像用：每 n 帧取一帧（n 按相机实际出帧的快慢算），帧和帧之间隔得一样长，画面才不会一顿一顿。
+     * due 是按钟点抽的：相机每秒 15 帧、要 10 帧时，取到的帧间隔是 133、67、133 毫秒，看起来就是卡。
+     * 这里相机 30 帧要 10 帧 → 每 3 帧取 1 帧；相机 15 帧要 10 帧 → 每帧都要（15 帧，宁多不少）。
+     */
+    fun dueEven(now: Long, fps: Int): Boolean {
+        if (seenAt > 0) {
+            val d = (now - seenAt).toDouble()
+            if (d > 0 && d < 500) srcGap = if (srcGap == 0.0) d else srcGap * 0.9 + d * 0.1
+        }
+        seenAt = now
+        val n = if (srcGap <= 0) 1 else maxOf(1, (1000.0 / fps.coerceIn(1, 60) / srcGap + 0.25).toInt())
+        if (++skipped < n) return false
+        skipped = 0
+        return true
+    }
+
     /** 处理完这一帧（now）以后，再过多少毫秒把缓冲区还给相机。0 = 马上还。 */
     fun returnDelay(now: Long): Long = maxOf(0L, nextAt - LEAD - now)
 

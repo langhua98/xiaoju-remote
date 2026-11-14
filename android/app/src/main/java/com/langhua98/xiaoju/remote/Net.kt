@@ -99,6 +99,21 @@ object Net {
     }
 
     /**
+     * 直播推流用的客户端：系统的发送缓冲区设小（STREAM_SNDBUF），关掉 Nagle。
+     *
+     * 为什么：OkHttp 的发送队列（StreamClient 看的 queueSize）只是 App 里的一段，后面还有系统的 TCP 发送缓冲区。
+     * 三星的系统在 Wi-Fi 上会把它自动调到 1 MB 左右，上行慢的时候画面全堆在这里：App 看着队列是空的、一帧不丢，
+     * 对面看到的却是好几秒前的画面，而且越拖越久。缓冲区设小以后，网络跟不上马上就能看出来（丢帧、降码率），
+     * 延迟保持在一秒以内。Nagle 会把小包攒一下再发（最多两三百毫秒），直播不要。
+     */
+    @Volatile private var stream: okhttp3.OkHttpClient? = null
+    @Synchronized fun okHttpStream(): okhttp3.OkHttpClient =
+        stream ?: okHttp().newBuilder().socketFactory(LowLatencySockets(STREAM_SNDBUF)).build().also { stream = it }
+
+    /** 直播连接的系统发送缓冲区（字节；Linux 实际给两倍）。1 Mbps 时大约 0.5 秒的数据。 */
+    const val STREAM_SNDBUF = 32 * 1024
+
+    /**
      * 收指令的常驻连接用的客户端：不要 OkHttp 每 20 秒一次的心跳。
      * 这条连接的心跳由 RelayChannel 自己管（HeartbeatTuner，1～9 分钟一次），再叠一层 20 秒的，
      * 手机醒着（插着电、刚执行完指令）时每 20 秒就要发一次数据，白费电。
@@ -292,4 +307,24 @@ object Net {
         }
         return out.toByteArray()
     }
+}
+
+
+/** 造出来的 TCP 连接：发送缓冲区固定成 sndbuf、不攒小包（直播用，见 Net.okHttpStream）。 */
+class LowLatencySockets(private val sndbuf: Int) : javax.net.SocketFactory() {
+    private val base = javax.net.SocketFactory.getDefault()
+    private fun tune(s: java.net.Socket): java.net.Socket {
+        runCatching { s.sendBufferSize = sndbuf }
+        runCatching { s.tcpNoDelay = true }
+        return s
+    }
+    override fun createSocket(): java.net.Socket = tune(base.createSocket())
+    override fun createSocket(host: String, port: Int): java.net.Socket =
+        tune(base.createSocket()).also { it.connect(java.net.InetSocketAddress(host, port)) }
+    override fun createSocket(host: String, port: Int, localHost: java.net.InetAddress, localPort: Int): java.net.Socket =
+        tune(base.createSocket()).also { it.bind(java.net.InetSocketAddress(localHost, localPort)); it.connect(java.net.InetSocketAddress(host, port)) }
+    override fun createSocket(host: java.net.InetAddress, port: Int): java.net.Socket =
+        tune(base.createSocket()).also { it.connect(java.net.InetSocketAddress(host, port)) }
+    override fun createSocket(address: java.net.InetAddress, port: Int, localAddress: java.net.InetAddress, localPort: Int): java.net.Socket =
+        tune(base.createSocket()).also { it.bind(java.net.InetSocketAddress(localAddress, localPort)); it.connect(java.net.InetSocketAddress(address, port)) }
 }

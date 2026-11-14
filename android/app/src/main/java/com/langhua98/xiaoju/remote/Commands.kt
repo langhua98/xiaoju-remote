@@ -139,8 +139,8 @@ object Commands {
             ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
         val rt = RingtoneManager.getRingtone(ctx, uri) ?: return CmdResult("找不到铃声")
         rt.play()
-        Thread.sleep(seconds * 1000L)
-        rt.stop()
+        // 被「取消」打断时也要停（以前打断后铃声一直响）
+        try { Thread.sleep(seconds * 1000L) } finally { runCatching { rt.stop() } }
         return CmdResult("响了 $seconds 秒")
     }
 
@@ -148,8 +148,28 @@ object Commands {
     private fun shell(cmd: String): CmdResult {
         if (cmd.isBlank()) return CmdResult("没给命令")
         val p = ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start()
-        val out = p.inputStream.bufferedReader().readText()
-        p.waitFor()
-        return CmdResult(if (out.isBlank()) "（没有输出，退出码 ${p.exitValue()}）" else out.take(8000))
+        // 最多等 SHELL_MAX_MS：命令卡住（等输入、死循环）时不要一直占着慢线
+        val out = StringBuilder()
+        val reader = Thread({
+            runCatching { p.inputStream.bufferedReader().use { r ->
+                val buf = CharArray(4096)
+                while (true) { val n = r.read(buf); if (n < 0) break; synchronized(out) { if (out.length < 8000) out.append(buf, 0, minOf(n, 8000 - out.length)) } }
+            } }
+        }, "shell-out").apply { isDaemon = true; start() }
+        val end = System.currentTimeMillis() + SHELL_MAX_MS
+        var exit: Int? = null
+        try {
+            while (exit == null && System.currentTimeMillis() < end) {
+                exit = try { p.exitValue() } catch (e: IllegalThreadStateException) { Thread.sleep(100); null }
+            }
+        } finally {
+            if (exit == null) p.destroy()
+        }
+        reader.join(1000)
+        val text = synchronized(out) { out.toString() }
+        if (exit == null) return CmdResult("命令 ${SHELL_MAX_MS / 1000} 秒还没跑完，停掉了" + (if (text.isBlank()) "" else "，已有的输出：\n$text"))
+        return CmdResult(if (text.isBlank()) "（没有输出，退出码 $exit）" else text)
     }
+
+    private const val SHELL_MAX_MS = 60_000L
 }

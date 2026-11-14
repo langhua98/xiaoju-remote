@@ -41,6 +41,26 @@ object Camera {
         try { return LegacyCamera.open(id) } finally { openingSince = 0L }
     }
 
+    /**
+     * 开相机，打不开（「Fail to connect to camera service」）就歇一下再试。
+     * 三星 S4 关掉一个镜头以后马上开另一个，系统相机服务常常还没放手，第一次开会失败，过几百毫秒就好了。
+     * reopen = 刚关掉相机又开（换镜头、换清晰度）：先等一下再开。总共不超过大约 4 秒（外面等 8 秒）。
+     * 系统相机服务卡住了（open 里那个报错）不重试。
+     */
+    private fun openRetry(id: Int, reopen: Boolean): LegacyCamera {
+        if (reopen) sleepQuietly(250)
+        var last: RuntimeException? = null
+        for (i in 0..OPEN_RETRY_MS.size) {
+            if (i > 0) sleepQuietly(OPEN_RETRY_MS[i - 1])
+            try { return open(id) } catch (e: IllegalStateException) { throw e } catch (e: RuntimeException) { last = e }
+        }
+        throw last ?: IllegalStateException("开不了相机")
+    }
+
+    private val OPEN_RETRY_MS = longArrayOf(300, 600, 1000, 1500)
+
+    private fun sleepQuietly(ms: Long) { try { Thread.sleep(ms) } catch (e: InterruptedException) { } }
+
     /** 相机这么久没交一帧：补缓冲区 */
     private const val STALL_REFILL_MS = 4_000L
 
@@ -84,10 +104,12 @@ object Camera {
         Torch.releaseLegacy()
         val ht = HandlerThread("vid").apply { start() }
         val h = Handler(ht.looper)
+        var goodFront: Boolean? = null   // 上一次开好的是哪个镜头（换镜头失败时换回去）
         try {
             while (running()) {
                 val ver = s.version
                 val front = s.front
+                val reopen = goodFront != null
                 var pf = s.profile   // 开相机时用的帧率档（之后变了就换）
                 val ready = CountDownLatch(1)
                 var startErr: Throwable? = null
@@ -98,7 +120,7 @@ object Camera {
                     try {
                         val t0 = System.currentTimeMillis()
                         val id = findCamera(front)
-                        val c = open(id)
+                        val c = openRetry(id, reopen)
                         cam = c
                         val rot = LegacyCamera.CameraInfo().also { LegacyCamera.getCameraInfo(id, it) }.orientation
                         val p = c.parameters
@@ -118,7 +140,8 @@ object Camera {
                             q.previewFormat = ImageFormat.NV21
                             c.parameters = q
                         }
-                        tweak(c, s, front)
+                        // 亮度、变焦、手电设不上不算打不开（以前这里一出错，换镜头就整个直播断了）
+                        try { tweak(c, s, front) } catch (e: RuntimeException) { s.unsupported = "这个镜头设不了亮度 / 变焦 / 手电" }
                         val fw = c.parameters.previewSize.width
                         val fh = c.parameters.previewSize.height
                         val t = SurfaceTexture(20); tex = t
@@ -135,7 +158,7 @@ object Camera {
                             CamStats.callbacks++
                             val now = System.currentTimeMillis()
                             // 按节拍抽帧：平均下来正好是要的帧率（守望时每秒 4 帧）
-                            if (running() && pacer.due(now, s.frameFps)) {
+                            if (running() && (if (s.watch) pacer.due(now, s.frameFps) else pacer.dueEven(now, s.frameFps))) {
                                 val ts = StreamClient.now()   // 采集时间（和声音同一个时钟）
                                 val r = if (s.flip) (rot + 180) % 360 else rot   // 上下翻转 = 多转 180°
                                 try { onFrame(data, fw, fh, r, ts) } catch (e: Throwable) {
@@ -149,17 +172,29 @@ object Camera {
                         st.fill()
                         c.startPreview()
                         st.lastFrameAt = System.currentTimeMillis()
+                        s.openedVersion = ver
                         CamStats.opened(c.parameters, System.currentTimeMillis() - t0)
                     } catch (e: Throwable) { startErr = e } finally { ready.countDown() }
                 }
                 // 8 秒还没开好：当打不开处理（以前会当成开好了，相机线程空转、一帧画面都没有）
                 if (!ready.await(8, TimeUnit.SECONDS) && startErr == null) startErr = IllegalStateException("8 秒还没打开")
-                startErr?.let { e ->
+                val err = startErr
+                if (err != null) {
+                    val e: Throwable = err
                     val done = CountDownLatch(1)
                     h.post { feed?.open = false; cleanup(cam, tex); done.countDown() }
                     done.await(3, TimeUnit.SECONDS)
+                    // 换镜头时新镜头打不开：换回刚才好好的那个，直播接着放（以前直接报错，直播就断了）
+                    val was = goodFront
+                    if (was != null && was != front && running()) {
+                        s.revertLens(was, "${if (front) "前置" else "后置"}镜头打不开（${e.message ?: e.javaClass.simpleName}），换回${if (was) "前置" else "后置"}")
+                        Bus.push(s.lensNote)
+                        continue
+                    }
+                    s.openedVersion = ver   // 别让等回执的一直等
                     throw e
                 }
+                goodFront = front
                 var tw = s.tweak
                 var refilled = false
                 while (running() && s.version == ver) {

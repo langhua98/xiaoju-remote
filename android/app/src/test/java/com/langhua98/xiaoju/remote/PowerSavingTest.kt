@@ -10,6 +10,23 @@ import org.json.JSONObject
 
 /** 省电（0.14）：相机缓冲区节拍、传感器帧率档、守望留帧、电流读数、设置。 */
 class PowerSavingTest {
+    /** 相机每 srcMs 毫秒出一帧，跑 seconds 秒，返回取到的帧之间的间隔（毫秒）。 */
+    private fun evenGaps(srcMs: Long, fps: Int, seconds: Int = 4): List<Long> {
+        val p = FramePacer()
+        val taken = ArrayList<Long>()
+        var t = 1000L
+        while (t < 1000L + seconds * 1000) { if (p.dueEven(t, fps)) taken += t; t += srcMs }
+        return taken.zipWithNext { a, b -> b - a }.drop(2)   // 头两帧还在量相机多快
+    }
+
+    @Test fun livePacingIsEven() {
+        assertTrue(evenGaps(33, 10).all { it == 99L })    // 30 帧取 10 帧：每 3 帧一帧
+        assertTrue(evenGaps(33, 15).all { it == 66L })    // 30 帧取 15 帧：每 2 帧一帧
+        assertTrue(evenGaps(66, 10).all { it == 66L })    // 15 帧要 10 帧：每帧都要（不是 133、67、133）
+        assertTrue(evenGaps(66, 15).all { it == 66L })
+        assertTrue(evenGaps(133, 10).all { it == 133L })  // 相机只有 7.5 帧：有多少要多少
+    }
+
     /**
      * 模拟相机：每 interval 毫秒出一帧，手里有空缓冲区才拷进来交给我们（copies 加 1），
      * 我们处理完按 FramePacer 说的时间再还缓冲区。返回 (拷了几帧, 用了几帧)。

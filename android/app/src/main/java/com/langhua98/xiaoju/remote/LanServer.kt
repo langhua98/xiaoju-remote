@@ -22,6 +22,8 @@ interface LiveSink {
     fun send(frame: ByteArray): Boolean
     fun sendH264(msg: ByteArray, key: Boolean, limit: Long): Boolean
     fun sendAudio(msg: ByteArray): Boolean
+    /** 实测数据（类型 5，见 CameraHub.liveStats）。只有直连的发；云盘通道的看的一端要回 ok 才接着发，不能多塞消息 */
+    fun sendStats(msg: ByteArray) {}
     fun close()
 }
 
@@ -77,6 +79,7 @@ class LanServer(private val roomOk: (String) -> Boolean, private val onViewer: (
         try {
             c.soTimeout = 5_000
             c.tcpNoDelay = true
+            runCatching { c.sendBufferSize = Net.STREAM_SNDBUF }   // 画面别堆在系统缓冲区里（见 Net.okHttpStream）
             val input = BufferedInputStream(c.getInputStream())
             val lines = readHead(input) ?: run { c.close(); return }
             val parts = lines.first().split(" ")
@@ -219,6 +222,10 @@ class LanViewer(private val sock: Socket, private val input: InputStream) : Live
         if (queued.get() > StreamClient.MAX_AUDIO_QUEUE) { dropped++; return false }
         enqueue(LanServer.frame(2, msg))
         return true
+    }
+
+    override fun sendStats(msg: ByteArray) {
+        if (!closed && queued.get() < StreamClient.MAX_QUEUE) enqueue(LanServer.frame(2, msg))
     }
 
     override fun close() {
