@@ -40,6 +40,11 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("useRoot", true)
         set(v) { sp.edit().putBoolean("useRoot", v).apply() }
 
+    /** 允许远程跑 shell 命令（0.37 起默认关，只能在手机上打开，远程指令改不了） */
+    var allowShell: Boolean
+        get() = sp.getBoolean("allowShell", false)
+        set(v) { sp.edit().putBoolean("allowShell", v).apply() }
+
     /** 画面上印日期时间 */
     var stamp: Boolean
         get() = sp.getBoolean("stamp", true)

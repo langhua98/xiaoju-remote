@@ -23,10 +23,18 @@ object CrashLog {
         }
     }
 
-    /** 上次闪退的记录（读完就删），没有返回 null。 */
+    /** 上次闪退的记录（读完就挪到 crash_last.txt，下次打开不再显示），没有返回 null。 */
     fun take(ctx: Context): String? {
         val file = File(ctx.applicationContext.filesDir, "crash.txt")
         if (!file.exists()) return null
-        return runCatching { file.readText() }.getOrNull().also { file.delete() }
+        val last = File(ctx.applicationContext.filesDir, "crash_last.txt")
+        return runCatching { file.readText() }.getOrNull().also { last.delete(); if (!file.renameTo(last)) file.delete() }
+    }
+
+    /** 最近一次闪退（`log` 指令用，不删）：还没在 App 里显示过的优先，没有返回 null。 */
+    fun last(ctx: Context): String? {
+        val dir = ctx.applicationContext.filesDir
+        return listOf("crash.txt", "crash_last.txt").map { File(dir, it) }.firstOrNull { it.exists() }
+            ?.let { runCatching { it.readText() }.getOrNull() }
     }
 }

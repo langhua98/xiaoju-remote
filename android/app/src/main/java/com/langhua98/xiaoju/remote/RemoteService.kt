@@ -62,6 +62,7 @@ class RemoteService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         CrashLog.install(this)
+        Bus.init(this)
         if (intent?.action == ACTION_STOP) { Prefs(this).standby = false; stopAll(); return START_NOT_STICKY }
         startAsForeground("待命中，等指令")
         if (!running) {
@@ -348,6 +349,18 @@ class RemoteService : Service() {
         }
         if (action == "update") {
             updateCommand(cmd, id, reply)
+            return
+        }
+        if (action == "log") {
+            // 远程看运行记录（0.37）：最近 lines 行 + 上一次闪退的原因
+            val n = cmd.optInt("lines", 200).coerceIn(1, 2000)
+            val lines = Bus.recent(n)
+            val crash = CrashLog.last(this)
+            val text = (if (crash != null) "上一次闪退：\n$crash\n\n" else "") + "最近 ${lines.size} 行运行记录：\n" + lines.joinToString("\n")
+            reply(JSONObject().put("id", id).put("do", action).put("ok", true).put("text", text)
+                .put("crash", crash ?: JSONObject.NULL)
+                .put("version", Updater.versionName(this)).put("build", BuildConfig.BUILD_NUMBER))
+            restoreText()
             return
         }
         if (action in setOf("monitor", "monitor_status", "events", "event_get", "event_delete")) {
@@ -654,7 +667,7 @@ class RemoteService : Service() {
 
     private fun label(a: String) = mapOf("photo" to "拍照", "audio" to "录音", "location" to "定位",
         "torch" to "手电筒", "vibrate" to "震动", "ring" to "响铃", "info" to "设备信息", "shell" to "命令", "video" to "实时画面", "video_set" to "调实时画面",
-        "monitor" to "移动侦测设置", "monitor_status" to "移动侦测状态", "events" to "看录像列表", "event_get" to "取录像", "event_delete" to "删录像", "bench" to "模型测速", "cancel" to "取消", "update" to "更新")[a] ?: a
+        "monitor" to "移动侦测设置", "monitor_status" to "移动侦测状态", "events" to "看录像列表", "event_get" to "取录像", "event_delete" to "删录像", "bench" to "模型测速", "cancel" to "取消", "update" to "更新", "log" to "看运行记录")[a] ?: a
 
     // ---- 看门狗（只在等网络时让 CPU 睡的老系统上开）----
     // 2 分钟叫醒一次：长轮询本该 25 秒就回来，等了 70 秒还没回来，说明连接卡死了（睡着时没收到数据），断掉重来。
@@ -716,11 +729,15 @@ class RemoteService : Service() {
     private fun piFlags() = PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) FLAG_IMMUTABLE else 0)
 
     private fun startAsForeground(text: String) {
+        shownText = text
         val n = buildNotification(text)
         if (Build.VERSION.SDK_INT >= 29) Api29.startForeground(this, NOTIF_ID, n) else startForeground(NOTIF_ID, n)
     }
 
+    @Volatile private var shownText = ""
     private fun notifyText(text: String) {
+        if (text == shownText) return   // 文字没变就不重建通知
+        shownText = text
         (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(NOTIF_ID, buildNotification(text))
     }
 
@@ -731,7 +748,7 @@ class RemoteService : Service() {
         const val ACTION_WATCHDOG = "com.langhua98.xiaoju.remote.WATCHDOG"
         const val WATCHDOG_MS = 2 * 60_000L
         /** 一下就做完的指令：走快线，不等慢的 */
-        val QUICK = setOf("info", "torch", "vibrate", "monitor", "monitor_status", "events", "event_delete", "cancel")
+        val QUICK = setOf("info", "torch", "vibrate", "monitor", "monitor_status", "events", "event_delete", "cancel", "log")
         /** 一次直播最长多久（服务端也会在 4 小时断开） */
         const val LIVE_MAX_MS = 4L * 60 * 60 * 1000
         const val ACTION_STOP = "stop"
@@ -752,9 +769,14 @@ class RemoteService : Service() {
 /** Android 8.0+ 才有的接口，单独放一个类，老系统不会加载它。 */
 @TargetApi(26)
 private object Api26 {
+    @Volatile private var channelMade = false
     fun builder(ctx: Context): Notification.Builder {
-        val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(NotificationChannel(RemoteService.CHANNEL, ctx.getString(R.string.app_name), NotificationManager.IMPORTANCE_LOW))
+        // 通知渠道建一次就够了（以前每改一次通知文字都建一次）
+        if (!channelMade) {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.createNotificationChannel(NotificationChannel(RemoteService.CHANNEL, ctx.getString(R.string.app_name), NotificationManager.IMPORTANCE_LOW))
+            channelMade = true
+        }
         return Notification.Builder(ctx, RemoteService.CHANNEL)
     }
     fun startForegroundService(ctx: Context, i: Intent) { ctx.startForegroundService(i) }
@@ -782,14 +804,36 @@ object Bus {
     @Volatile var running = false
     private val lines = ArrayList<String>()
     @Volatile var onLog: ((List<String>) -> Unit)? = null
+    /** 运行记录也存一份到文件（0.37），`log` 指令从这里取；init 之前的只在内存里 */
+    @Volatile var file: LogFile? = null
+        private set
+    private val writer = java.util.concurrent.Executors.newSingleThreadExecutor { r -> Thread(r, "log-file").apply { isDaemon = true } }
+
+    @Synchronized fun init(ctx: Context) {
+        if (file == null) file = LogFile(ctx.applicationContext.filesDir)
+    }
 
     @Synchronized fun push(line: String) {
-        val t = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        val now = Date()
+        val t = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(now)
         lines.add("$t  $line")
         while (lines.size > 200) lines.removeAt(0)
         val snap = ArrayList(lines)
         Handler(Looper.getMainLooper()).post { onLog?.invoke(snap) }
+        // 写文件放到自己的线程（调用的可能是相机、录音线程，不能等磁盘）
+        file?.let { f ->
+            val full = SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault()).format(now) + "  " + line
+            runCatching { writer.execute { f.append(full) } }
+        }
     }
 
     @Synchronized fun snapshot(): List<String> = ArrayList(lines)
+
+    /** 最近 n 行运行记录：文件里有就从文件取（App 重启前的也在），没有就用内存里的。 */
+    fun recent(n: Int): List<String> {
+        val f = file ?: return snapshot().takeLast(n)
+        // 等排着的几行写进文件
+        runCatching { writer.submit(Runnable {}).get(2, java.util.concurrent.TimeUnit.SECONDS) }
+        return f.tail(n).ifEmpty { snapshot().takeLast(n) }
+    }
 }

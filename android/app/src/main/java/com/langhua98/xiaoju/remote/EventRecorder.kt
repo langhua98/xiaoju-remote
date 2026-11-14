@@ -14,11 +14,16 @@ class EventRecorder(
     private val store: EventStore,
     private val clock: () -> Long = { StreamClient.now() },
     private val wall: () -> Long = { System.currentTimeMillis() },
+    /**
+     * 写文件在哪做（0.37）：CameraHub 给一条单独的线程，录像开头一次写好几秒的画面、切段时写目录都不再占着锁，
+     * 编码器线程、录音线程不用等磁盘。默认（测试）就在调用的线程上马上写。
+     */
+    private val io: java.util.concurrent.Executor = java.util.concurrent.Executor { it.run() },
 ) {
     @Volatile var preMs = 5_000L
     @Volatile var postMs = 15_000L
     @Volatile var maxMs = 120_000L
-    /** 一段写完了（在调用 video / tick 的线程上） */
+    /** 一段写完了（在写文件的线程上） */
     var onClosed: ((EventInfo) -> Unit)? = null
     /** 写文件出错（磁盘满了之类） */
     var onError: ((String) -> Unit)? = null
@@ -34,7 +39,7 @@ class EventRecorder(
 
     private var active = false         // 一次事件正在进行（有动静 → 最后一次动静后 postMs）
     private var seg: EventInfo? = null // 正在写的这一段
-    private var writer: MovWriter? = null
+    private var writer: SegWriter? = null
     private var params: Pair<ByteArray, ByteArray>? = null
     private var segStart = 0L
     private var endAt = 0L
@@ -112,24 +117,51 @@ class EventRecorder(
         // 等关键帧时先建好的那一段（截图已经用了它的名字）接着用；其他情况按这段开始的时间起名
         val info = seg?.takeIf { writer == null && !it.video } ?: EventInfo(store.newName(toWall(t0)), toWall(t0))
         seg = info
-        try {
-            val wr = MovWriter(store.mov(info.name), w, h, rot, p.first, p.second, audioRate.takeIf { it > 0 }, t0)
-            writer = wr; params = p; segStart = t0; info.video = true
-            for (s in samples) write(wr, s)
-        } catch (e: Exception) {
-            writer = null
-            onError?.invoke("写录像出错：${e.message}")
-        }
+        val file = store.mov(info.name); val ww = w; val hh = h; val rr = rot; val rate = audioRate.takeIf { it > 0 }
+        val wr = SegWriter { MovWriter(file, ww, hh, rr, p.first, p.second, rate, t0) }
+        writer = wr; params = p; segStart = t0; info.video = true
+        for (s in samples) write(wr, s)
     }
 
-    private fun write(wr: MovWriter, s: Sample) {
+    private fun write(wr: SegWriter, s: Sample) {
         if (writer !== wr) return
-        try {
-            if (s.video) wr.video(s.data, s.key, s.ts) else if (s.ts >= segStart) wr.audio(s.data, s.ts)
-        } catch (e: Exception) {
-            onError?.invoke("写录像出错：${e.message}")
-            runCatching { wr.close() }
-            writer = null
+        if (!s.video && s.ts < segStart) return
+        wr.add(s)
+    }
+
+    /**
+     * 一段录像的文件：所有写操作排到 io 上按顺序做。出错一次（磁盘满了）后面的都不写，报一次错。
+     */
+    private inner class SegWriter(private val open: () -> MovWriter) {
+        private var mov: MovWriter? = null
+        @Volatile var failed = false
+            private set
+        /** 文件建成了没有（建不成 = 这段没有视频） */
+        @Volatile var opened = false
+            private set
+
+        private fun run(block: (MovWriter) -> Unit) {
+            exec {
+                if (failed) return@exec
+                try {
+                    block(mov ?: open().also { mov = it; opened = true })
+                } catch (e: Exception) {
+                    failed = true
+                    onError?.invoke("写录像出错：${e.message}")
+                    runCatching { mov?.close() }
+                }
+            }
+        }
+
+        fun add(s: Sample) = run { m -> if (s.video) m.video(s.data, s.key, s.ts) else m.audio(s.data, s.ts) }
+
+        /** 写目录、关文件，然后在 io 上调 done(时长毫秒；没写成是 null) */
+        fun finish(done: (Long?) -> Unit) {
+            exec {
+                val m = mov
+                val dur = if (failed || m == null) null else try { m.close() } catch (e: Exception) { onError?.invoke("写录像出错：${e.message}"); null }
+                done(dur)
+            }
         }
     }
 
@@ -139,12 +171,17 @@ class EventRecorder(
         seg = null
         val wr = writer
         writer = null; params = null
-        if (wr != null) {
-            try { e.durMs = wr.close() } catch (ex: Exception) { onError?.invoke("写录像出错：${ex.message}"); e.video = false }
+        val save = {
+            if (!e.video) store.mov(e.name).delete()
+            store.save(e)
+            onClosed?.invoke(e)
         }
-        if (!e.video) store.mov(e.name).delete()
-        store.save(e)
-        onClosed?.invoke(e)
+        if (wr == null) { exec { save() }; return }
+        wr.finish { dur ->
+            // 写到一半出错（以前的做法一样）：留着已经写了的；关文件出错：当没有视频
+            if (dur != null) e.durMs = dur else if (!wr.failed || !wr.opened) e.video = false
+            save()
+        }
     }
 
     private fun endEvent() {
@@ -172,6 +209,11 @@ class EventRecorder(
             ring.subList(0, cut).clear()
         }
         while (ringBytes > MAX_RING && ring.size > 1) ringBytes -= ring.removeAt(0).data.size
+    }
+
+    /** 交给 io 去做；io 已经停了（App 在退出）就在这个线程上马上做，别丢了正在收尾的录像。 */
+    private fun exec(r: () -> Unit) {
+        try { io.execute(r) } catch (e: java.util.concurrent.RejectedExecutionException) { r() }
     }
 
     private fun toWall(ts: Long) = wall() - (clock() - ts)

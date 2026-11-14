@@ -135,18 +135,23 @@ object Net {
     fun request(method: String, url: String, token: String?, body: ByteArray? = null,
                 contentType: String? = null, readTimeoutMs: Int = 60_000, throttleBps: Int = 0,
                 onConn: ((HttpURLConnection?) -> Unit)? = null, reuse: Boolean = false,
-                headers: Map<String, String> = emptyMap()): ByteArray =
+                headers: Map<String, String> = emptyMap(), bodyFile: java.io.File? = null): ByteArray =
         try {
             try {
-                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, reuse, headers)
+                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, reuse, headers, bodyFile)
             } catch (e: java.io.IOException) {
                 // 只重试 GET；等太久（读超时）不算连接坏了，不重试
                 if (method != "GET" || e is java.net.SocketTimeoutException || e.message?.contains("SSLv3") == true) throw e
-                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, false, headers)
+                requestOnce(method, url, token, body, contentType, readTimeoutMs, throttleBps, onConn, false, headers, bodyFile)
             }
         } catch (e: java.io.IOException) {
             throw realTlsError(url, e)
         }
+
+    /** 把一个文件当请求体发出去，边读边发，不整个读进内存（0.37：录像备份以前整段读进内存，老手机上会内存不够）。 */
+    fun requestFile(method: String, url: String, token: String?, file: java.io.File, contentType: String,
+                    readTimeoutMs: Int = 60_000, throttleBps: Int = 0): ByteArray =
+        request(method, url, token, null, contentType, readTimeoutMs, throttleBps, bodyFile = file)
 
     /**
      * onConn：连接建好时交出来（别的线程可以 disconnect() 把卡住的请求断掉），结束时交 null。
@@ -155,7 +160,7 @@ object Net {
     private fun requestOnce(method: String, url: String, token: String?, body: ByteArray?,
                             contentType: String?, readTimeoutMs: Int, throttleBps: Int,
                             onConn: ((HttpURLConnection?) -> Unit)?, reuse: Boolean,
-                            headers: Map<String, String> = emptyMap()): ByteArray {
+                            headers: Map<String, String> = emptyMap(), bodyFile: java.io.File? = null): ByteArray {
         val conn = URL(url).openConnection() as HttpURLConnection
         onConn?.invoke(conn)
         var keep = false
@@ -169,23 +174,26 @@ object Net {
             conn.setRequestProperty("Accept", "application/json")
             if (!reuse) conn.setRequestProperty("Connection", "close")
             for ((k, v) in headers) conn.setRequestProperty(k, v)
-            if (body != null) {
+            if (body != null || bodyFile != null) {
                 conn.doOutput = true
                 conn.setRequestProperty("Content-Type", contentType ?: "application/octet-stream")
-                conn.setFixedLengthStreamingMode(body.size)
-                conn.outputStream.use { out ->
-                    if (throttleBps <= 0) out.write(body)
-                    else {
-                        val chunk = 16 * 1024
-                        val start = System.currentTimeMillis()
-                        var off = 0
-                        while (off < body.size) {
-                            val n = minOf(chunk, body.size - off)
-                            out.write(body, off, n)
-                            off += n
-                            val due = start + off * 1000L / throttleBps
-                            val wait = due - System.currentTimeMillis()
-                            if (wait > 0) Thread.sleep(wait)
+                if (bodyFile != null) {
+                    val size = bodyFile.length()
+                    // 4.2 只有 int 版本；录像一段最多几十 MB，不会超
+                    conn.setFixedLengthStreamingMode(size.toInt())
+                    conn.outputStream.use { out ->
+                        java.io.FileInputStream(bodyFile).use { inp -> sendThrottled(out, size, throttleBps) { b -> inp.read(b) } }
+                    }
+                } else if (body != null) {
+                    conn.setFixedLengthStreamingMode(body.size)
+                    conn.outputStream.use { out ->
+                        if (throttleBps <= 0) out.write(body)
+                        else {
+                            var off = 0
+                            sendThrottled(out, body.size.toLong(), throttleBps) { b ->
+                                val n = minOf(b.size, body.size - off)
+                                if (n <= 0) -1 else { System.arraycopy(body, off, b, 0, n); off += n; n }
+                            }
                         }
                     }
                 }
@@ -205,6 +213,23 @@ object Net {
             onConn?.invoke(null)
             // 成功：留着连接给下一个请求；出错：断开，免得把坏连接放回连接池
             if (!keep) conn.disconnect()
+        }
+    }
+
+    /** 一块一块地写（16 KB），throttleBps > 0 时按字节/秒限速。read 往缓冲区里填，返回填了几个，-1 = 完了。 */
+    private fun sendThrottled(out: java.io.OutputStream, size: Long, throttleBps: Int, read: (ByteArray) -> Int) {
+        val buf = ByteArray(16 * 1024)
+        val start = System.currentTimeMillis()
+        var sent = 0L
+        while (sent < size) {
+            val n = read(buf)
+            if (n < 0) throw java.io.IOException("文件变短了（写了 $sent / $size 字节）")
+            out.write(buf, 0, n)
+            sent += n
+            if (throttleBps > 0) {
+                val wait = start + sent * 1000L / throttleBps - System.currentTimeMillis()
+                if (wait > 0) Thread.sleep(wait)
+            }
         }
     }
 

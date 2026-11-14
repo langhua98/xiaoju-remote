@@ -27,6 +27,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashLog.install(this)
+        Bus.init(this)
         CrashLog.take(this)?.let { Bus.push("上次闪退了，原因（截图发给 Claude）：\n$it") }
         setContentView(R.layout.activity_main)
         prefs = Prefs(this)
@@ -50,6 +51,13 @@ class MainActivity : Activity() {
             "现在是 ${Updater.currentLabel(this)}。自动更新：待命时每 6 小时看一次云盘「软件包」，有新版本就下载；" +
             "有 root 直接装，没有 root 要点一下「安装」。"
         findViewById<Button>(R.id.update).setOnClickListener { b -> checkUpdate(b as Button) }
+        findViewById<android.widget.CheckBox>(R.id.allowShell).apply {
+            isChecked = prefs.allowShell
+            setOnCheckedChangeListener { _, on ->
+                prefs.allowShell = on
+                Bus.push(if (on) "已允许远程跑命令（用完记得关掉）" else "已关掉远程跑命令")
+            }
+        }
 
         Bus.onLog = { lines -> log.text = lines.takeLast(80).joinToString("\n"); refresh() }
         log.text = Bus.snapshot().takeLast(80).joinToString("\n")

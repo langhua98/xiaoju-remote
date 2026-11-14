@@ -61,7 +61,9 @@ class CameraHub(
     @Volatile private var mstats = MotionStats(MonitorConfig.KOTLIN) { battery() }
     @Volatile private var engineNote = ""
     private var aiBuf = ByteArray(0)                 // 录像中再认一次时复用的画面缓冲区（AI 线程用，detBusy 保证一次一个）
-    private val recorder = EventRecorder(store)
+    // 录像写文件的线程（0.37）：写磁盘不占着 recorder 的锁，编码器、录音线程不用等
+    private val recIo = Executors.newSingleThreadExecutor { r -> Thread(r, "rec-io") }
+    private val recorder = EventRecorder(store, io = recIo)
     private val notifier = Notifier(cloud, prefs, device)
     val uploader = Uploader(cloud, store, device, enabled = { monitor.upload }, busy = { watching() })
     private val work = Executors.newSingleThreadExecutor()   // 截图、存小图、发提醒（不卡相机）
@@ -312,6 +314,7 @@ class CameraHub(
         uploader.close()
         work.shutdown()
         recAudio.shutdown()
+        recIo.shutdown()   // 排着的写完再停（正在录的那段由 recorder.close 收尾）
         detect.shutdown()
         synchronized(engineLock) { engine.close() }
     }
