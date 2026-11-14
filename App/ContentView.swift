@@ -90,7 +90,7 @@ struct SettingsView: View {
                     Text("填了就用实时语音聊天：像打电话一样，随时插话打断她，开口更快；声音是 Gemini 自带的女声。免费档有用量上限，数据谷歌可能用来改进产品。连不上时自动改用上面的 DeepSeek。空着就一直用 DeepSeek。")
                 }
 
-                GimbalSection(gimbal: engine.gimbal, auto: $store.gimbalAuto)
+                GimbalSection(gimbal: engine.gimbal, follower: engine.follower, auto: $store.gimbalAuto, follow: $store.follow) { engine.setFollow($0) }
 
                 Section {
                     Picker("衣服", selection: $store.outfit) {
@@ -145,7 +145,10 @@ struct SettingsView: View {
 /// 设置页的「云台」一栏：连接、状态、试着转一转
 private struct GimbalSection: View {
     @ObservedObject var gimbal: Gimbal
+    @ObservedObject var follower: FaceFollower
     @Binding var auto: Bool
+    @Binding var follow: Bool
+    let onFollow: (Bool) -> Void
 
     var body: some View {
         Section {
@@ -159,11 +162,11 @@ private struct GimbalSection: View {
                 Text(gimbal.status()).font(.footnote).foregroundStyle(.secondary)
                 HStack(spacing: 18) {
                     Spacer()
-                    pad("arrow.left") { gimbal.move(yawSpeed: -25, pitchSpeed: 0, seconds: 0.6) }
-                    pad("arrow.up") { gimbal.move(yawSpeed: 0, pitchSpeed: 20, seconds: 0.6) }
-                    pad("arrow.down") { gimbal.move(yawSpeed: 0, pitchSpeed: -20, seconds: 0.6) }
-                    pad("arrow.right") { gimbal.move(yawSpeed: 25, pitchSpeed: 0, seconds: 0.6) }
-                    pad("scope") { Task { _ = await gimbal.command(["action": "center"]) } }
+                    pad("arrow.left") { gimbal.manualMove(right: -25, up: 0, seconds: 0.6) }
+                    pad("arrow.up") { gimbal.manualMove(right: 0, up: 20, seconds: 0.6) }
+                    pad("arrow.down") { gimbal.manualMove(right: 0, up: -20, seconds: 0.6) }
+                    pad("arrow.right") { gimbal.manualMove(right: 25, up: 0, seconds: 0.6) }
+                    pad("scope") { Task { _ = await gimbal.aim(right: 0, up: 0, relative: false, by: .manual) } }
                     Spacer()
                 }
             } else if !gimbal.note.isEmpty {
@@ -174,10 +177,15 @@ private struct GimbalSection: View {
                 else { gimbal.disconnect() }
             }
             Toggle("打开 App 时自动连", isOn: $auto)
+            Toggle("抬头低头反了", isOn: Binding(get: { gimbal.pitchFlipped }, set: { gimbal.pitchFlipped = $0 }))
+            Toggle("跟着我转（用前摄找人脸）", isOn: Binding(get: { follow }, set: { follow = $0; onFollow($0) }))
+            if follow || follower.phase != .off {
+                Text("跟随：\(follower.phase.rawValue)").font(.footnote).foregroundStyle(.secondary)
+            }
         } header: {
             Text("云台（大疆 OM）")
         } footer: {
-            Text("把这台 iPhone 夹在大疆 OM 云台上，它就是机器人的身体：别的设备可以远程让它转头（gimbal 指令），机器人的脸也跟着云台的朝向看。用之前先在 DJI Mimo 里断开云台。箭头试着转一下，靶心回到归位点（连上时的朝向）。")
+            Text("把这台 iPhone 夹在大疆 OM 云台上，它就是机器人的身体：别的设备可以远程让它转头（gimbal 指令），机器人的脸也跟着云台的朝向看。用之前先在 DJI Mimo 里断开云台。箭头试着转一下，靶心回到正面（连上时的朝向）。她自己也能转：说「往左看看」「看右边 20 度」「回正」「停」，或者在聊天框打「云台 左转 30」。左右最多各转 120°，抬头 35°、低头 20°。点上箭头她却低头的话，打开「抬头低头反了」。「跟着我转」打开以后，前摄在手机里找你的脸（不保存、不上传），你走到哪她转到哪；屏幕上方会一直显示摄像头的提示；每次打开 App 要重新开。也可以对她说「跟着我」「别跟了」。")
         }
     }
 

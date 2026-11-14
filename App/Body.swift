@@ -1,16 +1,21 @@
 import Foundation
 
 /// 让大模型控制机器人的身体（大疆 OM 云台，见 Gimbal.swift）。
-/// - 普通模式（DeepSeek）：回答里写动作标签 [左转 30] [右转 30] [抬头 15] [低头 15] [回正]，App 照着转，标签不念出来。
-/// - 实时模式（Gemini Live）：工具调用 move_gimbal(direction, degrees)，转完把结果告诉模型。
+/// - 普通模式（DeepSeek）：回答里写动作标签 [左转 30] [右转 30] [抬头 15] [低头 15] [看向 右 20 上 10] [回正] [停]，App 照着转，标签不念出来。
+/// - 实时模式（Gemini Live）：工具调用 gimbal(action, right, up)，转完把结果（现在朝哪、还能转多少）告诉模型。旧的 move_gimbal 还认。
+/// 跟着人转（Follow.swift）是手机本地的反射动作，大模型只管开关：gimbal 的 follow_on / follow_off，标签 [跟着我] [别跟了]。
+/// 角度只有一套：相对正面（连上云台时的朝向，可以重设），右、上为正，单位是度。见 Robot/GIMBAL_MODEL_PLAN.md。
 /// 同样的办法也用来换衣服（[换装 洋装] / change_outfit）、让 3D 角色做动作（[动作 跳舞] / play_action）、
 /// 转身（[转身 左 90] / turn_body）和换镜头（[镜头 特写] / set_camera）。
 /// 方向：左 / 右按 Gimbal 的 yaw 负 / 正，上 / 下按 pitch 正 / 负（Gimbal 会自己学正负号；真机上反了就改这里）。
 enum Body {
     static let personaForTags = """
-    你能控制自己的身体：手机夹在大疆云台上，云台能左右转、上下抬头低头。主人让你转身、转头、看某个方向、抬头低头时，在回答里写动作标签，App 会照着转：
-    [左转 30] [右转 30] [抬头 15] [低头 15] [回正]
-    数字是度数，左右 5～90，上下 5～45。比如主人说「往左边看看」，你回答「好，我看看左边。[左转 45]」。不需要转的时候不要写标签，标签不会被念出来。
+    你能控制自己的身体：手机夹在大疆云台上，云台能左右转、上下抬头低头。主人让你转头、看某个方向、抬头低头时，在回答里写动作标签，App 会照着转：
+    [左转 30] [右转 30] [抬头 15] [低头 15]：在现在的基础上再转这么多度。
+    [看向 右 20 上 10]：转到相对正面的那个方向（可以只写一个，比如 [看向 左 45]）。[回正]：回到正面。[停]：马上停。
+    [跟着我]：开始一直面对着主人（用前面的摄像头找主人的脸，手机自己跟，不用你一直转）。[别跟了]：不跟了。主人说「跟着我」「看着我」「别跟了」时用。
+    下面「云台现在的状态」会告诉你现在朝哪、每个方向还能转多少，不要超过；主人问你朝哪就照实说。比如主人说「往左边看看」，你回答「好，我看看左边。[左转 45]」。状态里说云台没连上时不要写这些标签，直接告诉主人云台没连上。不需要转的时候不要写标签，标签不会被念出来。
+    你现在看不见东西（摄像头的画面不会给你），主人问你看到了什么就照实说看不见，不要编。
     你还能换衣服：主人让你换衣服时写 [换装 衣服名]，衣服名只能是：\(outfitNames)。比如「好呀，换上啦。[换装 洋装]」。
     你有一个 3D 的身体，能做动作：写 [动作 名字]，名字只能是：\(actionNames)。主人让你跳舞、挥手、比耶时就做；平时表示同意可以 [动作 点头]，不同意可以 [动作 摇头]，一次回答最多一个动作，不要每句都做。
     屏幕里的你还能转身：[转身 左 90] [转身 右 45] [转身 回正]（数字是度数，0～180，背对主人是 180）；主人让你转过去、给他看看背后、侧过身时用。
@@ -18,7 +23,11 @@ enum Body {
     """
 
     static let personaForTool = """
-    你能控制自己的身体：手机夹在大疆云台上，云台能左右转、上下抬头低头。主人让你转身、转头、看某个方向、抬头低头、回到正面时，调用 move_gimbal 工具真的去转，再告诉主人转好了。
+    你能控制自己的身体：手机夹在大疆云台上，云台能左右转、上下抬头低头。主人让你转头、看某个方向、抬头低头、回到正面、停下时，调用 gimbal 工具真的去转，再告诉主人。
+    gimbal 的角度是相对正面的度数，右和上为正：action 用 turn 是在现在的基础上再转（right: -30 就是再往左 30°），用 look 是转到那个方向（right: 20, up: 10），center 回正面，stop 马上停，status 只问状态。
+    主人说「跟着我」「一直看着我」时用 follow_on：手机会用前面的摄像头找主人的脸，自己一直面对着主人，不用你一直转；主人说「别跟了」时用 follow_off。
+    每次调用的结果都会告诉你现在朝哪、每个方向还能转多少，下次不要超过；结果说没连上、到头了、被挡住时照实告诉主人，不要假装转了。
+    你现在看不见东西（摄像头的画面不会给你），主人问你看到了什么就照实说看不见，不要编。
     你还能换衣服：主人让你换衣服时调用 change_outfit 工具，衣服名只能是：\(outfitNames)；主人没说换哪套就换一套和现在不一样的。
     你有一个 3D 的身体，能做动作：主人让你跳舞、挥手、比耶、点头、摇头等时，调用 play_action 工具，动作名只能是：\(actionNames)。
     屏幕里的你还能转身：主人让你转过去、侧过身、给他看看背后时，调用 turn_body 工具。
@@ -67,9 +76,10 @@ enum Body {
                 ("看上面", ["type": "look", "x": 0, "y": -0.9, "ms": 8000]), ("看下面", ["type": "look", "x": 0, "y": 0.9, "ms": 8000]),
                 ("看我", ["type": "look", "free": true]),
             ]),
+            ("云台", gimbalMenu.map { g in (g.name, bodyMsg(g.move)) }),
             ("换装", outfitsMenu),
             ("背景", Store.backgrounds.map { ("背景 " + $0.name, nil) }),
-            ("其他", [("停下", ["type": "action", "name": "stop"]), ("重置", ["type": "reset"])]),
+            ("其他", [("停下", ["type": "body", "action": "stop"]), ("重置", ["type": "reset"])]),
         ]
     }()
     private static var outfitsMenu: [(name: String, msg: [String: Any]?)] { Store.outfits.map { ("换上" + $0.name, nil) } }
@@ -112,6 +122,14 @@ enum Body {
             if let item = group.items.first(where: { $0.name == t }), let msg = item.msg { return (msg, "\(group.title)：\(item.name)") }
         }
         if ["重置", "复位", "回到默认"].contains(t) { return (["type": "reset"], "回到默认") }
+        // 「停」：云台和屏幕里的动作一起停，不等大模型
+        let bare = t.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "。！!.，,？? "))   // 语音识别会带标点
+        if ["停", "停下", "别动", "停下来", "别转了", "不要动", "stop"].contains(bare) { return (["type": "body", "action": "stop"], "停下") }
+        if ["别跟了", "不跟了", "不要跟了", "别跟着我", "别看着我了"].contains(bare) { return (["type": "body", "action": "follow_off"], "别跟了") }
+        // 「云台 左转 30」「云台 看向 右 20 上 10」「云台回正」：直接转，不问大模型
+        if t.hasPrefix("云台"), let m = gimbalMoves(in: "[" + t.dropFirst(2).trimmingCharacters(in: .whitespaces) + "]").first {
+            return (bodyMsg(m), "云台：" + describe(m))
+        }
         if let a = actions.first(where: { $0.name == t || $0.id == t.lowercased() }) {
             return (["type": "action", "name": a.id], "动作：\(a.name)")
         }
@@ -141,8 +159,21 @@ enum Body {
     /// 给 Gemini Live 的工具声明
     static let toolDeclaration: [String: Any] = [
         "functionDeclarations": [[
+            "name": "gimbal",
+            "description": "转动机器人的身体（大疆云台）。角度是相对正面的度数，右和上为正。结果里有现在的朝向和每个方向还能转多少。",
+            "parameters": [
+                "type": "OBJECT",
+                "properties": [
+                    "action": ["type": "STRING", "enum": ["turn", "look", "center", "stop", "status", "follow_on", "follow_off"],
+                               "description": "turn 在现在的基础上再转；look 转到相对正面的那个方向；center 回正面；stop 马上停；status 只问现在的状态；follow_on 开始一直面对着主人；follow_off 不跟了"],
+                    "right": ["type": "NUMBER", "description": "左右的度数，右为正、左为负。turn 时是再转多少，look 时是转到哪。不动就不填"],
+                    "up": ["type": "NUMBER", "description": "上下的度数，抬头为正、低头为负。不动就不填"],
+                ],
+                "required": ["action"],
+            ],
+        ], [
             "name": "move_gimbal",
-            "description": "转动机器人的身体（大疆云台）：左右转、抬头低头，或者回到正面。",
+            "description": "（旧的，尽量用 gimbal）转动机器人的身体：左右转、抬头低头，或者回到正面。",
             "parameters": [
                 "type": "OBJECT",
                 "properties": [
@@ -237,52 +268,148 @@ enum Body {
         return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { ns.substring(with: $0.range(at: 1)) }
     }
 
-    /// 语音指令转动的速度（度每秒）
-    static let speed = 60.0
+    // MARK: 云台
 
-    private static let tagPattern = #"\[\s*(左转|右转|抬头|低头|回正)\s*(\d+(?:\.\d+)?)?\s*度?\s*\]"#
+    /// 云台的一次动作。大模型的工具参数、回答里的标签、聊天框的短指令、快捷菜单都变成这个。
+    /// action：turn 再转多少 / look 转到哪 / center 回正 / stop 停 / status 只问状态 / home 把现在记成正面。right、up：度，右和上为正
+    struct GimbalMove {
+        var action: String
+        var right: Double?
+        var up: Double?
+    }
 
-    /// 找出一段文字里的动作标签，按出现顺序
-    static func tags(in text: String) -> [(direction: String, degrees: Double?)] {
-        guard let re = try? NSRegularExpression(pattern: tagPattern) else { return [] }
-        let ns = text as NSString
-        return re.matches(in: text, range: NSRange(location: 0, length: ns.length)).map { m in
-            let verb = ns.substring(with: m.range(at: 1))
-            let deg = m.range(at: 2).location == NSNotFound ? nil : Double(ns.substring(with: m.range(at: 2)))
-            let dir = ["左转": "left", "右转": "right", "抬头": "up", "低头": "down"][verb] ?? "center"
-            return (dir, deg)
+    /// 快捷菜单「云台」里的东西
+    static let gimbalMenu: [(name: String, move: GimbalMove)] = [
+        ("云台左转", GimbalMove(action: "turn", right: -30, up: nil)), ("云台右转", GimbalMove(action: "turn", right: 30, up: nil)),
+        ("云台抬头", GimbalMove(action: "turn", right: nil, up: 15)), ("云台低头", GimbalMove(action: "turn", right: nil, up: -15)),
+        ("云台回正", GimbalMove(action: "center", right: nil, up: nil)), ("云台停", GimbalMove(action: "stop", right: nil, up: nil)),
+        ("云台设为正面", GimbalMove(action: "home", right: nil, up: nil)),
+        ("跟着我", GimbalMove(action: "follow_on", right: nil, up: nil)), ("别跟了", GimbalMove(action: "follow_off", right: nil, up: nil)),
+    ]
+
+    /// 开关「跟着人转」。RemoteEngine 启动时填上；返回一句给模型 / 记录看的结果
+    static var followSwitch: ((Bool) -> String)?
+
+    private static let tagPattern = #"\[\s*(左转|右转|抬头|低头|回正|回中|停下|停|别动|设为正面|跟着我|看着我|别跟了|不跟了)\s*(\d+(?:\.\d+)?)?\s*度?\s*\]"#
+    private static let lookPattern = #"\[\s*看向\s*[:：]?\s*([^\]]*?)\s*\]"#
+    private static let lookPart = #"(左|右|上|下)\s*(\d+(?:\.\d+)?)"#
+
+    /// 找出一段文字里的云台标签，按出现顺序
+    static func gimbalMoves(in text: String) -> [GimbalMove] {
+        let ns = text as NSString, all = NSRange(location: 0, length: ns.length)
+        var found: [(at: Int, move: GimbalMove)] = []
+        if let re = try? NSRegularExpression(pattern: tagPattern) {
+            for m in re.matches(in: text, range: all) {
+                let verb = ns.substring(with: m.range(at: 1))
+                let deg = m.range(at: 2).location == NSNotFound ? nil : Double(ns.substring(with: m.range(at: 2)))
+                let move: GimbalMove
+                switch verb {
+                case "左转": move = GimbalMove(action: "turn", right: -(deg ?? 30), up: nil)
+                case "右转": move = GimbalMove(action: "turn", right: deg ?? 30, up: nil)
+                case "抬头": move = GimbalMove(action: "turn", right: nil, up: deg ?? 15)
+                case "低头": move = GimbalMove(action: "turn", right: nil, up: -(deg ?? 15))
+                case "回正", "回中": move = GimbalMove(action: "center", right: nil, up: nil)
+                case "设为正面": move = GimbalMove(action: "home", right: nil, up: nil)
+                case "跟着我", "看着我": move = GimbalMove(action: "follow_on", right: nil, up: nil)
+                case "别跟了", "不跟了": move = GimbalMove(action: "follow_off", right: nil, up: nil)
+                default: move = GimbalMove(action: "stop", right: nil, up: nil)
+                }
+                found.append((m.range.location, move))
+            }
+        }
+        if let re = try? NSRegularExpression(pattern: lookPattern), let part = try? NSRegularExpression(pattern: lookPart) {
+            for m in re.matches(in: text, range: all) {
+                let inner = ns.substring(with: m.range(at: 1)) as NSString
+                var move = GimbalMove(action: "look", right: nil, up: nil)
+                for p in part.matches(in: inner as String, range: NSRange(location: 0, length: inner.length)) {
+                    let v = Double(inner.substring(with: p.range(at: 2))) ?? 0
+                    switch inner.substring(with: p.range(at: 1)) {
+                    case "左": move.right = -v
+                    case "右": move.right = v
+                    case "上": move.up = v
+                    default: move.up = -v
+                    }
+                }
+                // 「看向 正面」「看向 前面」这种没有数字的：回正
+                if move.right == nil && move.up == nil { move.action = "center" }
+                found.append((m.range.location, move))
+            }
+        }
+        return found.sorted { $0.at < $1.at }.map { $0.move }
+    }
+
+    /// 旧工具 move_gimbal(direction, degrees) → 新的动作
+    static func gimbalMove(direction: String, degrees: Double?) -> GimbalMove {
+        switch direction {
+        case "left": return GimbalMove(action: "turn", right: -(degrees ?? 30), up: nil)
+        case "right": return GimbalMove(action: "turn", right: degrees ?? 30, up: nil)
+        case "up": return GimbalMove(action: "turn", right: nil, up: degrees ?? 15)
+        case "down": return GimbalMove(action: "turn", right: nil, up: -(degrees ?? 15))
+        case "stop": return GimbalMove(action: "stop", right: nil, up: nil)
+        default: return GimbalMove(action: "center", right: nil, up: nil)
+        }
+    }
+
+    /// 动作 → 快捷菜单和短指令用的消息（type 是 body 的不发给脸，由 Talk 交给云台）
+    static func bodyMsg(_ m: GimbalMove) -> [String: Any] {
+        var o: [String: Any] = ["type": "body", "action": m.action]
+        if let r = m.right { o["right"] = r }
+        if let u = m.up { o["up"] = u }
+        return o
+    }
+
+    /// 快捷菜单和短指令的消息（["type": "body", …]）→ 动作
+    static func gimbalMove(from msg: [String: Any]) -> GimbalMove {
+        func num(_ k: String) -> Double? { (msg[k] as? NSNumber)?.doubleValue }
+        return GimbalMove(action: (msg["action"] as? String) ?? "status", right: num("right"), up: num("up"))
+    }
+
+    /// 给记录看的一句话
+    static func describe(_ m: GimbalMove) -> String {
+        func part(_ v: Double?, _ pos: String, _ neg: String) -> String { v.map { "\($0 >= 0 ? pos : neg) \(Int(abs($0)))°" } ?? "" }
+        let where_ = [part(m.right, "右", "左"), part(m.up, "上", "下")].filter { !$0.isEmpty }.joined(separator: " ")
+        switch m.action {
+        case "turn": return "再转 " + where_
+        case "look": return "看向 " + where_
+        case "center": return "回正"
+        case "stop": return "停"
+        case "home": return "设为正面"
+        case "follow_on": return "跟着我"
+        case "follow_off": return "别跟了"
+        default: return "问状态"
+        }
+    }
+
+    /// 真的去转。who：谁让转的（大模型 / 主人）。返回一句给模型 / 记录看的结果，里面带现在的朝向和还能转多少
+    @MainActor
+    static func perform(_ gimbal: Gimbal, _ m: GimbalMove, by who: Gimbal.Owner = .model) async -> String {
+        // 模型偶尔会给出离谱的数字，先收一下（真正的限位在 Gimbal.aim 里）
+        let right = m.right.map { min(max($0, -360), 360) }, up = m.up.map { min(max($0, -90), 90) }
+        switch m.action {
+        case "turn": return await gimbal.aim(right: right, up: up, relative: true, by: who)
+        case "look": return await gimbal.aim(right: right, up: up, relative: false, by: who)
+        case "center": return await gimbal.aim(right: 0, up: 0, relative: false, by: who)
+        case "stop":
+            gimbal.halt()
+            return "停了。" + gimbal.stateText()
+        case "follow_on", "follow_off":
+            return followSwitch?(m.action == "follow_on") ?? "这台手机上没有跟随功能。"
+        case "home":
+            guard gimbal.connected else { return gimbal.stateText() }
+            gimbal.setHomeHere()
+            return "已把现在的朝向记成正面。"
+        default:
+            return gimbal.stateText()
         }
     }
 
     /// 去掉动作标签（念出来之前）
     static func strip(_ text: String) -> String {
         text.replacingOccurrences(of: tagPattern, with: "", options: .regularExpression)
+            .replacingOccurrences(of: lookPattern, with: "", options: .regularExpression)
             .replacingOccurrences(of: outfitPattern, with: "", options: .regularExpression)
             .replacingOccurrences(of: actionPattern, with: "", options: .regularExpression)
             .replacingOccurrences(of: viewPattern, with: "", options: .regularExpression)
             .replacingOccurrences(of: turnPattern, with: "", options: .regularExpression)
-    }
-
-    /// 真的去转。返回一句给模型 / 记录看的结果
-    @MainActor
-    static func perform(_ gimbal: Gimbal, direction: String, degrees: Double?) async -> String {
-        guard gimbal.connected else { return "云台没连上，转不了（请主人在设置页点「连接云台」）" }
-        if gimbal.busy { gimbal.stopNow() }
-        switch direction {
-        case "left", "right", "up", "down":
-            // 说话时要快：按固定速度转算好的时间（30° 只要半秒），不用一帧帧等姿态确认（那样每次要多等 2 秒）
-            let horizontal = direction == "left" || direction == "right"
-            let d = horizontal ? min(max(degrees ?? 30, 5), 90) : min(max(degrees ?? 15, 5), 45)
-            // 上下在 OM6 真机上是反的（William 实测），所以「抬头」发负的俯仰速度
-            let sign: Double = (direction == "left" || direction == "up") ? -1 : 1
-            let seconds = d / speed
-            gimbal.move(yawSpeed: horizontal ? sign * speed : 0, pitchSpeed: horizontal ? 0 : sign * speed, seconds: seconds)
-            try? await Task.sleep(nanoseconds: UInt64((seconds + 0.2) * 1e9))
-            return "转好了，大约\(["left": "左转", "right": "右转", "up": "抬头", "down": "低头"][direction]!) \(Int(d))°"
-        default:
-            // 回正要准：按姿态闭环转回归位点
-            let result = await gimbal.command(["action": "center"])
-            return result.components(separatedBy: "\n").first ?? result
-        }
     }
 }

@@ -16,6 +16,8 @@ final class Store: ObservableObject {
     @Published var geminiKey: String { didSet { Keychain.set("geminiKey", geminiKey) } }
     /// 打开 App 时自动连大疆云台
     @Published var gimbalAuto: Bool { didSet { save("gimbalAuto", gimbalAuto ? "1" : "") } }
+    /// 跟着人转（用前摄找人脸，见 Follow.swift）。不存：每次打开 App 都是关的，要用再开
+    @Published var follow = false
     /// 机器人穿哪套衣服（default = Yuki_outfit1.glb，outfit2 = Yuki_outfit2.glb，sporty = Yuki_sporty.glb，见 Robot/live2d/src/avatar.js 的 OUTFITS）
     @Published var outfit: String { didSet { save("outfit", outfit) } }
     /// 机器人的背景（见 Robot/live2d/src/scene.js 的 SCENES）。auto = 卧室跟着时间变

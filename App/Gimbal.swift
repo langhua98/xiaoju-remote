@@ -62,6 +62,31 @@ final class Gimbal: NSObject, ObservableObject {
     private var driveUntil = Date.distantPast
     private var ticker: Timer?
     private var aborted = false
+    /// 每开始一个新的转动（或者停下）就加 1。还在跑的旧转动看到这个数变了就自己退出，不会和新的抢着发速度
+    private var gen = 0
+
+    // MARK: 谁在控制（见 Robot/GIMBAL_MODEL_PLAN.md）
+    /// 优先级从低到高。高的能打断低的；低的遇到高的正在转就让开。
+    enum Owner: Int, Comparable {
+        case nobody = 0, follow, model, remote, manual
+        static func < (a: Owner, b: Owner) -> Bool { a.rawValue < b.rawValue }
+        var label: String { ["没有人", "自动跟随", "大模型", "遥控端", "主人"][rawValue] }
+    }
+    private(set) var owner: Owner = .nobody
+    /// 刚下的指令要转到哪（姿态大约一秒才来一帧，转完马上问朝向时用这个）
+    private var aimed: (yaw: Double, pitch: Double, at: Date)?
+    /// 主人、遥控端、大模型刚让云台转过：这个时间之前自动跟随不动它
+    private var heldUntil = Date.distantPast
+    private var tracking = false
+    /// 别人转完以后，自动跟随过几秒再接着跟
+    static let followHold = 6.0
+    /// 这个轴的速度正负已经用实测确认过（闭环转过一次）。没确认过的轴不走「先快后准」，直接闭环
+    private var dirKnown: Set<Axis> = []
+
+    /// 软限位（度，相对归位点）：左右各多少、最多抬头多少、最多低头多少。OM6 转到头会自己停，这里再限一道，免得线缠住
+    static let limitYaw = 120.0, limitUp = 35.0, limitDown = 20.0
+    /// 小于这个角度先按速度直接转（快），转完再按姿态补偏差
+    static let fastBelow = 30.0, fastSpeed = 60.0
 
     /// 归位点（「回中」回到这里）：连上后第一帧姿态自动记下，也可以用 home 指令改
     private(set) var home: (yaw: Double, pitch: Double)?
@@ -73,6 +98,21 @@ final class Gimbal: NSObject, ObservableObject {
     override init() {
         super.init()
         for ax in [Axis.yaw, .pitch] where d.double(forKey: "gimbalDir." + ax.rawValue) < 0 { dirSign[ax] = -1 }
+        for ax in [Axis.yaw, .pitch] where d.bool(forKey: "gimbalDirKnown." + ax.rawValue) { dirKnown.insert(ax) }
+    }
+
+    /// 「抬头」在姿态里是变大还是变小。OM6 上 William 实测是变小（-1）；真机上抬头、低头反了就在设置页打开「上下反了」。
+    var upSign: Double { d.bool(forKey: "gimbalPitchFlip") ? 1 : -1 }
+    var pitchFlipped: Bool {
+        get { d.bool(forKey: "gimbalPitchFlip") }
+        set { d.set(newValue, forKey: "gimbalPitchFlip"); objectWillChange.send() }
+    }
+
+    /// 给人和大模型看的朝向：右、上为正（度，相对正面）。刚下过指令、姿态还没更新时用指令的目标。没连上返回 nil
+    var heading: (right: Double, up: Double)? {
+        if let a = aimed, Date().timeIntervalSince(a.at) < 2.5, connected { return (a.yaw, a.pitch * upSign) }
+        guard let p = pose else { return nil }
+        return (p.yaw, p.pitch * upSign)
     }
 
     var connected: Bool { phase == .ready }
@@ -265,6 +305,7 @@ final class Gimbal: NSObject, ObservableObject {
     /// 马上停（零速），也停掉定时转
     func stopNow() {
         aborted = true
+        gen += 1
         ticker?.invalidate(); ticker = nil
         driveYaw = 0; drivePitch = 0
         send(cmdSet: 0x04, cmdId: 0x0c, payload: Duml.stop)
@@ -280,7 +321,7 @@ final class Gimbal: NSObject, ObservableObject {
             attSeq += 1
             lastAttAt = Date()
             if home == nil { home = (a.yaw, a.pitch); log("记下归位点：偏航 \(fmt(a.yaw))，俯仰 \(fmt(a.pitch))") }
-            if let p = pose { onPose?(p.yaw, p.pitch, true) }
+            if let p = pose { onPose?(p.yaw, p.pitch * upSign, true) }
         case (0x05, 0x06):
             // 电池：[0] 电量 %，最后一个字节 1 = 在充电
             guard let pct = f.payload.first else { return }
@@ -305,7 +346,7 @@ final class Gimbal: NSObject, ObservableObject {
     /// 按速度转一会儿（°/s，正负见 dirSign），到时间自己停。
     func move(yawSpeed: Double, pitchSpeed: Double, seconds: Double) {
         guard connected else { return }
-        aborted = false
+        begin()
         driveYaw = clampUnits(yawSpeed / Self.degPerUnit)
         drivePitch = clampUnits(pitchSpeed / Self.degPerUnit)
         driveUntil = Date().addingTimeInterval(min(max(seconds, 0.1), 5))
@@ -325,6 +366,17 @@ final class Gimbal: NSObject, ObservableObject {
         sendSpeed(yaw: driveYaw, pitch: drivePitch)
     }
 
+    /// 开始一个新的转动：停掉定时转，让旧的闭环退出。返回这次转动的编号
+    @discardableResult
+    private func begin() -> Int {
+        gen += 1
+        aborted = false
+        busy = false
+        ticker?.invalidate(); ticker = nil
+        driveYaw = 0; drivePitch = 0
+        return gen
+    }
+
     private func clampUnits(_ u: Double) -> Int {
         let v = Int(u.rounded())
         return v == 0 ? 0 : (v > 0 ? 1 : -1) * min(Self.maxUnits, abs(v))
@@ -336,9 +388,10 @@ final class Gimbal: NSObject, ObservableObject {
     func turn(_ axis: Axis, by delta: Double) async -> (traveled: Double, verdict: String) {
         guard connected, attitude != nil else { return (0, "nofeedback") }
         if abs(delta) < Self.tolerance { return (0, "done") }
-        aborted = false
+        let my = begin()
         busy = true
-        defer { busy = false; stopNow() }
+        // 被新的转动顶掉时不要去停（那样会把新的也停了）
+        defer { if gen == my { busy = false; stopNow() } }
 
         func value(_ a: Duml.Attitude) -> Double { axis == .yaw ? a.yaw : a.pitch }
         var prev = value(attitude!), seen = attSeq
@@ -364,6 +417,10 @@ final class Gimbal: NSObject, ObservableObject {
                     d.set(s, forKey: "gimbalDir." + axis.rawValue)
                     log("云台\(axis == .yaw ? "左右" : "上下")方向和预想的相反，已改过来")
                 }
+                if units != 0, abs(step) >= 1.5, !dirKnown.contains(axis) {
+                    dirKnown.insert(axis)
+                    d.set(true, forKey: "gimbalDirKnown." + axis.rawValue)
+                }
                 traveled += step
                 est = traveled
                 let e = delta - traveled
@@ -372,7 +429,7 @@ final class Gimbal: NSObject, ObservableObject {
                 if hits >= 2 { return (traveled, "done") }
                 if frozen >= 2 { return (traveled, abs(traveled) < 1 ? "noexec" : "stall") }
             }
-            if aborted { return (traveled, "abort") }
+            if aborted || gen != my { return (traveled, "abort") }
             if !connected { return (traveled, "abort") }
             if now.timeIntervalSince(t0) > Self.timeout { return (traveled, "timeout") }
             if Date().timeIntervalSince(lastAttAt) > 5 { return (traveled, "nofeedback") }
@@ -386,6 +443,130 @@ final class Gimbal: NSObject, ObservableObject {
             if axis == .yaw { sendSpeed(yaw: units, pitch: 0) } else { sendSpeed(yaw: 0, pitch: units) }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
+    }
+
+    // MARK: 给大模型、聊天框、自动跟随用的转动（右、上为正，相对正面）
+
+    /// 转动。relative：true = 在现在的基础上再转这么多；false = 转到相对正面的这个方向。nil 的那个轴不动。
+    /// 小角度先按速度直接转（半秒到位），转完在后台按姿态补偏差；大角度、或者方向还没用实测确认过的轴，直接闭环。
+    /// 返回一句给大模型 / 记录看的结果，里面带转完以后的朝向和还能转多少。
+    @MainActor
+    func aim(right: Double?, up: Double?, relative: Bool, by who: Owner) async -> String {
+        guard connected else { return "云台没连上，转不了（请主人在设置页点「连接云台」）。" }
+        if asleep { return "云台在睡眠，转不了（请主人按一下云台上的按键）。" }
+        guard let now = heading, pose != nil else { return "还没收到云台的朝向，等一两秒再试。" }
+        if busy, owner > who { return "\(owner.label)正在转云台，这次没转。" + stateText() }
+        owner = who
+        tracking = false
+        if who > .follow { heldUntil = Date().addingTimeInterval(Self.followHold + 4) }
+        defer { if who > .follow { heldUntil = Date().addingTimeInterval(Self.followHold) } }
+
+        var tr = right.map { relative ? now.right + $0 : $0 } ?? now.right
+        var tu = up.map { relative ? now.up + $0 : $0 } ?? now.up
+        var edge: [String] = []
+        if tr > Self.limitYaw { tr = Self.limitYaw; edge.append("右边") }
+        if tr < -Self.limitYaw { tr = -Self.limitYaw; edge.append("左边") }
+        if tu > Self.limitUp { tu = Self.limitUp; edge.append("上面") }
+        if tu < -Self.limitDown { tu = -Self.limitDown; edge.append("下面") }
+        let dy = tr - now.right, dp = (tu - now.up) * upSign   // 换成姿态里的角度差
+        let targetPitch = tu * upSign
+        let moveY = abs(dy) >= Self.tolerance, moveP = abs(dp) >= Self.tolerance
+        let limited = edge.isEmpty ? "" : "\(edge.joined(separator: "、"))到头了，只转到这里。"
+        guard moveY || moveP else { return (edge.isEmpty ? "已经朝着那个方向了。" : limited) + stateText() }
+
+        var notes: [String] = []
+        let small = abs(dy) <= Self.fastBelow && abs(dp) <= Self.fastBelow
+        let known = (!moveY || dirKnown.contains(.yaw)) && (!moveP || dirKnown.contains(.pitch))
+        if small && known {
+            let secs = max(0.1, max(abs(dy), abs(dp)) / Self.fastSpeed)
+            move(yawSpeed: moveY ? dy / secs : 0, pitchSpeed: moveP ? dp / secs : 0, seconds: secs)
+            let token = gen
+            aimed = (tr, targetPitch, Date())
+            try? await Task.sleep(nanoseconds: UInt64((secs + 0.15) * 1e9))
+            guard gen == token else { return "转到一半被打断了。" + stateText() }
+            aimed = (tr, targetPitch, Date())
+            Task { @MainActor in await self.settle(token: token, yaw: tr, pitch: targetPitch) }
+        } else {
+            aimed = nil
+            for (ax, delta) in [(Axis.yaw, dy), (Axis.pitch, dp)] where abs(delta) >= Self.tolerance {
+                let r = await turn(ax, by: delta)
+                if r.verdict != "done" { notes.append("\(ax == .yaw ? "左右" : "上下")\(verdictText(r.verdict))。") }
+                if r.verdict == "abort" { break }
+            }
+            // 等不到下一帧姿态就先报目标；转得不顺利时不报目标，按实测说
+            if notes.isEmpty { aimed = (tr, targetPitch, Date()) }
+        }
+        return (notes.isEmpty ? "转好了。" : notes.joined()) + limited + stateText()
+    }
+
+    /// 快转之后在后台按姿态把偏差补掉（中间有新的转动就不补了）
+    @MainActor
+    private func settle(token: Int, yaw: Double, pitch: Double) async {
+        try? await Task.sleep(nanoseconds: 1_300_000_000)   // 等停稳以后的一帧姿态
+        guard gen == token, connected, let p = pose else { return }
+        let ey = Duml.wrap(yaw - p.yaw), ep = pitch - p.pitch
+        for (ax, e) in [(Axis.yaw, ey), (Axis.pitch, ep)] where abs(e) >= Self.tolerance && abs(e) < 25 {
+            let r = await turn(ax, by: e)
+            if r.verdict == "abort" { return }
+        }
+    }
+
+    /// 停下，并让出控制权
+    func halt() {
+        stopNow()
+        owner = .nobody
+        aimed = nil
+        tracking = false
+        heldUntil = Date().addingTimeInterval(Self.followHold + 4)   // 主人说了停：自动跟随也先别动
+    }
+
+    /// 自动跟随用：按速度转一小会儿（°/s，右、上为正），要一直叫才会一直转，不叫了半秒内自己停。
+    /// 别人正在转、或者刚转完没几秒，返回 nil（让开）。否则返回真正发出去的速度（到限位的那个方向是 0）。
+    func track(right: Double, up: Double) -> (right: Double, up: Double)? {
+        guard connected, !asleep, !busy, Date() >= heldUntil else { tracking = false; return nil }
+        var r = right, u = up
+        if let h = heading {
+            if (h.right >= Self.limitYaw && r > 0) || (h.right <= -Self.limitYaw && r < 0) { r = 0 }
+            if (h.up >= Self.limitUp && u > 0) || (h.up <= -Self.limitDown && u < 0) { u = 0 }
+        }
+        if r == 0 && u == 0 {
+            if tracking { stopNow(); tracking = false }
+            return (0, 0)
+        }
+        owner = .follow
+        aimed = nil
+        tracking = true
+        move(yawSpeed: r, pitchSpeed: u * upSign, seconds: 0.45)
+        return (r, u)
+    }
+
+    /// 把现在的朝向记成正面
+    func setHomeHere() {
+        if let a = attitude { home = (a.yaw, a.pitch); aimed = nil; onPose?(0, 0, connected) }
+    }
+
+    /// 主人手动转一下（设置页的箭头）：°/s，右、上为正
+    func manualMove(right: Double, up: Double, seconds: Double) {
+        owner = .manual
+        aimed = nil
+        tracking = false
+        heldUntil = Date().addingTimeInterval(Self.followHold)
+        move(yawSpeed: right, pitchSpeed: up * upSign, seconds: seconds)
+    }
+
+    /// 一句话说清云台现在的状态，给大模型看：朝哪、还能转多少、电量
+    func stateText() -> String {
+        guard connected else { return "云台没连上。" }
+        guard let h = heading else { return "云台已连上，还没收到朝向。" }
+        func side(_ v: Double, _ pos: String, _ neg: String, _ zero: String) -> String {
+            abs(v) < 1.5 ? zero : "\(v > 0 ? pos : neg) \(Int(abs(v).rounded()))°"
+        }
+        func room(_ v: Double) -> Int { max(0, Int(v.rounded())) }
+        var s = "现在\(side(h.right, "朝右", "朝左", "左右在正面"))、\(side(h.up, "抬头", "低头", "上下是平的"))（相对正面）。"
+        s += "还能往右 \(room(Self.limitYaw - h.right))°、往左 \(room(Self.limitYaw + h.right))°、往上 \(room(Self.limitUp - h.up))°、往下 \(room(Self.limitDown + h.up))°。"
+        if let b = battery { s += "云台电量 \(b)%\(b <= 10 && !charging ? "，快没电了" : "")。" }
+        if asleep { s += "云台在睡眠。" }
+        return s
     }
 
     // MARK: 远程指令 {"do":"gimbal","action":…}
@@ -414,7 +595,15 @@ final class Gimbal: NSObject, ObservableObject {
             break
         }
         guard connected else { return "云台没连上（\(phase.rawValue)）。先发 {\"do\":\"gimbal\",\"action\":\"connect\"}，或者在 App 里点「连接云台」。" }
-        if busy, action != "stop" { return "云台正在转，先发 stop" }
+        if busy, action != "stop" {
+            if owner > .remote { return "主人正在手动转云台，先发 stop" }
+            if owner == .remote { return "云台正在转，先发 stop" }
+            stopNow()   // 大模型或自动跟随在转：遥控端优先，直接顶掉
+        }
+        owner = .remote; aimed = nil
+        tracking = false
+        heldUntil = Date().addingTimeInterval(Self.followHold + 15)   // 闭环最长 15 秒
+        defer { heldUntil = Date().addingTimeInterval(Self.followHold) }
 
         switch action {
         case "stop":
