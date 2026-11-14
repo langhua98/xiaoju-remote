@@ -65,6 +65,10 @@ class CameraHub(
     private val notifier = Notifier(cloud, prefs, device)
     val uploader = Uploader(cloud, store, device, enabled = { monitor.upload }, busy = { watching() })
     private val work = Executors.newSingleThreadExecutor()   // 截图、存小图、发提醒（不卡相机）
+    // 侦测录像的声音：放到自己的线程写（录像切段、写文件时会占着 recorder 的锁，录音线程不能等它，
+    // 等久了麦克风的数据就丢了，直播的声音也跟着一卡一卡）。最多排 4 秒，再多丢最旧的。
+    private val recAudio = java.util.concurrent.ThreadPoolExecutor(1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+        java.util.concurrent.ArrayBlockingQueue<Runnable>(100), java.util.concurrent.ThreadPoolExecutor.DiscardOldestPolicy())
 
     @Volatile private var thread: Thread? = null
 
@@ -95,6 +99,8 @@ class CameraHub(
     private var encLogged = ""
     private var fed = 0
     @Volatile private var h264Broken = false
+    private var brokenBySize = false   // 退回 JPEG 只是因为这个镜头的尺寸不合适（换镜头后再试）
+    private var brokenVersion = -1
     @Volatile private var rot = 0
     @Volatile private var encW = 0
     @Volatile private var encH = 0
@@ -305,6 +311,7 @@ class CameraHub(
         thread?.let { runCatching { it.join(5_000) } }
         uploader.close()
         work.shutdown()
+        recAudio.shutdown()
         detect.shutdown()
         synchronized(engineLock) { engine.close() }
     }
@@ -319,6 +326,8 @@ class CameraHub(
     private fun cameraLoop() = Power.hold { cameraLoopInner() }   // 相机开着时 CPU 一直醒着
 
     @Volatile private var lastOpenErr = ""
+    /** 直播中连着几次开不了相机 */
+    private var liveOpenFails = 0
 
     private fun cameraLoopInner() {
         try {
@@ -337,10 +346,13 @@ class CameraHub(
                 } catch (e: Exception) {
                     // 同样的错只记一次（相机服务卡住时每 5 秒一条，以前会刷满日志）
                     val msg = "相机打不开：${e.message}"
-                    if (msg != lastOpenErr) { lastOpenErr = msg; Bus.push("$msg，5 秒后再试") }
-                    live?.let { endLive() }
+                    // 直播中：先不断直播，1 秒后再开（换清晰度时偶尔开一次失败，以前直播马上就断了）；连着 3 次都不行才结束
+                    val inLive = live != null && ++liveOpenFails < 3
+                    if (msg != lastOpenErr) { lastOpenErr = msg; Bus.push("$msg，${if (inLive) 1 else 5} 秒后再试") }
+                    if (!inLive) { live?.let { endLive() }; liveOpenFails = 0 }
+                    val pause = if (inLive) 1_000 else 5_000
                     var waited = 0
-                    while (wanted() && waited < 5_000) { try { Thread.sleep(200) } catch (ie: InterruptedException) { return }; waited += 200 }
+                    while (wanted() && waited < pause) { try { Thread.sleep(200) } catch (ie: InterruptedException) { return }; waited += 200 }
                 }
             }
         } finally {
@@ -375,6 +387,7 @@ class CameraHub(
             Bus.push("网络好了，码率升到 ${(rateScale * 100).toInt()}%")
         }
         // 侦测录声音：省电侦测时只在录像时开麦克风（守望时关着）
+        liveStats(now)
         setMic((watching() && live?.audio == true) || (monitor.on && monitor.audio && (!monitor.eco || recorder.recording)))
         if (!monitor.on && recorder.recording) recorder.close()
         recorder.tick()
@@ -399,15 +412,90 @@ class CameraHub(
      * 不省电时编码器一直开着（录像能从动静前 pre 秒开始）。
      */
     private fun frame(nv21: ByteArray, w: Int, h: Int, r: Int, ts: Long) {
+        val t0 = System.nanoTime()
+        try { frameInner(nv21, w, h, r, ts) } finally {
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            statWork.addAndGet(ms); statFrames.incrementAndGet()
+            if (ms > statWorkMax) statWorkMax = ms
+        }
+    }
+
+    // ---- 直播实测（每秒一次，发给直连的看的一端，也记到日志）：哪一步慢一眼看得出来 ----
+    private val statFrames = java.util.concurrent.atomic.AtomicInteger()   // 相机线程处理了几帧
+    private val statWork = java.util.concurrent.atomic.AtomicLong()        // 一共花了多少毫秒
+    @Volatile private var statWorkMax = 0L
+    private val statTry = java.util.concurrent.atomic.AtomicInteger()      // 想喂编码器几帧
+    private val statFed = java.util.concurrent.atomic.AtomicInteger()      // 喂进去几帧
+    private val statOut = java.util.concurrent.atomic.AtomicInteger()      // 编出来 / 发出去几帧
+    private val statLat = java.util.concurrent.atomic.AtomicLong()         // 从相机交帧到编好，一共多少毫秒
+    private val statBytes = java.util.concurrent.atomic.AtomicLong()
+    private var statAt = 0L
+    private var statCb = 0L
+    private var statDrops = 0
+    private var statLogAt = 0L
+    private var slowSecs = 0
+    @Volatile private var slowEncoder = ""
+    @Volatile var lastStats = ""; private set
+
+    /** 相机线程管家里每秒算一次。 */
+    private fun liveStats(now: Long) {
+        val l = live
+        if (l == null || l.watched().isEmpty()) { statAt = 0L; return }
+        val drops = l.sinks().sumOf { it.droppedFrames }
+        if (statAt == 0L) {
+            statAt = now; statCb = CamStats.callbacks; statDrops = drops; statLogAt = now; slowSecs = 0
+            for (a in listOf(statFrames, statTry, statFed, statOut)) a.set(0)
+            statWork.set(0); statLat.set(0); statBytes.set(0); statWorkMax = 0
+            return
+        }
+        val dt = now - statAt
+        if (dt < 1000) return
+        fun per(n: Int) = Math.round(n * 1000.0 / dt).toInt()
+        val cam = Math.round((CamStats.callbacks - statCb) * 1000.0 / dt).toInt()
+        val frames = statFrames.getAndSet(0)
+        val work = statWork.getAndSet(0)
+        val workMax = statWorkMax; statWorkMax = 0
+        val tries = statTry.getAndSet(0); val fed = statFed.getAndSet(0)
+        val out = statOut.getAndSet(0); val lat = statLat.getAndSet(0)
+        val kbps = statBytes.getAndSet(0) * 8 / dt
+        val h = settings.codec == LiveSettings.H264 && !h264Broken
+        val dropN = drops - statDrops
+        val j = JSONObject().put("v", Updater.versionName(ctx)).put("codec", if (h) "h264" else "jpeg")
+            .put("cam", cam).put("used", per(frames)).put("fed", per(fed)).put("out", per(out)).put("want", settings.fps)
+            .put("lat", if (out > 0) lat / out else -1).put("work", if (frames > 0) work / frames else 0).put("work_max", workMax)
+            .put("drop", dropN).put("kbps", kbps).put("target", encRate / 1000)
+            .put("boost", Math.round(encBoost * 10) / 10.0).put("scale", Math.round(rateScale * 100))
+            .put("enc", if (h) enc?.name ?: "" else "").put("size", "${encW}x$encH").put("range", CamStats.fpsNow)
+        statAt = now; statCb = CamStats.callbacks; statDrops = drops
+        val text = j.toString()
+        lastStats = text
+        val b = text.toByteArray(Charsets.UTF_8)
+        val msg = ByteArray(b.size + 1); msg[0] = 5; System.arraycopy(b, 0, msg, 1, b.size)
+        for (s in l.lan) s.sendStats(msg)
+        if (now - statLogAt >= 10_000) {
+            statLogAt = now
+            Bus.push("直播实测：相机 $cam 帧/秒，用 ${per(frames)}，喂 ${per(fed)}，出 ${per(out)}；编码延迟 ${if (out > 0) lat / out else -1} ms；" +
+                "每帧处理 ${if (frames > 0) work / frames else 0}（最长 $workMax）ms；$kbps kbps；丢 $dropN")
+        }
+        // 硬件编码器跟不上（喂 10 帧只出五六帧）连着 6 秒：这台手机的编码器太慢，改用 JPEG（同一个 Wi-Fi 里 JPEG 反而又快又清楚）
+        if (h && tries >= 5 && out * 10 < tries * 6) {
+            if (++slowSecs >= 6) { slowSecs = 0; slowEncoder = "硬件编码器太慢（每秒要 ${per(tries)} 帧只出 ${per(out)} 帧）" }
+        } else slowSecs = 0
+    }
+
+    private fun frameInner(nv21: ByteArray, w: Int, h: Int, r: Int, ts: Long) {
         rot = r
         val l = live
         val sinks = l?.watched().orEmpty()
         val m = monitor
         val now = System.currentTimeMillis()
+        // 上次是因为尺寸不合适才退回 JPEG：换了镜头 / 清晰度，新的尺寸可能可以，再试硬件编码
+        if (h264Broken && brokenBySize && settings.version != brokenVersion) { h264Broken = false; brokenBySize = false; settings.codecNote = "" }
         // 刚开相机的第一帧：这一轮从这里算；头几帧曝光还在变，不看（间歇守望每轮都重开相机）
         if (sessionAt == 0L) {
             sessionAt = now; settleUntil = now + SETTLE_MS
             lastOpenErr = ""   // 相机又好了：下次再打不开要再记
+            liveOpenFails = 0
             engine.pause()
             preroll.clear()   // 上一轮留的帧隔着一段空白，不要了
         }
@@ -429,7 +517,7 @@ class CameraHub(
         val wantH264 = !h264Broken && (rec || liveH264)
         if (wantH264) {
             if (enc == null && eco && rec) prerollPending = true
-            h264(nv21, w, h, ts)
+            h264(nv21, w, h, ts, liveH264)
         } else if (enc != null) {
             closeEncoder()
             if (eco) recorder.dropBuffered()   // 回到守望：内存里的旧录像不要了（下次从新留的几帧开始）
@@ -439,17 +527,23 @@ class CameraHub(
         if (l != null && sinks.isNotEmpty() && (settings.codec == LiveSettings.JPEG || h264Broken)) jpegLive(l, sinks, nv21, w, h, r, ts)
     }
 
-    private fun h264(nv21: ByteArray, w: Int, h: Int, ts: Long) {
-        if (!H264.sizeOk(w, h)) { giveUp("这台手机的相机没有硬件编码合适的尺寸（${w}×$h）"); return }
-        val rate = maxOf(150_000, (H264.bitrate(settings.width, settings.fps, settings.quality) * rateScale).toInt())
+    private fun h264(nv21: ByteArray, w: Int, h: Int, ts: Long, liveNow: Boolean) {
+        if (!H264.sizeOk(w, h)) {
+            giveUp("这个镜头没有硬件编码合适的尺寸（${w}×$h）"); brokenBySize = true; brokenVersion = settings.version; return
+        }
+        val want = maxOf(H264.MIN_BITRATE / 2, (H264.bitrate(settings.width, settings.fps, settings.quality) * rateScale).toInt())
+        // 有人看时：编码器实际出得太少就多要一些（见 H264.boost）
+        val rate = if (liveNow) (want * encBoost).toLong().coerceAtMost(8_000_000L).toInt() else want
         val conf = "${w}x$h/${settings.fps}/$rate"
         try {
+            if (liveNow && slowEncoder.isNotEmpty()) { val why = slowEncoder; slowEncoder = ""; giveUp(why); return }
             if (restartEnc) { restartEnc = false; closeEncoder() }   // 重开：第一帧就是关键帧
             if (enc == null || conf != encConf) {
                 closeEncoder()
                 encW = w; encH = h
                 val e = H264Encoder(w, h, settings.fps, rate) { data, key, t -> onEncoded(data, key, t) }
                 enc = e; encConf = conf; encSince = System.currentTimeMillis(); fed = 0; encRate = rate
+                measAt = 0L
                 if (conf != encLogged) { encLogged = conf; Bus.push("H.264 硬件编码：${e.name}，${w}×$h，${rate / 1000} kbps") }
                 // 省电侦测刚开始录：先喂守望时留的几帧（动静前一两秒），录像从那里开始
                 if (prerollPending) {
@@ -464,7 +558,10 @@ class CameraHub(
                 }
             }
             val e = enc ?: return
-            if (e.feed(nv21, ts)) fed++
+            // 有人看时等编码器一小会儿（以前它一忙这一帧就丢了，帧率上不去）
+            if (liveNow) statTry.incrementAndGet()
+            if (e.feed(nv21, ts, if (liveNow) 15_000 else 0)) { fed++; if (liveNow) statFed.incrementAndGet() }
+            if (liveNow) measure(want)
             if (motionAt > 0) { lastMotionToRecMs = System.currentTimeMillis() - motionAt; motionAt = 0L }
             if (e.produced == 0 && fed > 5 && System.currentTimeMillis() - encSince > 3000) giveUp("硬件编码器不出画面")
         } catch (t: Throwable) {
@@ -472,18 +569,43 @@ class CameraHub(
         }
     }
 
+    // 量编码器实际出的码率（相机线程上用；outBytes 在编码器线程上加）
+    private val outBytes = java.util.concurrent.atomic.AtomicLong()
+    private var measAt = 0L
+    private var measFed = 0
+    @Volatile private var encBoost = 1.0
+
+    /** 每 4 秒看一次编码器实际出了多少：比要的少很多就把倍数调高（下一帧按新码率重开编码器）。 */
+    private fun measure(want: Int) {
+        val now = System.currentTimeMillis()
+        if (measAt == 0L) { measAt = now; measFed = fed; outBytes.set(0); return }
+        if (now - measAt < 4_000) return
+        val actual = outBytes.getAndSet(0) * 8000 / (now - measAt)
+        val fedN = fed - measFed
+        measAt = now; measFed = fed
+        if (fedN < 12) return   // 帧太少，量不准
+        val b = H264.boost(encBoost, want, actual)
+        if (b != encBoost) {
+            Bus.push("编码器要 ${want / 1000} kbps 只出 ${actual / 1000} kbps，给它的码率调到 ${String.format(java.util.Locale.US, "%.1f", b)} 倍")
+            encBoost = b
+        }
+    }
+
     /** 编码器线程上：编好的一帧发给每个在看的（云盘 / 直连），交给录像。 */
     private fun onEncoded(data: ByteArray, key: Boolean, ts: Long) {
+        outBytes.addAndGet(data.size.toLong())
         val l = live
         if (l != null && settings.codec == LiveSettings.H264) {
             val sinks = l.watched()
             if (sinks.isNotEmpty()) {
                 val msg = StreamClient.h264(data, rot, ts, key)
-                // 积压超过大约 0.3 秒的数据就丢（延迟不越拖越长），丢了马上要关键帧
-                val limit = maxOf(24L * 1024, encRate / 8L * 3 / 10)
+                // 积压超过大约 0.4 秒的数据就丢（延迟不越拖越长），丢了等关键帧。
+                // 最少 64 KB：以前是 24 KB，一个关键帧就有二三十 KB，刚发完关键帧后面的帧就被当成积压丢掉，帧率上不去、码率还被降
+                val limit = maxOf(64L * 1024, encRate / 8L * 4 / 10)
                 var dropped = false
                 for (s in sinks) if (!s.sendH264(msg, key, limit) && s.watchers > 0) dropped = true
                 if (!dropped) framesOut.incrementAndGet()
+                statOut.incrementAndGet(); statLat.addAndGet(StreamClient.now() - ts); statBytes.addAndGet(data.size.toLong())
                 if (dropped) onDrop()
             }
         }
@@ -512,15 +634,19 @@ class CameraHub(
             rateScale = maxOf(0.3, rateScale * 0.7); rateChangedAt = now; drops.clear()
             Bus.push("网络跟不上，码率降到 ${(rateScale * 100).toInt()}%")
         }
-        forceKey()
+        forceKey(restartOld = false)
     }
 
-    /** 马上出一个关键帧：4.4+ 直接要，更老的重开编码器（一秒最多一次）。 */
-    private fun forceKey() {
+    /**
+     * 马上出一个关键帧：4.4+ 直接要。更老的（S4 是 4.2）只能重开编码器，restartOld = true 才重开（一秒最多一次）。
+     * 网络跟不上丢帧时不重开：重开编码器要在相机线程上卡几百毫秒，丢帧越多重开越多，画面一顿一顿的；
+     * 编码器每秒本来就出一个关键帧，等它就行（最多 1 秒）。
+     */
+    private fun forceKey(restartOld: Boolean = true) {
         val now = System.currentTimeMillis()
         if (now - keyAt < 1_000) return
-        keyAt = now
-        if (android.os.Build.VERSION.SDK_INT >= 19) enc?.requestKeyframe() else if (enc != null) restartEnc = true
+        if (android.os.Build.VERSION.SDK_INT >= 19) { keyAt = now; enc?.requestKeyframe() }
+        else if (restartOld && enc != null) { keyAt = now; restartEnc = true }
     }
 
     private fun giveUp(why: String) {
@@ -540,6 +666,7 @@ class CameraHub(
             val msg = if (l.av) StreamClient.frameTs(b, r, ts) else StreamClient.frame(b, r)
             for (s in sinks) s.send(msg)
             framesOut.incrementAndGet()
+            statOut.incrementAndGet(); statLat.addAndGet(StreamClient.now() - ts); statBytes.addAndGet(b.size.toLong())
         } catch (e: Throwable) { /* 丢这一帧 */ }
     }
 
@@ -576,7 +703,8 @@ class CameraHub(
             return
         }
         // 事件进行中：每 1.5 秒再认一次（新进来的人、刚才没认出来的）。画面拷到复用的缓冲区，不每次分配
-        if (recorder.recording && !detBusy && now - lastDetect > 1_500 && objectsOn()) {
+        // 有人在看实时画面时不认（跑模型很吃 CPU，这台老手机上会把直播拖卡）
+        if (recorder.recording && !detBusy && now - lastDetect > 1_500 && objectsOn() && !watching()) {
             lastDetect = now
             detBusy = true
             if (aiBuf.size != nv21.size) aiBuf = ByteArray(nv21.size)
@@ -645,7 +773,8 @@ class CameraHub(
         val m = monitor
         detect.execute { Power.hold {
             try {
-                val ds = if (objectsOn()) recognize(nv21, w, h) else emptyList()
+                val skipAi = watching()   // 有人在看实时画面：不跑模型，直播要紧
+                val ds = if (objectsOn() && !skipAi) recognize(nv21, w, h) else emptyList()
                 val labels = merge(ds)
                 e.labels = labels
                 if (labels.isNotEmpty()) Bus.push("认出来：$labels")
@@ -653,7 +782,7 @@ class CameraHub(
                 store.jpg(e.name).writeBytes(big)
                 store.thumb(e.name).writeBytes(Snapshot.jpeg(nv21, w, h, r, 60, 200, ds))
                 // 「只在有人时提醒」：认出人才发；认不了（没带模型）就照常发
-                if (m.notify && (!m.personOnly || !ObjectDetector.ready(ctx) || ds.any { it.isPerson })) {
+                if (m.notify && (!m.personOnly || skipAi || !ObjectDetector.ready(ctx) || ds.any { it.isPerson })) {
                     notifier.event(e.at, big, m.cooldownMin, labels)
                     evNotified = true
                 }
@@ -687,16 +816,21 @@ class CameraHub(
             if (a.start()) mic = a else { micFailedAt = System.currentTimeMillis(); Bus.push("声音没开成：${a.error}") }
         } else if (!on && m != null) {
             m.stop(); mic = null
+            if (m.resyncs > 0) Bus.push("声音：这次录音中途对了 ${m.resyncs} 次钟（麦克风被耽误、丢过声音）")
         }
     }
 
+    /** 在录音线程上调：只做不会卡的事（发出去只是排进发送队列），写录像交给 recAudio。 */
     private fun onAudio(data: ByteArray, codec: Int, ts: Long) {
         val l = live
         if (l != null && l.audio) {
             val sinks = l.watched()
             if (sinks.isNotEmpty()) { val msg = StreamClient.audio(data, codec, ts); for (s in sinks) s.sendAudio(msg) }
         }
-        if (monitor.on && monitor.audio) recorder.audio(data, if (codec == StreamClient.AUDIO_ULAW_8K) 8000 else 16000, ts)
+        if (monitor.on && monitor.audio) {
+            val rate = if (codec == StreamClient.AUDIO_ULAW_8K) 8000 else 16000
+            recAudio.execute { recorder.audio(data, rate, ts) }
+        }
     }
 
     private fun applyMonitor() {
