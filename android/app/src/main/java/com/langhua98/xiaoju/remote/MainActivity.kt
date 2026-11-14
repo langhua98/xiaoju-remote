@@ -71,6 +71,12 @@ class MainActivity : Activity() {
         Bus.onLog = { lines -> log.text = lines.takeLast(80).joinToString("\n"); refresh() }
         log.text = Bus.snapshot().takeLast(80).joinToString("\n")
         refresh()
+        // 0.39：打开 App 就自己待命（没点过「停止」的话），不用手点。系统安装界面装完点「打开」也算
+        if (prefs.standby && !Bus.running && prefs.token.isNotBlank()) {
+            Bus.push("自动开始待命")
+            RemoteService.start(this)
+            toggle.postDelayed({ refresh() }, 400)
+        }
     }
 
     override fun onResume() { super.onResume(); refresh() }
