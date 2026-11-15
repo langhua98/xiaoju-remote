@@ -2,6 +2,8 @@
 
 本仓库放「小橘遥控」的两个**被控端**：根目录是 **iPhone 被控端**（Vania，从 `langhua98/meta-work` 的 `src/xiaoju-remote-ios/` 拆出来），`android/` 是 **安卓被控端**（2026-11 从 meta-work 的 `src/xiaoju-remote-android/` 搬过来，带着提交历史）。仓库主人是 William，用中文交流。
 
+> **Vania 的安卓版在单独的仓库 `langhua98/vania-android`**（Kotlin，照着这里的 iPhone 版一批一批重写）。这里的 `Robot/live2d`（3D 角色网页）是两边共用的源头：改了角色、重新打包 `yuki.js` 以后，到那边跑 `sh scripts/sync-face.sh <本仓库路径>` 同步过去。iPhone 版的行为、提示词、标签改了，那边也要跟着改。
+
 > Yunlai 机器人（机器人模式：3D 角色 Yuki、对话、语音、云台）的总览见 [YUNLAI_ROBOT.md](YUNLAI_ROBOT.md)。
 
 ## 这个 App 是干什么的
