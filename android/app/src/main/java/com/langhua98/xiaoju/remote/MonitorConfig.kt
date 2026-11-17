@@ -42,6 +42,15 @@ class MonitorConfig(
     val engine: String = KOTLIN,
     val standbyFps: Int = 2,
     val confirm: Int = 3,
+    /**
+     * 声音监听（0.41）：和移动侦测各开各的。开着时麦克风一直开着只算音量（不存、不传），有声音才录一段 .wav
+     *（包括有声音前 soundPreSec 秒），最后一次有声音后 soundPostSec 秒收尾。麦克风一直开着，CPU 不能睡，要插着电。
+     */
+    val sound: Boolean = false,
+    val soundSens: Int = 50,            // 1…100，越大越灵敏
+    val soundPreSec: Int = 3,           // 有声音前留几秒
+    val soundPostSec: Int = 10,         // 安静几秒后收尾
+    val soundNotify: Boolean = false,   // 录到一段就发 Telegram 提醒（只有一句话，冷却和移动侦测用同一个 cooldownMin）
 ) {
     fun toJson(): JSONObject = JSONObject().put("on", on).put("sensitivity", sensitivity)
         .put("regions", JSONArray().apply { regions.forEach { r -> put(JSONArray().apply { r.forEach { put(it.toDouble()) } }) } })
@@ -49,6 +58,8 @@ class MonitorConfig(
         .put("audio", audio).put("upload", upload).put("lens", lens).put("width", width).put("fps", fps).put("quality", quality).put("eco", eco)
         .put("duty", duty).put("duty_on", dutyOn).put("duty_off", dutyOff)
         .put("engine", engine).put("standby_fps", standbyFps).put("confirm", confirm)
+        .put("sound", sound).put("sound_sens", soundSens).put("sound_pre", soundPreSec).put("sound_post", soundPostSec)
+        .put("sound_notify", soundNotify)
 
     /** 省电侦测时动静前留几秒画面（守望时每秒 4 帧，最多 3 秒，内存另外有上限） */
     val ecoPreMs: Long get() = minOf(preSec, 3) * 1000L
@@ -80,6 +91,11 @@ class MonitorConfig(
         engine = if (c.has("engine")) c.optString("engine").takeIf { it in ENGINES } ?: engine else engine,
         standbyFps = if (c.has("standby_fps")) c.optInt("standby_fps", standbyFps).coerceIn(1, 4) else standbyFps,
         confirm = if (c.has("confirm")) c.optInt("confirm", confirm).coerceIn(2, 6) else confirm,
+        sound = if (c.has("sound")) c.optBoolean("sound") else sound,
+        soundSens = if (c.has("sound_sens")) c.optInt("sound_sens", soundSens).coerceIn(1, 100) else soundSens,
+        soundPreSec = if (c.has("sound_pre")) c.optInt("sound_pre", soundPreSec).coerceIn(0, 10) else soundPreSec,
+        soundPostSec = if (c.has("sound_post")) c.optInt("sound_post", soundPostSec).coerceIn(3, 120) else soundPostSec,
+        soundNotify = if (c.has("sound_notify")) c.optBoolean("sound_notify") else soundNotify,
     )
 
     /** 现在要不要间歇守望（只在省电侦测里才有） */

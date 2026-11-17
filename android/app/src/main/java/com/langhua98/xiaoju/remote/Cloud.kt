@@ -78,9 +78,9 @@ class Cloud(base: String, private val token: String) {
     fun download(id: String): ByteArray = Net.request("GET", "$api/items/$id/content", token)
 
     /** 慢慢传一个文件（限速 bps 字节/秒），边读边传，给录像备份用。已经有同名的文件当传过了。 */
-    fun uploadFileSlow(path: String, file: java.io.File, bps: Int) {
+    fun uploadFileSlow(path: String, file: java.io.File, bps: Int, type: String = "video/quicktime") {
         try {
-            Net.requestFile("PUT", "$api/files?path=${q(path)}", token, file, "video/quicktime", readTimeoutMs = 120_000, throttleBps = bps)
+            Net.requestFile("PUT", "$api/files?path=${q(path)}", token, file, type, readTimeoutMs = 120_000, throttleBps = bps)
         } catch (e: HttpError) {
             if (e.code != 409) throw e
         }

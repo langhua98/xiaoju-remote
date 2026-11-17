@@ -197,6 +197,8 @@ iPhone 夹在大疆 OM 手机云台上就是机器人的身体。协议来自 `l
 - 移动侦测引擎（0.29）：Kotlin 版 `MotionDetector.kt` 是基准（默认），C++ 超低功耗版在 `app/src/main/cpp/motion/`（库 `libxjmotion.so`，不依赖 ncnn），
   `MotionEngine.kt` 是两边的接口和实测统计，`monitor` 的 `engine` 选（kotlin / native / ab）。改算法先跑 `android/tests/motion/run.sh`，
   模拟场景在 `tests/motion/scenes.h` 和 `app/src/test/.../MotionScenes.kt` 各一份，要一起改（`MotionBenchTest` 核对校验和）。
+- 声音监听（0.41，`SoundDetector.kt` / `SoundRecorder.kt`）：`monitor` 的 `sound…` 字段，和移动侦测各开各的。麦克风一直开着算音量，有声音才录一段 `.wav`（只有声音），和录像放同一个事件列表（`EventInfo.sound`）、一样备份。
+  麦克风只有一个，直播、侦测录像、声音监听都经 `CameraHub.syncMic` 开关；说明见 `android/README.md`「0.41」。控制端在 meta-work 的 `RemoteMonitor.swift`（小橘推送 0.5.2）。
 - 联网用 Conscrypt 2.5.2 + App 自带根证书 `res/raw/roots.pem`；WebSocket 用 OkHttp 3.12。
 - 编译：`.github/workflows/android.yml`，只能手动触发。它先用 `scripts/build-ncnn-android.sh` 编 ncnn，跑 `android/tests/detector` 和 Kotlin 单元测试，再编 APK。
   只改 `android/` 不会触发 iPhone 的 ipa 编译（`build.yml` 只看 `App/`、`Robot/live2d/`、`Tests/`、`project.yml`）。

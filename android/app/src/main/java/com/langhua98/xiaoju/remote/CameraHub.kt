@@ -72,6 +72,17 @@ class CameraHub(
     private val recAudio = java.util.concurrent.ThreadPoolExecutor(1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
         java.util.concurrent.ArrayBlockingQueue<Runnable>(100), java.util.concurrent.ThreadPoolExecutor.DiscardOldestPolicy())
 
+    // 声音监听（0.41）：麦克风一直开着算音量，有声音才录一段 .wav。判断、写文件在自己的线程上（不占录音线程）；
+    // 另有一条「sound-watch」线程每秒看一眼：麦克风该不该开、录音该不该收尾，并且一直拿着 CPU 锁（CPU 睡了麦克风就停了）
+    private val soundDet = SoundDetector()
+    private val soundRec = SoundRecorder(store)
+    private val soundExec = java.util.concurrent.ThreadPoolExecutor(1, 1, 0L, java.util.concurrent.TimeUnit.MILLISECONDS,
+        java.util.concurrent.ArrayBlockingQueue<Runnable>(100), java.util.concurrent.ThreadPoolExecutor.DiscardOldestPolicy())
+    private var soundThread: Thread? = null          // 只在 synchronized(this) 里看、改
+    @Volatile private var soundRunning = false       // sound-watch 线程在管着麦克风
+    @Volatile private var micPaused = false          // 录音指令要用麦克风，声音监听先让一让
+    private val micLock = Object()
+
     @Volatile private var thread: Thread? = null
 
     // 实时画面：一次直播 = 云盘直播通道的推流 + 同一个 Wi-Fi 里直连进来的观看端
@@ -122,8 +133,8 @@ class CameraHub(
     @Volatile private var lastEvent = ""
 
     // 声音
-    private var mic: AudioCapture? = null
-    private var micFailedAt = 0L
+    @Volatile private var mic: AudioCapture? = null
+    @Volatile private var micFailedAt = 0L
 
     // 侦测 / 直播时拍照：从画面截一张
     @Volatile private var grabLatch: CountDownLatch? = null
@@ -143,17 +154,39 @@ class CameraHub(
             work.execute { store.cleanup() }
         }
         recorder.onError = { Bus.push(it) }
+        soundRec.onClosed = { e ->
+            Bus.push("录好一段声音：${e.name}，${e.durMs / 1000} 秒")
+            work.execute { store.cleanup() }
+        }
+        soundRec.onError = { Bus.push(it) }
     }
 
     val cameraOn get() = thread?.isAlive == true
-    /** 侦测正在用麦克风（录音指令要让一让） */
-    val micOn get() = mic != null
+    /** 直播、侦测录像正在用麦克风（录音指令只能等）。只有声音监听在用时不算：它可以让一让，见 withMicFree */
+    val micOn get() = mic != null && micForAv()
+    /** 声音监听正在录一段（装新版本要等它录完） */
+    val soundRecording get() = soundRec.recording
+
+    /** 录音指令要用麦克风：声音监听先把麦克风放开，做完再接着听。 */
+    fun <T> withMicFree(block: () -> T): T {
+        micPaused = true
+        syncMic()
+        try { return block() } finally {
+            micPaused = false
+            syncMic()
+        }
+    }
     fun liveActive() = live != null
     fun watching() = live?.watched()?.isNotEmpty() == true
     private fun wanted() = serviceRunning() && (monitor.on || liveActive())
 
     /** 服务启动时：上次开着侦测就接着侦测。 */
     fun resume() {
+        if (monitor.sound) {
+            Bus.push("接着声音监听")
+            ensureSound()
+            if (!monitor.on) status(stateText())
+        }
         if (!monitor.on) return
         settings.apply(monitor.cameraJson())
         Bus.push("接着移动侦测")
@@ -176,8 +209,12 @@ class CameraHub(
             ensure()
             if (!old.on && m.notify) notifier.text("移动侦测已打开，有动静会发到这里。")
         }
+        if (m.sound) {
+            ensureSound()
+            if (!old.sound && m.soundNotify) notifier.text("声音监听已打开，录到声音会发到这里。")
+        }
         status(stateText())
-        return describe()
+        return describe() + if (old.sound && !m.sound) "\n声音监听已关闭" else ""
     }
 
     /**
@@ -250,7 +287,15 @@ class CameraHub(
             .put("current_ma", PowerMeter.currentMa(3, 100) ?: -1)
             .put("power", powerJson())
             .put("engine", mstats.json(engine).put("note", engineNote))
+            .put("sound", soundJson())
     }
+
+    /** 声音监听的状态：在不在听、现在的音量和底噪（分贝）、门槛、是不是正在录。 */
+    private fun soundJson(): JSONObject = JSONObject().put("on", monitor.sound)
+        .put("listening", soundRunning && mic != null)
+        .put("recording", soundRec.recording)
+        .put("level", Math.round(soundDet.level)).put("floor", Math.round(soundDet.floor))
+        .put("margin", Math.round(soundDet.marginDb))
 
     /** 侦测引擎的实测（「设备信息」里看）。没开侦测返回空。 */
     fun engineText(): String = if (!monitor.on) "" else mstats.text(engine) + if (engineNote.isEmpty()) "" else "\n$engineNote"
@@ -300,8 +345,8 @@ class CameraHub(
             val o = e.toJson()
             val t = store.thumb(e.name)
             if (t.exists() && t.length() < 64 * 1024) o.put("thumb", Base64.encodeToString(t.readBytes(), Base64.NO_WRAP))
-            val mov = store.mov(e.name)
-            o.put("size", mov.length()).put("local", mov.exists())   // local=false：手机上的视频删了（备份好了，去云盘看）
+            val mov = store.media(e)
+            o.put("size", mov.length()).put("local", mov.exists())   // local=false：手机上的视频 / 录音删了（备份好了，去云盘看）
             a.put(o)
         }
         return a
@@ -313,9 +358,12 @@ class CameraHub(
         live?.sinks()?.forEach { it.close() }
         lanServer.close()
         thread?.let { runCatching { it.join(5_000) } }
+        val st = synchronized(this) { soundThread }
+        st?.let { it.interrupt(); runCatching { it.join(3_000) } }
         uploader.close()
         work.shutdown()
         recAudio.shutdown()
+        soundExec.shutdown()
         recIo.shutdown()   // 排着的写完再停（正在录的那段由 recorder.close 收尾）
         detect.shutdown()
         synchronized(engineLock) { engine.close() }
@@ -362,7 +410,7 @@ class CameraHub(
             }
         } finally {
             closeEncoder()
-            setMic(false)
+            syncMic(av = false)   // 相机线程要退了：直播、录像不用麦克风了（声音监听还开着的话麦克风留给它）
             recorder.close()
             engine.reset()
             if (live != null) endLive()
@@ -393,7 +441,7 @@ class CameraHub(
         }
         // 侦测录声音：省电侦测时只在录像时开麦克风（守望时关着）
         liveStats(now)
-        setMic((watching() && live?.audio == true) || (monitor.on && monitor.audio && (!monitor.eco || recorder.recording)))
+        syncMic()
         if (!monitor.on && recorder.recording) recorder.close()
         recorder.tick()
     }
@@ -823,6 +871,64 @@ class CameraHub(
         }
     }
 
+    /** 直播要声音、侦测录像要声音时要麦克风（省电侦测时只在录像时要）。 */
+    private fun micForAv(): Boolean =
+        (watching() && live?.audio == true) || (monitor.on && monitor.audio && (!monitor.eco || recorder.recording))
+
+    private fun soundWanted(): Boolean = serviceRunning() && monitor.sound
+
+    /**
+     * 麦克风该开就开、该关就关。相机线程（管家）和 sound-watch 线程都会调，所以加锁。
+     * av：直播 / 侦测录像要不要；声音监听要不要看 soundRunning（sound-watch 线程活着才算，它退的时候会来关）。
+     */
+    private fun syncMic(av: Boolean = micForAv()) {
+        synchronized(micLock) { setMic(!micPaused && (av || (soundRunning && soundWanted()))) }
+    }
+
+    /** 开着声音监听就把 sound-watch 线程拉起来（已经在跑就不动）。 */
+    @Synchronized private fun ensureSound() {
+        if (soundThread != null || !soundWanted()) return
+        soundRunning = true
+        soundThread = Thread({ soundLoop() }, "sound-watch").apply { isDaemon = true; start() }
+    }
+
+    /** sound-watch 线程：声音监听开着时一直拿着 CPU 锁，每秒看一眼麦克风和录音。关了监听、停了待命就退。 */
+    private fun soundLoop() {
+        Power.acquire()
+        try {
+            while (true) {
+                while (soundWanted()) {
+                    syncMic()
+                    soundRec.tick()
+                    try { Thread.sleep(1_000) } catch (e: InterruptedException) { /* 要停了：回去看 soundWanted */ }
+                }
+                soundRunning = false
+                syncMic()
+                soundRec.close()
+                synchronized(this) {
+                    // 刚关又马上开了：接着听；不然退（和 ensureSound 用同一把锁，不会两边都以为对方在管）
+                    if (!soundWanted()) { soundThread = null; return }
+                    soundRunning = true
+                }
+            }
+        } finally {
+            Power.release()
+            status(stateText())
+        }
+    }
+
+    /** 声音监听线程上：这一包算不算有声音，要不要录。 */
+    private fun soundChunk(data: ByteArray, rate: Int, ts: Long) {
+        val m = monitor
+        if (!m.sound || !soundRunning) return
+        val loud = soundDet.feed(data, rate)
+        if (soundRec.feed(data, rate, ts, loud)) {
+            val e = soundRec.current
+            Bus.push("有声音：${e?.name ?: ""}（音量 ${Math.round(soundDet.level)}，底噪 ${Math.round(soundDet.floor)}）")
+            if (m.soundNotify && e != null) notifier.sound(e.at, m.cooldownMin)
+        }
+    }
+
     private fun setMic(on: Boolean) {
         val m = mic
         if (on && m == null) {
@@ -831,6 +937,7 @@ class CameraHub(
                 micFailedAt = System.currentTimeMillis(); return
             }
             val a = AudioCapture { data, codec, ts -> onAudio(data, codec, ts) }
+            soundDet.reset()   // 麦克风重新开：底噪重新学（刚开的 1.5 秒不报）
             if (a.start()) mic = a else { micFailedAt = System.currentTimeMillis(); Bus.push("声音没开成：${a.error}") }
         } else if (!on && m != null) {
             m.stop(); mic = null
@@ -857,6 +964,10 @@ class CameraHub(
             val rate = if (codec == StreamClient.AUDIO_ULAW_8K) 8000 else 16000
             recAudio.execute { recorder.audio(data, rate, ts) }
         }
+        if (monitor.sound && soundRunning) {
+            val rate = if (codec == StreamClient.AUDIO_ULAW_8K) 8000 else 16000
+            soundExec.execute { soundChunk(data, rate, ts) }
+        }
     }
 
     private fun applyMonitor() {
@@ -865,6 +976,9 @@ class CameraHub(
         preroll.windowMs = if (m.eco) m.ecoPreMs else 0
         recorder.postMs = m.postSec * 1000L
         detector.sensitivity = m.sensitivity
+        soundDet.sensitivity = m.soundSens
+        soundRec.preMs = m.soundPreSec * 1000L
+        soundRec.postMs = m.soundPostSec * 1000L
         pickEngine(m)
         regionsDirty = true
     }
@@ -879,17 +993,35 @@ class CameraHub(
         else -> "record"
     }
 
-    private fun stateText(): String = when {
-        monitor.on && liveActive() -> "正在被远程使用：移动侦测 + 实时画面"
-        monitor.on && monitor.dutyActive -> "正在被远程使用：移动侦测中（间歇守望）"
-        monitor.on && monitor.eco -> "正在被远程使用：移动侦测中（省电）"
-        monitor.on -> "正在被远程使用：移动侦测中"
-        liveActive() -> "正在被远程使用：实时画面"
-        else -> "待命中，等指令"
+    /** 通知栏上的一句话：现在被远程用来做什么（声音监听开着也要写出来）。 */
+    fun stateText(): String {
+        val base = when {
+            monitor.on && liveActive() -> "正在被远程使用：移动侦测 + 实时画面"
+            monitor.on && monitor.dutyActive -> "正在被远程使用：移动侦测中（间歇守望）"
+            monitor.on && monitor.eco -> "正在被远程使用：移动侦测中（省电）"
+            monitor.on -> "正在被远程使用：移动侦测中"
+            liveActive() -> "正在被远程使用：实时画面"
+            else -> ""
+        }
+        return when {
+            base.isEmpty() && monitor.sound -> "正在被远程使用：声音监听中（麦克风开着）"
+            base.isEmpty() -> "待命中，等指令"
+            monitor.sound -> "$base + 声音监听"
+            else -> base
+        }
     }
 
     /** 回执里的一句话。 */
     fun describe(): String {
+        val m = monitor
+        if (!m.sound) return describeMotion()
+        return describeMotion() + "\n声音监听已打开：灵敏度 ${m.soundSens}（比底噪高 ${Math.round(soundDet.marginDb)} 分贝算有声音），" +
+            "有声音前留 ${m.soundPreSec} 秒、安静 ${m.soundPostSec} 秒后收尾，只录声音" +
+            (if (m.soundNotify) "，Telegram 提醒（隔 ${m.cooldownMin} 分钟）" else "，不提醒") +
+            "。麦克风一直开着，手机要插着电"
+    }
+
+    private fun describeMotion(): String {
         val m = monitor
         if (!m.on) return "移动侦测已关闭（录好的 ${store.list().size} 段还在手机上）"
         val area = if (m.regions.isEmpty()) "整个画面" else "${m.regions.size} 个区域"

@@ -14,37 +14,49 @@ class EventInfo(
     var motions: Int = 1,         // 这段里检测到几次动静
     var video: Boolean = false,   // 有没有视频（硬件编码用不了时只有截图）
     var uploaded: String = "",    // 备份到云盘的路径，空 = 还没备份
+    val sound: Boolean = false,   // 声音监听录的一段（0.41）：只有声音，文件是 <名字>.wav，没有截图
 ) {
+    /** 有没有能放的文件（视频或者录音） */
+    val hasMedia: Boolean get() = video || sound
+
     /** 认出来在动的是什么（「人×2、猫」），没认出来是空 */
     @Volatile var labels: String = ""
 
     fun toJson(): JSONObject = JSONObject().put("name", name).put("at", at).put("dur", durMs)
-        .put("motions", motions).put("video", video).put("uploaded", uploaded).put("labels", labels)
+        .put("motions", motions).put("video", video).put("uploaded", uploaded).put("labels", labels).put("sound", sound)
 
     companion object {
         fun fromJson(j: JSONObject) = EventInfo(j.getString("name"), j.optLong("at"), j.optLong("dur"),
-            j.optInt("motions", 1), j.optBoolean("video"), j.optString("uploaded")).also { it.labels = j.optString("labels") }
+            j.optInt("motions", 1), j.optBoolean("video"), j.optString("uploaded"), j.optBoolean("sound")).also { it.labels = j.optString("labels") }
     }
 }
 
 /**
- * 录像存在手机本地（dir 下：<名字>.mov 视频、.jpg 截图、.t.jpg 小图、.json 信息），满了删最旧的。
+ * 录像存在手机本地（dir 下：<名字>.mov 视频、.jpg 截图、.t.jpg 小图、.json 信息；声音监听录的是 <名字>.wav），满了删最旧的。
  * 只有写完（有 .json）的才算一段，正在录的不会被列出来、删掉、上传。不碰安卓的类，可以在电脑上跑测试。
  */
 class EventStore(val dir: File, var maxBytes: Long = 3L shl 30, var minFreeBytes: Long = 500L shl 20) {
     init { dir.mkdirs() }
 
     fun mov(name: String) = File(dir, "$name.mov")
+    fun wav(name: String) = File(dir, "$name.wav")
+    /** 这一段能放的文件：视频 .mov，声音监听录的是 .wav */
+    fun media(e: EventInfo) = if (e.sound) wav(e.name) else mov(e.name)
     fun jpg(name: String) = File(dir, "$name.jpg")
     fun thumb(name: String) = File(dir, "$name.t.jpg")
     private fun meta(name: String) = File(dir, "$name.json")
+
+    // 刚起过的名字：录像的文件要等第一帧才建，这之前同一秒又来一段（比如声音监听）不能起成一样的
+    private val handed = HashSet<String>()
 
     /** 按开始时间起名（20261107-153012），同一秒有了就加 -2、-3。 */
     @Synchronized fun newName(at: Long): String {
         val base = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(at))
         var n = base
         var k = 2
-        while (mov(n).exists() || meta(n).exists() || jpg(n).exists()) n = "$base-${k++}"
+        while (n in handed || mov(n).exists() || wav(n).exists() || meta(n).exists() || jpg(n).exists()) n = "$base-${k++}"
+        if (handed.size > 500) handed.clear()
+        handed.add(n)
         return n
     }
 
@@ -64,7 +76,7 @@ class EventStore(val dir: File, var maxBytes: Long = 3L shl 30, var minFreeBytes
             .mapNotNull { get(it.name.removeSuffix(".json")) }.sortedByDescending { it.at }
 
     /** 等着备份的（最旧的在前）。 */
-    fun pendingUpload(): List<EventInfo> = list().filter { it.video && it.uploaded.isEmpty() && mov(it.name).exists() }.reversed()
+    fun pendingUpload(): List<EventInfo> = list().filter { it.hasMedia && it.uploaded.isEmpty() && media(it).exists() }.reversed()
 
     /**
      * 云盘上已经没有了的录像，把「已备份」去掉，让它重新排队备份。
@@ -74,7 +86,7 @@ class EventStore(val dir: File, var maxBytes: Long = 3L shl 30, var minFreeBytes
      * 每个文件夹只问一次。返回去掉了几段。
      */
     fun forgetMissing(names: (String) -> Set<String>): Int {
-        val byFolder = list().filter { it.uploaded.isNotEmpty() && mov(it.name).exists() }
+        val byFolder = list().filter { it.uploaded.isNotEmpty() && media(it).exists() }
             .groupBy { it.uploaded.substringBeforeLast('/') }
         var n = 0
         for ((folder, events) in byFolder) {
@@ -90,7 +102,7 @@ class EventStore(val dir: File, var maxBytes: Long = 3L shl 30, var minFreeBytes
      */
     @Synchronized fun dropBackedUp(): Int {
         var n = 0
-        for (e in list()) if (e.video && e.uploaded.isNotEmpty() && mov(e.name).delete()) n++
+        for (e in list()) if (e.hasMedia && e.uploaded.isNotEmpty() && media(e).delete()) n++
         return n
     }
 
@@ -103,7 +115,7 @@ class EventStore(val dir: File, var maxBytes: Long = 3L shl 30, var minFreeBytes
     @Synchronized fun delete(name: String): Boolean {
         if (!safe(name)) return false
         var any = false
-        for (f in listOf(mov(name), jpg(name), thumb(name), meta(name))) if (f.delete()) any = true
+        for (f in listOf(mov(name), wav(name), jpg(name), thumb(name), meta(name))) if (f.delete()) any = true
         return any
     }
 
@@ -117,7 +129,7 @@ class EventStore(val dir: File, var maxBytes: Long = 3L shl 30, var minFreeBytes
         var used = usedBytes()
         for (e in order) {
             if (used <= maxBytes && free() >= minFreeBytes) break
-            val size = listOf(mov(e.name), jpg(e.name), thumb(e.name)).sumOf { it.length() }
+            val size = listOf(mov(e.name), wav(e.name), jpg(e.name), thumb(e.name)).sumOf { it.length() }
             if (delete(e.name)) { removed++; used -= size }
         }
         return removed

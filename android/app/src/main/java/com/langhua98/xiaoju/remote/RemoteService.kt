@@ -223,6 +223,7 @@ class RemoteService : Service() {
         })
         if (h?.liveActive() == true) on.add("实时画面")
         else if (h?.cameraOn == true && h.monitor.on != true) on.add("相机")
+        if (h?.monitor?.sound == true) on.add("声音监听（麦克风一直开着，CPU 不睡" + (if (h.soundRecording) "，正在录" else "") + "）")
         val lines = ArrayList<String>()
         val ma = PowerMeter.currentMa()
         if (ma != null) lines.add("电流：约 $ma mA（越小越省电）")
@@ -368,7 +369,7 @@ class RemoteService : Service() {
             return
         }
         if (action == "audio" && h?.micOn == true) {
-            reply(JSONObject().put("id", id).put("ok", false).put("text", "移动侦测正在录声音，麦克风被占用了（可以在侦测设置里关掉声音）"))
+            reply(JSONObject().put("id", id).put("ok", false).put("text", "直播或移动侦测正在录声音，麦克风被占用了（可以在侦测设置里关掉声音）"))
             restoreText()
             return
         }
@@ -378,7 +379,10 @@ class RemoteService : Service() {
             val d = h.grab()
             if (d == null) CmdResult("相机正在用，没截到画面，再试一次")
             else CmdResult("从画面截了一张（相机正在侦测 / 直播，${d.size / 1024} KB）", listOf("photo.jpg" to d))
-        } else Commands.run(this, cmd).let { r ->
+        } else (
+            // 声音监听开着时麦克风在它手里：录音指令来了先让它放开，录完接着听
+            if (action == "audio" && h != null) h.withMicFree { Commands.run(this, cmd) } else Commands.run(this, cmd)
+        ).let { r ->
             // 设备信息里写上现在开着哪些费电的东西，方便看电耗在哪
             if (action == "info") CmdResult(r.text + "\n" + powerText(h), r.files) else r
         }
@@ -474,7 +478,7 @@ class RemoteService : Service() {
 
     /**
      * 移动侦测的指令：
-     *   monitor        改设置 / 开关（字段见 MonitorConfig），回现在的状态
+     *   monitor        改设置 / 开关（字段见 MonitorConfig，声音监听的 sound… 也在里面），回现在的状态
      *   monitor_status 状态（开没开、今天几段、待备份、Telegram 怎么样）
      *   events         录好的事件列表（新的在前，带小图），limit / before 翻页
      *   event_get      取一段视频（name）：备份过的给云盘路径；小的直接放回执里；大的先传到云盘
@@ -493,6 +497,10 @@ class RemoteService : Service() {
             checkPermission(android.Manifest.permission.CAMERA, Process.myPid(), Process.myUid()) != PackageManager.PERMISSION_GRANTED) {
             done(false, "没有相机权限，去 App 里点「授权硬件」"); return
         }
+        if (action == "monitor" && cmd.optBoolean("sound", false) &&
+            checkPermission(android.Manifest.permission.RECORD_AUDIO, Process.myPid(), Process.myUid()) != PackageManager.PERMISSION_GRANTED) {
+            done(false, "没有麦克风权限，去 App 里点「授权硬件」"); return
+        }
         try {
             when (action) {
                 "monitor" -> { val t = h.setMonitor(cmd); Bus.push(t); done(true, t) { it.put("status", h.statusJson()) } }
@@ -508,24 +516,25 @@ class RemoteService : Service() {
                 "event_get" -> {
                     val name = cmd.optString("name")
                     val e = h.store.get(name) ?: run { done(false, "手机上没有 $name（可能已经满了被删掉，看云盘备份）"); return }
-                    val f = h.store.mov(name)
+                    val f = h.store.media(e)
+                    val ext = if (e.sound) "wav" else "mov"
                     // 记着「已备份」，但云盘上已经没有了（云盘搬家、在云盘里删了）：手机上还有就去掉记号，下面重新传
                     var lost = false
-                    if (e.video && e.uploaded.isNotEmpty() &&
+                    if (e.hasMedia && e.uploaded.isNotEmpty() &&
                         runCatching { !cloud.exists(e.uploaded) }.getOrDefault(false)) {
                         if (f.exists()) { h.store.markUploaded(name, ""); e.uploaded = "" } else lost = true
                     }
                     val files = JSONArray()
                     when {
                         // 0.32 起备份好的视频手机上不留了：给云盘路径
-                        e.video && e.uploaded.isNotEmpty() && !lost -> files.put(e.uploaded)
-                        !e.video || !f.exists() -> {
+                        e.hasMedia && e.uploaded.isNotEmpty() && !lost -> files.put(e.uploaded)
+                        !e.hasMedia || !f.exists() -> {
                             val j = h.store.jpg(name)
                             if (j.exists()) files.put(JSONObject().put("name", "$name.jpg").put("data", Base64.encodeToString(j.readBytes(), Base64.NO_WRAP)))
-                            if (lost) { done(true, "$name：云盘上的备份没有了，手机上也已经删了，只剩截图") { it.put("files", files).put("event", e.toJson()) }; return }
+                            if (lost) { done(true, "$name：云盘上的备份没有了，手机上也已经删了" + (if (e.sound) "" else "，只剩截图")) { it.put("files", files).put("event", e.toJson()) }; return }
                         }
                         viaRelay && f.length() <= RemoteBox.INLINE_LIMIT ->
-                            files.put(JSONObject().put("name", "$name.mov").put("data", Base64.encodeToString(f.readBytes(), Base64.NO_WRAP)))
+                            files.put(JSONObject().put("name", "$name.$ext").put("data", Base64.encodeToString(f.readBytes(), Base64.NO_WRAP)))
                         else -> files.put(h.uploader.uploadNow(e))
                     }
                     done(true, "$name，${e.durMs / 1000} 秒") { it.put("files", files).put("event", e.toJson()) }
@@ -581,7 +590,7 @@ class RemoteService : Service() {
         p.updateCheckedAt = 0L
         p.updatePrompted = ""   // root 上次没装上的话，这次再试一次
         val h = hub
-        if (h != null && (h.liveActive() || h.stage() == "record")) Bus.push("正在直播或录像，结束后再装")
+        if (h != null && (h.liveActive() || h.stage() == "record" || h.soundRecording)) Bus.push("正在直播或录像，结束后再装")
     }
 
     /**
@@ -597,7 +606,7 @@ class RemoteService : Service() {
         val last = p.updateCheckedAt
         if (last in (now - Updater.CHECK_EVERY_MS + 1)..now) return
         val h = hub
-        if (h != null && (h.liveActive() || h.stage() == "record")) return
+        if (h != null && (h.liveActive() || h.stage() == "record" || h.soundRecording)) return
         if (!updating.compareAndSet(false, true)) return
         p.updateCheckedAt = now
         Thread({
@@ -626,13 +635,7 @@ class RemoteService : Service() {
     /** 指令做完，通知栏恢复成现在的状态。 */
     private fun restoreText() {
         val h = hub
-        notifyText(when {
-            h == null -> "待命中，等指令"
-            h.monitor.on && h.liveActive() -> "正在被远程使用：移动侦测 + 实时画面"
-            h.monitor.on -> "正在被远程使用：移动侦测中"
-            h.liveActive() -> "正在被远程使用：实时画面"
-            else -> "待命中，等指令"
-        })
+        notifyText(h?.stateText() ?: "待命中，等指令")
     }
 
     /** 实时画面：连续抓帧推到视频信箱。只走即时信箱（文件信箱太慢，撑不起视频）。 */
@@ -667,7 +670,7 @@ class RemoteService : Service() {
 
     private fun label(a: String) = mapOf("photo" to "拍照", "audio" to "录音", "location" to "定位",
         "torch" to "手电筒", "vibrate" to "震动", "ring" to "响铃", "info" to "设备信息", "shell" to "命令", "video" to "实时画面", "video_set" to "调实时画面",
-        "monitor" to "移动侦测设置", "monitor_status" to "移动侦测状态", "events" to "看录像列表", "event_get" to "取录像", "event_delete" to "删录像", "bench" to "模型测速", "cancel" to "取消", "update" to "更新", "log" to "看运行记录")[a] ?: a
+        "monitor" to "侦测 / 声音监听设置", "monitor_status" to "侦测状态", "events" to "看录像列表", "event_get" to "取录像", "event_delete" to "删录像", "bench" to "模型测速", "cancel" to "取消", "update" to "更新", "log" to "看运行记录")[a] ?: a
 
     // ---- 看门狗（只在等网络时让 CPU 睡的老系统上开）----
     // 2 分钟叫醒一次：长轮询本该 25 秒就回来，等了 70 秒还没回来，说明连接卡死了（睡着时没收到数据），断掉重来。

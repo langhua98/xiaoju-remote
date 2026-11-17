@@ -58,6 +58,7 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 | `video` | `transport`=ws、`room`、`codec`=h264/jpeg、`lens`、`width`、`fps`、`quality`、`audio` | 实时画面（走云盘的直播通道） |
 | `video_set` | 同上加 `exposure`、`zoom`、`torch`、`flip`、`stamp` | 直播 / 侦测中调相机；`flip` 上下翻转（转 180°，手机倒装时用）、`stamp` 印日期时间（默认开），这两个记在手机上（0.17） |
 | `monitor` | `on`、`sensitivity` 1–100、`regions` [[x,y,w,h]…]、`pre`、`post`、`notify`、`people`（只在认出人时提醒，0.12）、`eco`（省电侦测，0.14，默认开）、`duty`、`duty_on`、`duty_off`（间歇守望，0.18，默认开，看 2 秒歇 4 秒）、`engine`（kotlin / native / ab，0.29，默认 kotlin）、`standby_fps` 1–4、`confirm` 2–6、`cooldown`、`audio`、`upload`、`lens`、`width`、`fps`、`quality` | 移动侦测设置（只改给了的字段），回执带状态 |
+| `monitor`（声音监听，0.41） | `sound`（开关）、`sound_sens` 1–100、`sound_pre` 0–10、`sound_post` 3–120、`sound_notify` | 和移动侦测各开各的，字段放在同一条 `monitor` 里；说明见下面「0.41」 |
 | `monitor_status` | — | 侦测状态：今天几段、占多少空间、待备份、Telegram；`objects` 是能认东西时用的模型（空 = 认不了） |
 | `events` | `limit`、`before` | 录好的事件（新的在前，带小图）；`labels` 是认出来在动的东西（「人×2、猫」） |
 | `event_get` | `name` | 取一段录像：备份过的给云盘路径（0.28 起先确认云盘上还在；0.32 起备份好的手机上不留视频），5 MB 以内直接放回执，大的先传到云盘 |
@@ -68,6 +69,28 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 | `cancel` | `target`（要取消的那条指令的 id） | 打断一条还在做的慢指令（测速、录音…），替它回「已取消」 |
 
 | `update` | `check`（只看不下载）、`owner`=`release`（不再当设备所有者） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）；云盘连不上时改从 GitHub 查（0.30）。回执多 `version`、`build` |
+
+### 0.41：声音监听（和小橘推送一起改）
+
+平时守望，有声音就录下来。只录声音，不开相机。
+
+- 开关：`{"do":"monitor","sound":true}`，和移动侦测（`on`）各开各的，可以只开一个。设置存在手机上，重启后接着听。
+  小橘推送 0.5.2 的「移动侦测」页里，设置下面多了「声音监听」一栏。
+- 怎么判断（`SoundDetector.kt`）：麦克风一直开着，每 80 ms 算一次音量（去掉直流的均方根，写成分贝），和底噪比。
+  底噪自己跟：比底噪小马上跟下去，比底噪大只慢慢涨（大约 30 秒）。所以冰箱、风扇这种一直响的，响一会儿就不算了。
+  音量比底噪高出门槛（`sound_sens` 1…100 → 约 30…6 分贝，默认 50 = 18 分贝），而且 0.3 秒里有两包这样才算；
+  特别响的（再高 12 分贝，摔门）一包就算。刚开麦克风的 1.5 秒只学底噪。
+- 录什么（`SoundRecorder.kt`）：内存里一直留着最近 `sound_pre` 秒（默认 3）的声音，有声音就从那之前开始写一个 `.wav`
+  （μ-law 单声道，16 kHz 时每分钟约 1 MB），最后一次有声音后 `sound_post` 秒（默认 10）收尾。一段最长 5 分钟，再长接着写下一段。
+- 录好的和移动侦测的录像放在同一个列表里（`events` 里 `sound: true`、`video: false`），`event_get` 取回来是 `<名字>.wav`；
+  一样慢慢备份到云盘 `/小橘推送/遥控/<设备>/录像/<日期>/<名字>.wav`，备份好了手机上不留。
+- 提醒：`sound_notify`（默认关）开了以后，录到一段就发一句 Telegram（没有附件），冷却时间用 `cooldown`，和「有动静」的提醒分开算。
+- 麦克风只有一个：直播的声音、侦测录像的声音、声音监听共用同一路采集（`CameraHub.syncMic`）。
+  `audio` 录音指令来了，声音监听先放开麦克风，录完接着听；直播、侦测录像正在用时还是回「麦克风被占用」。
+- 耗电：声音监听开着时麦克风和 CPU 一直醒着（不能像间歇守望那样睡），手机要插着电。通知栏会写「声音监听中（麦克风开着）」。
+- `monitor_status` 多了 `status.sound`：`listening`（在不在听）、`recording`、`level`（现在的音量）、`floor`（底噪）、`margin`（门槛），单位分贝。
+  调灵敏度时看这几个数：`level - floor` 经常超过 `margin` 就会录。
+- 没做的：声音不认是什么（哭声、玻璃碎）；提醒里不带录音。
 
 ### 0.40：云盘连不上时也能点开始待命
 
