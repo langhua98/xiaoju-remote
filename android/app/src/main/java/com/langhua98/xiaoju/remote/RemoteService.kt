@@ -64,6 +64,7 @@ class RemoteService : Service() {
         CrashLog.install(this)
         Bus.init(this)
         if (intent?.action == ACTION_STOP) { Prefs(this).standby = false; stopAll(); return START_NOT_STICKY }
+        if (intent?.action == ACTION_POWER && running) { applyPowerMode(); return START_STICKY }
         startAsForeground("待命中，等指令")
         if (!running) {
             running = true
@@ -73,13 +74,7 @@ class RemoteService : Service() {
             Bus.push("开始待命")
             Power.init(this)
             if (Prefs(this).useRoot) Thread({ Root.apply(applicationContext) }, "root-setup").start()
-            // Wi-Fi 在锁屏后也别断（老系统有的设成「休眠时断开」，断了就收不到指令）
-            wifi = runCatching {
-                @Suppress("DEPRECATION")
-                (applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager)
-                    .createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL, "xiaoju:wifi").apply { setReferenceCounted(false); acquire() }
-            }.getOrNull()
-            if (Power.canSleep) startWatchdog()
+            applyPowerMode()
             worker = Thread({ loop() }, "remote-loop").apply { start() }
         }
         return START_STICKY
@@ -106,6 +101,27 @@ class RemoteService : Service() {
         stopWatchdog()
         runCatching { wifi?.release() }; wifi = null
         super.onDestroy()
+    }
+
+    /**
+     * 按「省电待命」开关设好 CPU 和 Wi-Fi（开始待命时、手机上改了开关时）。
+     * - 没开省电（默认）：CPU 一直醒着（收件循环一直拿着锁，Power.sleepWhile 不放），
+     *   Wi-Fi 用高性能锁（关掉 Wi-Fi 省电模式，息屏后数据包不再攒着隔一会儿才收），指令随到随回。
+     * - 开了省电：和 0.41 以前一样，等指令时 CPU 睡，Wi-Fi 普通锁（只保证锁屏不断），靠看门狗闹钟兜底。
+     * 两种都要 Wi-Fi 锁：老系统有的设成「休眠时断开 Wi-Fi」，断了就收不到指令。
+     */
+    @Synchronized private fun applyPowerMode() {
+        val eco = Prefs(this).ecoSleep
+        Power.eco = eco
+        runCatching { wifi?.release() }
+        wifi = runCatching {
+            @Suppress("DEPRECATION")
+            val mode = if (eco) android.net.wifi.WifiManager.WIFI_MODE_FULL else android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            (applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager)
+                .createWifiLock(mode, "xiaoju:wifi").apply { setReferenceCounted(false); acquire() }
+        }.getOrNull()
+        if (Power.canSleep) startWatchdog() else stopWatchdog()
+        Bus.push(if (eco) "省电待命：等指令时 CPU 睡（息屏时指令会慢）" else "快速待命：CPU 和 Wi-Fi 一直醒着，指令随到随回（要插着电）")
     }
 
     /** 收件循环：自己拿一份「CPU 醒着」，只在等服务器回话时放掉（Power.sleepWhile），结束时放掉。 */
@@ -755,12 +771,20 @@ class RemoteService : Service() {
         /** 一次直播最长多久（服务端也会在 4 小时断开） */
         const val LIVE_MAX_MS = 4L * 60 * 60 * 1000
         const val ACTION_STOP = "stop"
+        /** 手机上改了「省电待命」：重新设 CPU 和 Wi-Fi */
+        const val ACTION_POWER = "power"
         const val CHANNEL = "xiaoju-remote"
         private const val FLAG_IMMUTABLE = 0x04000000
 
         fun start(ctx: Context) {
             val i = Intent(ctx, RemoteService::class.java)
             if (Build.VERSION.SDK_INT >= 26) Api26.startForegroundService(ctx, i) else ctx.startService(i)
+        }
+
+        /** 改了「省电待命」开关后叫一下（没在待命就什么也不做，下次开始待命时按新设置来） */
+        fun powerChanged(ctx: Context) {
+            if (!Bus.running) return
+            runCatching { ctx.startService(Intent(ctx, RemoteService::class.java).setAction(ACTION_POWER)) }
         }
 
         fun stop(ctx: Context) {
