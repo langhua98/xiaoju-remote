@@ -63,7 +63,8 @@ class EventStore(val dir: File, var maxBytes: Long = 3L shl 30, var minFreeBytes
     @Synchronized fun save(e: EventInfo) {
         val tmp = File(dir, "${e.name}.json.tmp")
         tmp.writeText(e.toJson().toString())
-        tmp.renameTo(meta(e.name))
+        // Windows（电脑上跑测试）改名不能覆盖已有的文件：改不成就先删掉旧的再改。安卓上第一次就成
+        if (!tmp.renameTo(meta(e.name))) { meta(e.name).delete(); tmp.renameTo(meta(e.name)) }
     }
 
     @Synchronized fun get(name: String): EventInfo? = try {
