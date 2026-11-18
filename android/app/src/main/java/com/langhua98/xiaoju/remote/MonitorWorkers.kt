@@ -31,6 +31,21 @@ class Notifier(private val cloud: Cloud, private val prefs: Prefs, private val d
         q.offer("🍊 小橘遥控 · $device\n$t $what$more" to jpg)
     }
 
+    // 声音监听的提醒单独算冷却：不然隔几分钟响一下的声音会把「有动静」的提醒一直压着
+    @Volatile private var soundAt = 0L
+    @Volatile private var soundSkipped = 0
+
+    /** 声音监听录到一段新的（0.41）。只发一句话，录音在录像列表里听。 */
+    fun sound(at: Long, cooldownMin: Int) {
+        val now = System.currentTimeMillis()
+        if (now - soundAt < cooldownMin * 60_000L) { soundSkipped++; return }
+        soundAt = now
+        val t = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(at))
+        val more = if (soundSkipped > 0) "（这之前 $cooldownMin 分钟里还有 $soundSkipped 次）" else ""
+        soundSkipped = 0
+        q.offer("🍊 小橘遥控 · $device\n$t 有声音，已经在录$more" to null)
+    }
+
     /** 随便发一句（打开侦测时确认 Telegram 通不通）。 */
     fun text(s: String) { q.offer("🍊 小橘遥控 · $device\n$s" to null) }
 
@@ -58,7 +73,7 @@ class Notifier(private val cloud: Cloud, private val prefs: Prefs, private val d
 
 /**
  * 录像慢慢备份到云盘：一次传一个（传好、确认云盘上有了就删掉手机上的视频，0.32），传完歇 1 分钟再传下一个，限速 bps；有人在看实时画面时不传（不抢网速）。
- * 云盘存储后面是 Telegram，传太快会被限流，所以宁可慢。路径 /小橘推送/遥控/<设备>/录像/<日期>/<时间>.mov。
+ * 云盘存储后面是 Telegram，传太快会被限流，所以宁可慢。路径 /小橘推送/遥控/<设备>/录像/<日期>/<时间>.mov（声音监听录的是 .wav）。
  *
  * 0.32：老系统（Android 4.2，CPU 能睡）上，Object.wait 的计时只在 CPU 醒着时走，CPU 睡着就停了。
  * 以前「等 20 秒看一眼」「出错 5 分钟后再试」在 S4 上要等几十分钟到几个小时，录像几乎传不上去。
@@ -88,12 +103,14 @@ class Uploader(
 
     /** 云盘上的路径。 */
     fun pathFor(e: EventInfo): String =
-        "/小橘推送/遥控/$device/录像/${SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(e.at))}/${e.name}.mov"
+        "/小橘推送/遥控/$device/录像/${SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(e.at))}/${e.name}.${if (e.sound) "wav" else "mov"}"
+
+    private fun typeOf(e: EventInfo) = if (e.sound) "audio/wav" else "video/quicktime"
 
     /** 现在就传这一段（iPhone 要看一段还没备份的大视频时），返回云盘路径。 */
     fun uploadNow(e: EventInfo): String {
         val p = pathFor(e)
-        cloud.uploadFileSlow(p, store.mov(e.name), FAST_BPS)
+        cloud.uploadFileSlow(p, store.media(e), FAST_BPS, typeOf(e))
         store.markUploaded(e.name, p)
         dropLocal(e, p)
         return p
@@ -101,7 +118,7 @@ class Uploader(
 
     /** 传完了：再问一下云盘确实有了，才删手机上的视频（问不到就先留着，下次待命核对时再删）。 */
     private fun dropLocal(e: EventInfo, path: String) {
-        if (runCatching { cloud.exists(path) }.getOrDefault(false)) store.mov(e.name).delete()
+        if (runCatching { cloud.exists(path) }.getOrDefault(false)) store.media(e).delete()
     }
 
     private fun loop() {
@@ -145,11 +162,11 @@ class Uploader(
         val count = if (day != today0) 0 else count0
         if (count >= DAILY_MAX) { status = "今天已经备份了 $count 段，明天接着传"; return day to count }
         val e = store.pendingUpload().firstOrNull() ?: return day to count
-        val f = store.mov(e.name)
+        val f = store.media(e)
         if (!f.exists()) return day to count
         return try {
             val p = pathFor(e)
-            cloud.uploadFileSlow(p, f, SLOW_BPS)
+            cloud.uploadFileSlow(p, f, SLOW_BPS, typeOf(e))
             store.markUploaded(e.name, p)
             plan.done()
             dropLocal(e, p)

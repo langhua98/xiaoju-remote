@@ -124,17 +124,19 @@ class MainActivity : Activity() {
         toggle.isEnabled = false
         toggle.text = "连接中…"
         Bus.push("连接云盘…")
-        // 先测一下能不能连上，再启动服务
+        // 先测一下能不能连上（只为了告诉人），不管连没连上都启动待命。
+        // 0.40：0.38 连不上就不启动，云盘（家里电脑）一停手机就点不开待命，备用通道（ntfy.sh）也用不上了。
+        // 待命服务自己会走备用通道收指令，云盘回来了自己接回去。
         Thread {
             val err = try { Net.init(this); Cloud(prefs.base, prefs.token).me(); null } catch (e: Exception) { e.message ?: e.javaClass.simpleName }
             runOnUiThread {
                 toggle.isEnabled = true
-                if (err == null) { RemoteService.start(this); toggle.postDelayed({ refresh() }, 400) }
-                else {
-                    Bus.push("连不上，没启动：$err")
-                    refresh()
+                RemoteService.start(this)
+                toggle.postDelayed({ refresh() }, 400)
+                if (err != null) {
+                    Bus.push("现在连不上云盘：$err。先用备用通道待命，云盘好了自己接上")
                     // 只有一个按钮，看不到运行记录：连不上要直接告诉人
-                    android.widget.Toast.makeText(this, "连不上云盘，没启动：$err", android.widget.Toast.LENGTH_LONG).show()
+                    android.widget.Toast.makeText(this, "现在连不上云盘：$err\n已经用备用通道待命，云盘好了会自己接上", android.widget.Toast.LENGTH_LONG).show()
                 }
             }
         }.start()
