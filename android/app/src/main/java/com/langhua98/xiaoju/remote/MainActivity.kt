@@ -68,6 +68,14 @@ class MainActivity : Activity() {
             }
         }
 
+        findViewById<android.widget.CheckBox>(R.id.ecoSleep).apply {
+            isChecked = prefs.ecoSleep
+            setOnCheckedChangeListener { _, on ->
+                prefs.ecoSleep = on
+                RemoteService.powerChanged(this@MainActivity)
+            }
+        }
+
         Bus.onLog = { lines -> log.text = lines.takeLast(80).joinToString("\n"); refresh() }
         log.text = Bus.snapshot().takeLast(80).joinToString("\n")
         refresh()

@@ -13,13 +13,21 @@ import java.io.File
  * - 收指令的长轮询在等服务器回话时放掉（sleepWhile）：服务器回话的数据一到，Wi-Fi / 基带会把 CPU 叫醒，
  *   读完马上又拿上。万一卡住，RemoteService 里有 2 分钟一次的闹钟看门狗把连接断掉重来。
  * - Android 6（API 23）以上有 Doze，睡着以后网络和闹钟都会被推迟，所以那上面还是一直拿着（行为和以前一样）。
+ *
+ * 0.42：等指令时让 CPU 睡改成手机上的选项「省电待命」（eco），默认关。
+ * 原因：S4 息屏后 CPU 睡着，指令的数据包到了不一定能把 CPU 叫醒（或者叫醒的时间太短，还没读完又睡了），
+ * 要等 2 分钟一次的看门狗闹钟才处理，所以在后台时指令要等几十秒到两分钟，一点开 App（亮屏）马上就回了。
+ * 默认现在待命时 CPU 一直醒着，指令随到随回；更费电，手机要插着电。
  */
 object Power {
     private var wl: PowerManager.WakeLock? = null
     private var holds = 0
 
-    /** 这台手机上等网络时能不能让 CPU 睡（没有 Doze 的老系统） */
-    val canSleep: Boolean get() = Build.VERSION.SDK_INT < 23
+    /** 手机上勾了「省电待命」（Prefs.ecoSleep）。没勾时等指令 CPU 也醒着，指令马上处理。 */
+    @Volatile var eco = false
+
+    /** 这台手机上等网络时能不能让 CPU 睡（没有 Doze 的老系统，而且勾了省电待命） */
+    val canSleep: Boolean get() = eco && Build.VERSION.SDK_INT < 23
 
     @Synchronized fun init(ctx: Context) {
         if (wl != null) return

@@ -45,6 +45,14 @@ class Prefs(ctx: Context) {
         get() = sp.getBoolean("allowShell", false)
         set(v) { sp.edit().putBoolean("allowShell", v).apply() }
 
+    /**
+     * 省电待命（0.42 起默认关）：等指令时让 CPU 睡、Wi-Fi 用省电模式。省电，但息屏在后台时指令要等几十秒到两分钟才收到。
+     * 关着时 CPU 一直醒着、Wi-Fi 不省电，指令随到随回，手机要插着电。
+     */
+    var ecoSleep: Boolean
+        get() = sp.getBoolean("ecoSleep", false)
+        set(v) { sp.edit().putBoolean("ecoSleep", v).apply() }
+
     /** 画面上印日期时间 */
     var stamp: Boolean
         get() = sp.getBoolean("stamp", true)

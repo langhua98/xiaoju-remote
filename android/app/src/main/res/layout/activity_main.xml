@@ -106,6 +106,13 @@
             android:text="检查更新" />
 
         <CheckBox
+            android:id="@+id/ecoSleep"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:text="省电待命（更省电，但息屏在后台时指令要等几十秒到两分钟；不勾 = 随到随回，要插着电）" />
+
+        <CheckBox
             android:id="@+id/allowShell"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
