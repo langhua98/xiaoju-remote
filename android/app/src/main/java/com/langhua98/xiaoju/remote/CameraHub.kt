@@ -85,13 +85,14 @@ class CameraHub(
 
     @Volatile private var thread: Thread? = null
 
-    // 实时画面：一次直播 = 云盘直播通道的推流 + 同一个 Wi-Fi 里直连进来的观看端
+    // 实时画面：一次直播 = 云盘直播通道的推流 + Hugging Face 中转的推流（0.43，可能没有）+ 同一个 Wi-Fi 里直连进来的观看端
     private class Live(val room: String, val av: Boolean, val audio: Boolean, val until: Long) {
         val started = System.currentTimeMillis()
         @Volatile var cloud: StreamClient? = null
+        @Volatile var relay: StreamClient? = null
         val lan = java.util.concurrent.CopyOnWriteArrayList<LanViewer>()
         @Volatile var lastWatched = 0L
-        fun sinks(): List<LiveSink> = listOfNotNull<LiveSink>(cloud) + lan
+        fun sinks(): List<LiveSink> = listOfNotNull<LiveSink>(cloud, relay) + lan
         fun watched(): List<LiveSink> = sinks().filter { !it.isClosed && it.watchers > 0 }
     }
     @Volatile private var live: Live? = null
@@ -221,7 +222,7 @@ class CameraHub(
      * 开始给一个观看端推实时画面（连好了的云盘直播通道）。原来的直播会被替换。
      * 同时在局域网里开着直连：同一个 Wi-Fi 的 iPhone 可以拿着同一个房间名直接连过来（地址见 lanAddresses）。
      */
-    fun startLive(c: StreamClient, cmd: JSONObject, av: Boolean, audio: Boolean) {
+    fun startLive(c: StreamClient, relay: StreamClient?, cmd: JSONObject, av: Boolean, audio: Boolean) {
         live?.let { old -> old.sinks().forEach { it.close() } }
         val s = JSONObject(cmd.toString())
         if (!s.has("codec")) s.put("codec", LiveSettings.JPEG)   // 老查看器只认 JPEG
@@ -230,6 +231,7 @@ class CameraHub(
         saveView()
         val l = Live(cmd.optString("room"), av, audio, System.currentTimeMillis() + RemoteService.LIVE_MAX_MS)
         l.cloud = c
+        l.relay = relay
         live = l
         kick()   // 间歇守望正歇着：马上开相机
         rateScale = 1.0
@@ -426,7 +428,7 @@ class CameraHub(
         live?.let { l ->
             l.lan.removeAll { it.isClosed }
             if (l.watched().isNotEmpty()) l.lastWatched = now
-            val cloudGone = l.cloud?.isClosed != false
+            val cloudGone = l.cloud?.isClosed != false && l.relay?.isClosed != false
             when {
                 now > l.until -> endLive()
                 cloudGone && l.lan.isEmpty() -> endLive()
