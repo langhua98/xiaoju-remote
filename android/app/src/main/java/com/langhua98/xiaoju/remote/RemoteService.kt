@@ -454,11 +454,17 @@ class RemoteService : Service() {
             wantAudio -> "开始直播（没有麦克风权限，只有画面）"
             else -> "开始直播"
         }
-        h.startLive(client, cmd, av, withAudio)
-        // lan：同一个 Wi-Fi 时 iPhone 直接连这些地址（更快），连不上就接着用云盘
+        // 0.43：再连一条 Hugging Face 中转（画面不经过家里电脑）。连不上没关系，照旧经电脑。
+        // 两条都连着，只往有人看的那条发（看的一端先 Wi-Fi 直连，再中转，最后电脑），不多费流量。
+        val relay = StreamClient.relayPubUrl(p.base, p.token, room)?.let { u ->
+            val r = StreamClient(Net.okHttpStream(), u, p.token)
+            if (r.connect(8_000)) r else { Bus.push("直播中转连不上（${r.error}），只经家里电脑"); null }
+        }
+        h.startLive(client, relay, cmd, av, withAudio)
+        // lan：同一个 Wi-Fi 时 iPhone 直接连这些地址（更快）；relay：中转上也在推，连不上 Wi-Fi 就去中转看
         reply(JSONObject().put("id", id).put("do", "video").put("ok", true).put("text", okText)
-            .put("lan", JSONArray(h.lanAddresses())))
-        Bus.push("$okText，WebSocket，${h.settings.fps} 帧/秒，${if (h.settings.codec == LiveSettings.H264) "H.264" else "JPEG"}")
+            .put("lan", JSONArray(h.lanAddresses())).put("relay", relay != null))
+        Bus.push("$okText，WebSocket${if (relay != null) "（电脑 + 中转）" else ""}，${h.settings.fps} 帧/秒，${if (h.settings.codec == LiveSettings.H264) "H.264" else "JPEG"}")
     }
 
     /** 直播 / 侦测中调相机：video_set（镜头、清晰度、画质、帧率、亮度、变焦、手电、编码），或相机开着时的手电指令。 */

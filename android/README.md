@@ -55,7 +55,7 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 | `ring` | `seconds` | 响铃（找手机） |
 | `shell` | `cmd` | 在 App 沙盒里跑一条 shell（非 root，只有 App 自己的权限）。0.37 起默认关着，要在手机 App 里勾上「允许远程跑命令」才能用；最多跑 60 秒 |
 | `log` | `lines`（默认 200，最多 2000） | 远程看运行记录（0.37）：最近几行（App 重启前的也在）和最近一次闪退的原因。回执多 `crash`、`version`、`build` |
-| `video` | `transport`=ws、`room`、`codec`=h264/jpeg、`lens`、`width`、`fps`、`quality`、`audio` | 实时画面（走云盘的直播通道） |
+| `video` | `transport`=ws、`room`、`codec`=h264/jpeg、`lens`、`width`、`fps`、`quality`、`audio` | 实时画面（走云盘的直播通道；0.43 起同时推 Hugging Face 中转，回执带 `relay`、`lan`） |
 | `video_set` | 同上加 `exposure`、`zoom`、`torch`、`flip`、`stamp` | 直播 / 侦测中调相机；`flip` 上下翻转（转 180°，手机倒装时用）、`stamp` 印日期时间（默认开），这两个记在手机上（0.17） |
 | `monitor` | `on`、`sensitivity` 1–100、`regions` [[x,y,w,h]…]、`pre`、`post`、`notify`、`people`（只在认出人时提醒，0.12）、`eco`（省电侦测，0.14，默认开）、`duty`、`duty_on`、`duty_off`（间歇守望，0.18，默认开，看 2 秒歇 4 秒）、`engine`（kotlin / native / ab，0.29，默认 kotlin）、`standby_fps` 1–4、`confirm` 2–6、`cooldown`、`audio`、`upload`、`lens`、`width`、`fps`、`quality` | 移动侦测设置（只改给了的字段），回执带状态 |
 | `monitor`（声音监听，0.41） | `sound`（开关）、`sound_sens` 1–100、`sound_pre` 0–10、`sound_post` 3–120、`sound_notify` | 和移动侦测各开各的，字段放在同一条 `monitor` 里；说明见下面「0.41」 |
@@ -69,6 +69,16 @@ python3 scripts/遥控.py A update --check       # 只看有没有新版本
 | `cancel` | `target`（要取消的那条指令的 id） | 打断一条还在做的慢指令（测速、录音…），替它回「已取消」 |
 
 | `update` | `check`（只看不下载）、`owner`=`release`（不再当设备所有者） | 查云盘「软件包」有没有新版本，有就下载、安装（0.19）；云盘连不上时改从 GitHub 查（0.30）。回执多 `version`、`build` |
+
+### 0.43：直播连不上 Wi-Fi 时走 Hugging Face 中转，不经过家里电脑（和云盘、小橘推送一起改）
+
+- William 要求：看直播优先同一个 Wi-Fi 直连，连不上时走 Hugging Face 中转，画面和声音不再经家里电脑转发
+  （以前是 手机 → 家里电脑 → 看的人，占家里两份上传，电脑一卡直播就卡）。
+- 开始直播时手机照旧连家里电脑的直播通道，再向电脑要一张中转通行证（`GET /api/agent/v1/stream/relay?role=pub`），
+  连上中转的直播通道（`wss://…hf.space/live?…`，`StreamClient.relayPubUrl`）。两条都连着，只往有人看的那条发，不多费流量。
+- 回执多一个 `relay`：true = 中转上也在推。小橘推送先试 `lan`（Wi-Fi 直连），不行再去中转，中转也不行才经电脑。
+- 中转没配、不在线、电脑还是旧版本时（通行证 404），或者 8 秒内连不上中转，照旧只经电脑，运行记录写「直播中转连不上…」。
+- 还是要家里电脑开着：开直播的指令、通行证都从电脑来（画面不经过它）。
 
 ### 0.42：在后台（息屏）时指令也马上回
 

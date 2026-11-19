@@ -180,6 +180,17 @@ class StreamClient(private val client: OkHttpClient, private val url: String, pr
             return out
         }
 
+        /**
+         * 直播走 Hugging Face 中转（服务端见 xiaoju-cloud internal/api/live_relay.go）：向家里电脑要一张通行证，
+         * 返回中转上的推流地址 wss://…/live?…（5 分钟内连上有效）。没配中转、中转不在线、电脑是旧版本时返回 null。
+         */
+        fun relayPubUrl(base: String, token: String, room: String): String? = runCatching {
+            val q = java.net.URLEncoder.encode(room, "UTF-8").replace("+", "%20")
+            val body = Net.request("GET", base.trimEnd('/') + "/api/agent/v1/stream/relay?role=pub&room=" + q, token,
+                readTimeoutMs = 10_000)
+            org.json.JSONObject(String(body, Charsets.UTF_8)).optString("url")
+        }.getOrNull()?.takeIf { it.startsWith("wss://") || it.startsWith("ws://") }
+
         /** https://… → wss://…/api/agent/v1/stream?room=…&role=pub */
         fun pubUrl(base: String, room: String): String {
             val b = base.trimEnd('/').replaceFirst(Regex("^http"), "ws")
